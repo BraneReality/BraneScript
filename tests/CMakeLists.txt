@@ -1,4 +1,3 @@
-enable_testing()
 
 add_executable(bs_tests testing.cpp emptyPlaceholder.cpp)
 
