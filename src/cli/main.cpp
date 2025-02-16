@@ -2,14 +2,15 @@
 // Created by WireWhiz on 10/22/2024.
 //
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include "parser/documentParser.h"
+#include "parser/tree_sitter_branescript.h"
 #include <string_view>
 
-#include "../parser/tree_sitter_branescript.h"
 #include "tree_sitter/api.h"
 
 // #include "TSBindings.h"

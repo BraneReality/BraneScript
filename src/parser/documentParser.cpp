@@ -7,8 +7,10 @@
 #include <cassert>
 #include <charconv>
 #include <expected>
+#include <format>
 #include <functional>
 #include <iostream>
+#include <list>
 #include <memory>
 #include <stack>
 #include "parser/documentContext.h"
@@ -354,10 +356,10 @@ namespace BraneScript
                 }
             }
 
-            std::string message = std::vformat("Found \"{}\", but was expecting one of the following:\n",
-                                               std::make_format_args(nodeText(node)));
+            std::string message =
+                std::format("Found \"{}\", but was expecting one of the following:\n", nodeText(node));
             for(auto t : types)
-                message += std::vformat("{}\n", std::make_format_args(typeToName(t)));
+                message += std::format("{}\n", typeToName(t));
             errorMessage(node, message);
             return false;
         }
