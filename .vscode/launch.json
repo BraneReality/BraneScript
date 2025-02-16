@@ -2,26 +2,28 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "lldb",
+            "type": "gdb",
             "request": "launch",
             "name": "Cli-Debug",
-            "preLaunchTask": "cmake-build-debug",
+            "preLaunchTask": "cmake-install-debug",
             "expressions": "native",
-            "program": "./build/Debug/executables/BraneScriptCli",
+            "program": "./build/Debug/cli/BraneScriptCli",
             "console": "integratedTerminal",
             "args": [
-                "test.bscript"
+                "exampleScripts/test.bscript"
             ]
         },
         {
-            "type": "lldb",
+            "type": "gdb",
             "request": "launch",
             "name": "Cli-Release",
-            "preLaunchTask": "cmake-build-release",
+            "preLaunchTask": "cmake-install-release",
             "expressions": "native",
-            "program": "./build/Release/executables/BraneScriptCli",
-            "console": "integratedTerminal"
-
+            "program": "./build/Release/cli/BraneScriptCli",
+            "console": "integratedTerminal",
+            "args": [
+                "exampleScripts/test.bscript"
+            ]
         }
     ]
 }

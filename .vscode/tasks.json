@@ -2,7 +2,6 @@
     "version": "2.0.0",
     "showOutput": "always",
     "tasks": [
-        
         {
             "taskName": "cmake-configure-debug",
             "label": "cmake-configure-debug",
@@ -10,7 +9,7 @@
             "options": {
                 "cwd": "${workspaceRoot}"
             },
-            "command": "cmake -S. -B./build/Debug -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=\"${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON  -DBS_BUILD_TESTS=ON",
+            "command": "cmake -S. -B./build/Debug -G Ninja -DCMAKE_MAKE_PROGRAM=ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DVCPKG_TARGET_TRIPLET=x64-mingw-static  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=\"${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON  -DBS_BUILD_TESTS=ON",
             "presentation": "always"
         },
         {
@@ -23,44 +22,88 @@
             "options": {
                 "cwd": "${workspaceRoot}"
             },
-            "command": "cmake --build ./build/Debug  --target BraneScriptCli",
+            "command": "cmake --build ./build/Debug",
             "presentation": "always"
         },
         {
             "taskName": "cmake-configure-release",
-            "label":    "cmake-configure-release",
+            "label": "cmake-configure-release",
             "type": "shell",
             "options": {
                 "cwd": "${workspaceRoot}"
             },
-            "command": "cmake -S. -B./build/Release -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON  -DBS_BUILD_TESTS=ON",
+            "command": "cmake -S. -B./build/Release -G Ninja -DCMAKE_MAKE_PROGRAM=ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DVCPKG_TARGET_TRIPLET=x64-mingw-static -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=\"${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON  -DBS_BUILD_TESTS=ON -DTREESITTER_BRANESCRIPT_DIR=../TreeSitterBraneScript",
             "presentation": "always"
         },
         {
             "taskName": "cmake-build-release",
             "label": "cmake-build-release",
             "type": "shell",
-            "dependsOn":[
+            "dependsOn": [
                 "cmake-configure-release"
             ],
             "options": {
                 "cwd": "${workspaceRoot}"
             },
-            "command": "cmake --build ./build/Release --target BraneScriptCli"
+            "command": "cmake --build ./build/Release"
         },
         {
-            "taskName": "cmake-configure",
-            "label": "cmake-configure",
+            "taskName": "build-db-debug",
+            "label": "build-db-debug",
             "type": "shell",
+            "dependsOn": [
+                "cmake-configure-debug"
+            ],
             "options": {
                 "cwd": "${workspaceRoot}"
             },
+            "windows": {
+                "command": "mv ./build/Debug/compile_commands.json ./build/ -Force"
+            },
+            "linux": {
+                "command": "mv ./build/Debug/compile_commands.json ./build/ -f"
+            }
+        },
+        {
+            "taskName": "build-db-release",
+            "label": "build-db-release",
+            "type": "shell",
             "dependsOn": [
-                "cmake-configure-release",
-                "cmake-configure-debug"
+                "cmake-configure-release"
             ],
-            "command": "cmake -S. -B./build/Unix -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=\"${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake\" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -G \"Unix Makefiles\" -DBS_BUILD_TESTS=ON"
+            "options": {
+                "cwd": "${workspaceRoot}"
+            },
+            "windows": {
+                "command": "mv ./build/Release/compile_commands.json ./build/ -Force"
+            },
+            "linux": {
+                "command": "mv ./build/Release/compile_commands.json ./build/ -f"
+            }
+        },
+        {
+            "taskName": "cmake-install-debug",
+            "label": "cmake-install-debug",
+            "type": "shell",
+            "dependsOn": [
+                "cmake-build-debug"
+            ],
+            "options": {
+                "cwd": "${workspaceRoot}/build/Debug"
+            },
+            "command": "cmake --install . --component cli --prefix ./cli"
+        },
+        {
+            "taskName": "cmake-install-cli-release",
+            "label": "cmake-install-cli-release",
+            "type": "shell",
+            "dependsOn": [
+                "cmake-build-release"
+            ],
+            "options": {
+                "cwd": "${workspaceRoot}/build/Release"
+            },
+            "command": "cmake --install . --component cli --prefix ./cli"
         }
     ]
 }
-

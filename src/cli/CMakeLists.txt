@@ -11,7 +11,26 @@ llvm_map_components_to_libnames(llvm_libs Support Core IRReader ...)
 # Link against LLVM libraries
 target_link_libraries(main PRIVATE ${llvm_libs})]]
 
-
 add_executable(BraneScriptCli main.cpp)
 target_link_libraries(BraneScriptCli PRIVATE parser)
 
+install(TARGETS BraneScriptCli
+    RUNTIME_DEPENDENCIES
+    PRE_EXCLUDE_REGEXES 
+        ".*tree-sitter-branescript.*"
+        "api-ms-.*" "ext-ms-.*"  # Windows system DLLs
+        "^/lib.*"                # Linux system libraries
+        "^/usr/lib.*"
+    POST_EXCLUDE_REGEXES 
+        ".*system32/.*\\.dll"    # Windows system directory
+        "^/lib64/.*"            # Linux system directories
+        "^/usr/lib64/.*"
+    DESTINATION .
+    COMPONENT cli)
+
+install(FILES ${treesitterbranescript_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}tree-sitter-branescript${CMAKE_SHARED_LIBRARY_SUFFIX}
+    DESTINATION .
+    COMPONENT cli)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/exampleScripts 
+    DESTINATION .
+    COMPONENT cli)
