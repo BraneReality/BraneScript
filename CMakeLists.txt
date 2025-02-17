@@ -9,25 +9,25 @@ project(BraneScript
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(BS_BUILD_TESTS "Build tests" ON)
-option(TreeSitterBS_DIR "Set a manual path to use for the TreeSitterBraneScript repo")
-
-
+option(ENABLE_TREESITTER_DEV "Disable fetch content version requirement so local dev can occur" OFF)
 # Fetch and run our parser generator
-set(TSBS_REPO https://github.com/BraneReality/TreeSitterBraneScript.git)
-if(TSBS_DIR)
+
+set(TSBS_SOURCE_DIR ${CMAKE_SOURCE_DIR}/deps/TreeSitterBraneScript)
+if(ENABLE_TREESITTER_DEV AND EXISTS ${TSBS_SOURCE_DIR}/grammar.js)
+    message("Skipping fetch of TreeSitterBraneScript as ENABLE_TREESITTER_DEV is set")
     FetchContent_Declare(
         TreeSitterBraneScript
-        GIT_REPOSITORY ${TSBS_REPO} 
-        GIT_TAG main
-        SOURCE_DIR ${TSBS_DIR}
+        SOURCE_DIR ${TSBS_SOURCE_DIR}
     )
 else()
     FetchContent_Declare(
         TreeSitterBraneScript
-        GIT_REPOSITORY ${TSBS_REPO} 
+        GIT_REPOSITORY https://github.com/BraneReality/TreeSitterBraneScript.git 
         GIT_TAG main
+        SOURCE_DIR ${TSBS_SOURCE_DIR}
     )
 endif()
+
 FetchContent_MakeAvailable(TreeSitterBraneScript)
 
 set(GRAMMAR_DIR ${treesitterbranescript_SOURCE_DIR})
@@ -46,25 +46,6 @@ if(MINGW)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g2")
     endif()
 endif(MINGW)
-
-#[[file(MAKE_DIRECTORY ${GRAMMAR_BUILD_DIR})
-message("Watching grammar at ${GRAMMAR_FILE}")
-add_custom_command(
-    OUTPUT ${GRAMMAR_BUILD_DIR}/ts-build-command.stamp
-    COMMAND echo ${GENERATE_PARSER_CMD} 
-    COMMAND ${GENERATE_PARSER_CMD} 
-    COMMAND echo ${BUILD_PARSER_CMD}
-    COMMAND ${BUILD_PARSER_CMD}
-
-    WORKING_DIRECTORY ${GRAMMAR_BUILD_DIR}
-    DEPENDS ${GRAMMAR_FILE}
-    COMMENT "Generate ts parser because grammar.js changed"
-)
-add_custom_target(
-    tree_sitter_bs_parser 
-    DEPENDS 
-    ${GRAMMAR_BUILD_DIR}/ts-build-command.stamp
-)]]
 
 add_subdirectory(src)
 

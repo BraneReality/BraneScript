@@ -1,9 +1,10 @@
 build/*
 docs/*
+deps/*
+.cache
 
 .idea
 /graph_info.json
 /vcpkg_installed/
 /node_modules/
 /.docusaurus/
-
