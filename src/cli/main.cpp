@@ -93,7 +93,7 @@ int main(int argc, char* argv[])
     f.read(source_code.data(), count);
     f.close();
 
-    std::cout << "Parsing: \n" << source_code << std::endl;
+    std::cout << "---Parsing---\n" << source_code << "\n---END---" << std::endl;
     TSParser* parser = ts_parser_new();
     const TSLanguage* braneScriptLang = tree_sitter_branescript();
     ts_parser_set_language(parser, braneScriptLang);
