@@ -1,27 +1,13 @@
 mod test {
-    pipe Foo
-    (a: i32, b: i32){
+    pipe add_multiple(start: i32, add1: i32, add2: i32) -> (count: f32) 
     [
-        let r: i32 = a + b;
+        {
+            let value = start + add1;
+            continue(args: (value: value, add2: add2), deps: ());
+        }
+        (value: i32, add2: i32) {
+            let value = value + add2;
+            continue(args: (count: value));
+        }
     ]
-    hold r
-    call (r)Bar(o: f32)
-    [
-        o = o + 2;
-    ]
-    }(value: o)
-
-
-    pipe Bar
-    (a: i32){
-    [ 
-        (in: a)f32(o: f32);
-    ]
-    }(value: o)
-}
-
-mod test2
-{}
-
-mod hello_world{}
-
+};
