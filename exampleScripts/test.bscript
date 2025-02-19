@@ -10,4 +10,4 @@ mod test {
             continue(args: (count: value));
         }
     ]
-};
+}

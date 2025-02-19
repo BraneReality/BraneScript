@@ -5,7 +5,6 @@ mod test {
         {
             let value = Shared::new(0i32); 
             if add1 == 0 && add2 == 0 {
-                
                 continue(stage: end, args: (value: value)); // Go to next pipeline stage right away
                 // or
                 skip_to(stage: end, args: (value: value)); // like a goto, but can only go forward in the pipeline. Useful for async control flow.
@@ -23,7 +22,7 @@ mod test {
 
     pipe add(value: Shared<i32>, count: i32)  
     [
-        (value: Shared<i32>, ) { // Thread safety of data is handled by the runtime, so pipeline stages are only called when all their requested data is available. Shared<T> is basically a shared reference counted pointer with a mutex inside it, where the mutex is automatically shared or unique locked depending on the needs of the stage (Indicated with a MutRef<T> for a mutable reference and Ref<T> for a const reference, and plain Shared<T> for a non-locked handle)
+        (value: Shared<i32>) { // Thread safety of data is handled by the runtime, so pipeline stages are only called when all their requested data is available. Shared<T> is basically a shared reference counted pointer with a mutex inside it, where the mutex is automatically shared or unique locked depending on the needs of the stage (Indicated with a MutRef<T> for a mutable reference and Ref<T> for a const reference, and plain Shared<T> for a non-locked handle)
             value += 1
             let workers = start_foreach(pipe: (value: MutRef<i32>) // start one closure style pipeline for a range of values
                 [{
