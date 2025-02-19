@@ -4,7 +4,7 @@ include(FetchContent)
 project(BraneScript
         VERSION "0.2.0"
         DESCRIPTION "BraneScript"
-        HOMEPAGE_URL "https://github.com/wirewhiz/branescript"
+        HOMEPAGE_URL "https://github.com/BraneReality/branescript"
         LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -28,16 +28,16 @@ else()
     )
 endif()
 
+set(BUTILS_SOURCE_DIR ${CMAKE_SOURCE_DIR}/deps/BraneUtilities)
+FetchContent_Declare(
+    BraneUtilities
+    GIT_REPOSITORY https://github.com/BraneReality/BraneUtilities.git
+    GIT_TAG main
+    SOURCE_DIR ${BUTILS_SOURCE_DIR}
+)
+
 FetchContent_MakeAvailable(TreeSitterBraneScript)
-
-set(GRAMMAR_DIR ${treesitterbranescript_SOURCE_DIR})
-
-message("Grammar at ${GRAMMAR_DIR}")
-set(GRAMMAR_FILE "${GRAMMAR_DIR}/grammar.js")
-set(GRAMMAR_BUILD_DIR ${CMAKE_BINARY_DIR}/ts-branescript)
-set(GENERATE_PARSER_CMD tree-sitter generate -b ${GRAMMAR_FILE})
-set(PARSER_LIB_NAME parser${CMAKE_SHARED_LIBRARY_SUFFIX})
-set(BUILD_PARSER_CMD tree-sitter build -o ${GRAMMAR_BUILD_DIR}/${PARSER_LIB_NAME})
+FetchContent_MakeAvailable(BraneUtilities)
 
 if(MINGW)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -static -static-libgcc -static-libstdc++")

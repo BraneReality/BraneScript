@@ -6,12 +6,6 @@ Read more about why we're using a custom scripting system instead of a pre-exist
 
 ## Setup
 
-We use git submodules to bring in the TreeSitterBraneScript repo so we can edit and build it locally, so you'll need to periodically run:
-```bash
-git submodules update --init --recursive --remote
-```
-this command will both init submodules, and fetch the latest version if re-run
-
 You will need to install the tree-sitter cli, this can be done with npm or cargo.
 As tree-sitter also has a dependency on [nodejs](https://nodejs.org/en/download/package-manager), 
 it usually makes sense to use npm.
