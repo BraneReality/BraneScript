@@ -2,7 +2,8 @@
 // Created by WireWhiz on 10/28/2024.
 //
 
-#include "documentParser.h"
+// #include "parser.c"
+#include "tree_sitter/parser.h"
 
 #include <cassert>
 #include <charconv>
@@ -13,10 +14,12 @@
 #include <list>
 #include <memory>
 #include <stack>
-#include "parser/documentContext.h"
-#include "tree_sitter_branescript.h"
-#include <tree_sitter/api.h>
 
+#include "documentParser.h"
+#include "parser/documentContext.h"
+#include "parserEnums.h"
+#include "tree-sitter-branescript.h"
+#include <tree_sitter/api.h>
 
 #define Expect(node, _optional, _errorMessage)                                                                         \
     if(!_optional)                                                                                                     \

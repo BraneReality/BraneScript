@@ -8,7 +8,7 @@
 #include <iostream>
 #include <string>
 #include "parser/documentParser.h"
-#include "parser/tree_sitter_branescript.h"
+#include "tree-sitter-branescript.h"
 #include <string_view>
 
 #include "tree_sitter/api.h"
@@ -59,7 +59,7 @@ void print_tree(TSNode node, std::string_view source, int currentDepth = 0)
         if(field)
         {
             bool matches = ts_node_child_by_field_name(node, field, strlen(field)).id == child.id;
-            printf("field: \"%s\" matches epxected = %s", field, matches ? "true" : "false");
+            printf("field: \"%s\" matches expected = %s", field, matches ? "true" : "false");
             if(!matches)
                 printf("Was epxecting: %s", ts_node_type(ts_node_child_by_field_name(node, field, strlen(field))));
         }
