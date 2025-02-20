@@ -2,11 +2,11 @@ mod test {
     pipe add_multiple(start: i32, add1: i32, add2: i32) -> (count: f32) 
     [
         {
-            let value = start + add1;
+            let value : i32 = start + add1;
             continue(args: (value: value, add2: add2), deps: ());
         }
         (value: i32, add2: i32) {
-            let value = value + add2;
+            let value : i32 = value + add2;
             continue(args: (count: value));
         }
     ]
