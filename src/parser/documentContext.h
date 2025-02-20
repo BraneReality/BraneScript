@@ -414,7 +414,7 @@ namespace BraneScript
 
     struct CallContext : public ExpressionContext
     {
-        ScopedIdentifier id;
+        ExpressionContextNode callable;
         Node<AnonStructContext> args;
     };
 

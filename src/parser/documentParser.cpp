@@ -44,8 +44,11 @@ namespace BraneScript
                 result = inner;
                 return false;
             }
-            result = None();
-            return false;
+            else
+            {
+                result = None();
+                return false;
+            }
         }},
                           std::move(value));
     }
@@ -510,21 +513,12 @@ namespace BraneScript
             auto def = makeNode<VariableDefinitionContext>(root);
             auto scope = pushScope(def);
 
-            def->definedValue = makeNode<ValueContext>(root);
-
-            auto tsMut = getField(root, field_mut);
-            def->definedValue->isMut = tsMut.isSome();
-
-            auto tsIdNode = getField(root, field_id);
-            Expect(root, tsIdNode, "Expected Identifier!");
-            auto idNode = parseIdentifier(tsIdNode.value());
-            if(!idNode)
+            auto defField = getField(root, field_def);
+            Expect(root, defField, "Expected variable definition");
+            auto valueDef = parseValueDef(defField.value());
+            if(!valueDef)
                 return None();
-            def->definedValue->label = idNode;
-
-            auto tsTypeNode = getField(root, field_type);
-            if(tsTypeNode)
-                def->definedValue->type = parseType(tsTypeNode.value());
+            def->definedValue = valueDef.value();
 
             return Some(def);
         }
@@ -616,7 +610,7 @@ namespace BraneScript
 
         Option<Node<AnonStructTypeContext>> parseAnonStructType(TSNode root)
         {
-            if(!expectSymbol(root, sym_anonStruct))
+            if(!expectSymbol(root, sym_anonStructType))
                 return None();
 
             auto structDef = makeNode<AnonStructTypeContext>(root);
@@ -634,7 +628,7 @@ namespace BraneScript
 
         Option<Node<ValueContext>> parseValueDef(TSNode root)
         {
-            if(!expectSymbol(root, sym_anonStructType))
+            if(!expectSymbol(root, sym_valueDef))
                 return None();
 
             auto def = makeNode<ValueContext>(root);
@@ -675,7 +669,7 @@ namespace BraneScript
 
 
             auto outputType = getField(root, field_output);
-            if(outputType.isNone())
+            if(outputType)
             {
                 auto output = parseAnonStructType(outputType.value());
                 if(!output)
@@ -688,12 +682,26 @@ namespace BraneScript
 
         Option<Node<CallContext>> parseCall(TSNode root)
         {
-            auto range = nodeRange(root);
-            warningMessage(root,
-                           "Function calls not implemented yet! \n\"" +
-                               std::string(source.substr(range.start_byte, range.end_byte - range.start_byte)) +
-                               "\" will be ignored");
-            return None();
+            if(!expectSymbol(root, sym_call))
+                return None();
+            auto call = makeNode<CallContext>(root);
+
+            auto funcField = getField(root, field_func);
+            Expect(root, funcField, "Expected callable expression");
+            auto callable = parseExpression(funcField.value());
+            if(!callable)
+                return None();
+            call->callable = callable.value();
+
+            auto argsField = getField(root, field_args);
+            Expect(root, argsField, "Expected call args");
+            auto args = parseAnonStruct(argsField.value());
+            if(!args)
+                return None();
+            call->args = args.value();
+
+
+            return Some(call);
         }
 
         Option<Node<PipelineStageContext>> parsePipelineStage(TSNode root)
@@ -702,6 +710,15 @@ namespace BraneScript
                 return None();
             auto stage = makeNode<PipelineStageContext>(root);
             auto scope = pushScope(stage);
+
+            auto callSigField = getField(root, field_callSig);
+            if(callSigField)
+            {
+                auto callSig = parseCallSig(callSigField.value());
+                if(!callSig)
+                    return None();
+                stage->callSig = callSig.value();
+            }
 
             foreachNamedNodeChild(root, [&](TSNode node) {
                 auto expr = parseExpression(node);
@@ -735,6 +752,7 @@ namespace BraneScript
             auto callSig = parseCallSig(callSigField.value());
             if(!callSig)
                 return None();
+            pipe->callSig = callSig.value();
 
             auto tsStagesNode = getField(root, field_stages);
             Expect(root, tsStagesNode, "Pipeline must have at least one stage");
@@ -798,7 +816,8 @@ namespace BraneScript
             TSNode root = ts_tree_root_node(tree);
 
             foreachNodeChild(root, [&](TSNode node) {
-                auto newMod = parseModule(node);
+                Option<Node<ModuleContext>> newMod;
+                newMod = parseModule(node);
                 if(newMod)
                     doc->modules.insert({newMod.value()->identifier->text, newMod.value()});
             });
