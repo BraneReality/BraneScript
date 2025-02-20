@@ -3,11 +3,11 @@
 
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 #include "../types/valueType.h"
+#include "enums/option.h"
 #include <tree_sitter/api.h>
 #include <unordered_map>
 
@@ -34,12 +34,13 @@ namespace BraneScript
     struct VariableDefinitionContext;
     struct AssignmentContext;
     struct BlockContext;
-    struct SinkListContext;
-    struct SourceListContext;
+    struct AnonStructContext;
+    struct AnonStructTypeContext;
     struct CallContext;
+    struct CallSigContext;
     struct PipelineStageContext;
     struct AsyncExpressionContext;
-    struct SinkDefContext;
+    struct MemberInitContext;
     struct FunctionContext;
     struct PipelineContext;
     struct ModuleContext;
@@ -53,12 +54,13 @@ namespace BraneScript
                                          Node<VariableDefinitionContext>,
                                          Node<AssignmentContext>,
                                          Node<BlockContext>,
-                                         Node<SinkListContext>,
-                                         Node<SourceListContext>,
+                                         Node<AnonStructContext>,
+                                         Node<AnonStructTypeContext>,
                                          Node<CallContext>,
+                                         Node<CallSigContext>,
                                          Node<AsyncExpressionContext>,
                                          Node<PipelineStageContext>,
-                                         Node<SinkDefContext>,
+                                         Node<MemberInitContext>,
                                          Node<FunctionContext>,
                                          Node<PipelineContext>,
                                          Node<ModuleContext>,
@@ -73,31 +75,31 @@ namespace BraneScript
     struct TextContext : public std::enable_shared_from_this<TextContext>
     {
         TSRange range;
-        std::optional<std::weak_ptr<TextContext>> parent;
+        Option<std::weak_ptr<TextContext>> parent;
 
         virtual ~TextContext() = default;
-        virtual std::optional<TextContextNode> getNodeAtChar(TSPoint pos);
-        virtual std::optional<TextContextNode> findIdentifier(std::string_view identifier);
-        virtual std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions);
+        virtual Option<TextContextNode> getNodeAtChar(TSPoint pos);
+        virtual Option<TextContextNode> findIdentifier(std::string_view identifier);
+        virtual Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions);
         virtual std::string longId() const;
 
         template<typename T>
-        std::optional<Node<T>> as()
+        Option<Node<T>> as()
         {
             static_assert(std::is_base_of<TextContext, T>::value, "T must be a subclass of DocumentContext");
             auto* r = std::dynamic_pointer_cast<T>(shared_from_this());
             if(!r)
-                return std::nullopt;
+                return None();
             return r;
         }
 
         template<typename T>
-        std::optional<Node<T>> as() const
+        Option<Node<T>> as() const
         {
             static_assert(std::is_base_of<TextContext, T>::value, "T must be a subclass of DocumentContext");
             auto* r = std::dynamic_pointer_cast<T>(shared_from_this());
             if(!r)
-                return std::nullopt;
+                return None();
             return r;
         }
 
@@ -108,18 +110,18 @@ namespace BraneScript
         }
 
         template<typename T>
-        std::optional<Node<T>> getParent() const
+        Option<Node<T>> getParent() const
         {
             if(!parent)
-                return std::nullopt;
-            if(auto p = parent->lock())
+                return None();
+            if(auto p = parent.value().lock())
             {
                 auto pt = p->as<T>();
                 if(pt)
                     return pt;
                 return p->getParent<T>();
             }
-            return std::nullopt;
+            return None();
         }
 
         template<typename T>
@@ -164,8 +166,8 @@ namespace BraneScript
     struct ValueContext : public TextContext
     {
         // What data does this value store
-        std::optional<Node<Identifier>> label;
-        std::optional<Node<TypeContext>> type;
+        Option<Node<Identifier>> label;
+        Option<Node<TypeContext>> type;
 
         // Is stored on the heap or the stack, instead of being a temporary value holder
         bool isLValue = false;
@@ -261,11 +263,20 @@ namespace BraneScript
         std::vector<Node<ValueContext>> localVariables;
         std::vector<ExpressionContextNode> expressions;
 
-        virtual std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions);
+        virtual Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions);
+    };
+
+    struct CallSigContext : public TextContext
+    {
+        Node<AnonStructTypeContext> input;
+        Node<AnonStructTypeContext> output;
+        std::string longId() const override;
     };
 
     struct PipelineStageContext : public TextContext
     {
+        Option<Node<Identifier>> identifier;
+        Node<CallSigContext> callSig;
         std::vector<Node<ValueContext>> localVariables;
         std::vector<ExpressionContextNode> expressions;
         std::vector<Node<AsyncExpressionContext>> asyncExpressions;
@@ -385,44 +396,36 @@ namespace BraneScript
         std::vector<ExpressionContextNode> expressions;
     };
 
-    struct SourceListContext : public TextContext
+    struct AnonStructTypeContext : public TextContext
     {
-        NodeList<ValueContext> defs;
+        NodeList<ValueContext> members;
     };
 
-    struct SinkDefContext : public TextContext
+    struct MemberInitContext : public TextContext
     {
         Node<Identifier> id;
         ExpressionContextNode expression;
     };
 
-    struct SinkListContext : public TextContext
+    struct AnonStructContext : public TextContext
     {
-        NodeList<SinkDefContext> values;
+        NodeList<MemberInitContext> members;
     };
 
     struct CallContext : public ExpressionContext
     {
         ScopedIdentifier id;
-        std::vector<ExpressionContextNode> arguments;
-        std::vector<ExpressionContextNode> outputs;
-    };
-
-    struct FunctionDescriptionContext : public TextContext
-    {
-        Identifier identifier;
-        Node<SourceListContext> sources;
-        Node<SinkListContext> sinks;
-        std::string longId() const override;
+        Node<AnonStructContext> args;
     };
 
     struct FunctionContext : public TextContext
     {
-        FunctionDescriptionContext description;
+        Identifier identifier;
+        CallSigContext callSig;
 
         Node<ScopeContext> body;
 
-        std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
         std::string longId() const override;
         std::string signature() const;
     };
@@ -436,14 +439,14 @@ namespace BraneScript
 
     struct TraitContext : public TextContext
     {
-        Identifier identifier;
-        NodeList<FunctionDescriptionContext> methods;
+        Node<Identifier> identifier;
+        NodeList<CallSigContext> methods;
         std::string longId() const override;
     };
 
     struct TraitImplContext : public ImplContext
     {
-        Identifier trait;
+        Node<Identifier> trait;
         Node<TypeContext> type;
         std::string longId() const override;
     };
@@ -452,12 +455,11 @@ namespace BraneScript
     {
         Node<Identifier> identifier;
         // Arguments
-        Node<SourceListContext> sources;
-        Node<SinkListContext> sinks;
+        Node<CallSigContext> callSig;
 
         NodeList<PipelineStageContext> stages;
 
-        std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
         std::string longId() const override;
         std::string argSig() const;
         std::string signature() const;
@@ -465,14 +467,14 @@ namespace BraneScript
 
     struct StructContext : public TextContext
     {
-        Identifier identifier;
+        Node<Identifier> identifier;
 
         NodeList<ValueContext> variables;
         NodeList<FunctionContext> functions;
         bool packed = false;
 
-        std::optional<TextContextNode> getNodeAtChar(TSPoint pos) override;
-        std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> getNodeAtChar(TSPoint pos) override;
+        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
         std::string longId() const override;
     };
 
@@ -483,8 +485,8 @@ namespace BraneScript
         NodeList<FunctionContext> functions;
         NodeList<PipelineContext> pipelines;
 
-        std::optional<TextContextNode> getNodeAtChar(TSPoint pos) override;
-        std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> getNodeAtChar(TSPoint pos) override;
+        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
         std::string longId() const override;
     };
 
@@ -493,8 +495,8 @@ namespace BraneScript
         std::filesystem::path source;
         LabeledNodeMap<ModuleContext> modules;
 
-        std::optional<TextContextNode> getNodeAtChar(TSPoint pos) override;
-        std::optional<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> getNodeAtChar(TSPoint pos) override;
+        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
     };
 } // namespace BraneScript
 

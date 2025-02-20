@@ -21,13 +21,19 @@ install(TARGETS BraneScriptCli
         "api-ms-.*" "ext-ms-.*"  # Windows system DLLs
         "^/lib.*"                # Linux system libraries
         "^/usr/lib.*"
-    POST_EXCLUDE_REGEXES 
+    POST_EXCLUDE_REGEXES
+        "libgcc_s_seh-1\\.dll"
+        "libstdc++-6\\.dll" 
         ".*system32/.*\\.dll"    # Windows system directory
         "^/lib64/.*"            # Linux system directories
         "^/usr/lib64/.*"
     DESTINATION .
     COMPONENT cli)
 
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/BraneScriptCli.pdb 
+        DESTINATION .
+        COMPONENT cli
+        OPTIONAL)
 install(FILES ${treesitterbranescript_BINARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}tree-sitter-branescript${CMAKE_SHARED_LIBRARY_SUFFIX}
     DESTINATION .
     COMPONENT cli)
