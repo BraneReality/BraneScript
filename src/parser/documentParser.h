@@ -8,7 +8,7 @@
 #include <expected>
 #include <memory>
 #include <string>
-#include "parser/documentContext.h"
+#include "documentContext.h"
 #include <tree_sitter/api.h>
 
 namespace BraneScript
@@ -54,7 +54,7 @@ namespace BraneScript
         std::string _source;
         std::shared_ptr<BraneScriptParser> _parser;
 
-        std::optional<ParserResult<DocumentContext>> _cachedResult;
+        Option<ParserResult<DocumentContext>> _cachedResult;
 
       public:
         ParsedDocument(std::filesystem::path path, std::string source, std::shared_ptr<BraneScriptParser> parser);

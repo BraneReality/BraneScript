@@ -2,9 +2,6 @@
 // Created by WireWhiz on 10/28/2024.
 //
 
-// #include "parser.c"
-#include "tree_sitter/parser.h"
-
 #include <cassert>
 #include <charconv>
 #include <expected>
@@ -16,6 +13,8 @@
 #include <stack>
 
 #include "documentParser.h"
+#include "enums/matchv.h"
+#include "enums/option.h"
 #include "parser/documentContext.h"
 #include "parserEnums.h"
 #include "tree-sitter-branescript.h"
@@ -25,7 +24,7 @@
     if(!_optional)                                                                                                     \
     {                                                                                                                  \
         errorMessage(node, _errorMessage);                                                                             \
-        return std::nullopt;                                                                                           \
+        return None();                                                                                                 \
     }
 
 namespace BraneScript
@@ -37,7 +36,7 @@ namespace BraneScript
     };
 
     template<class... V1, class... V2>
-    bool tryCastVariant(std::variant<V1...> value, std::optional<std::variant<V2...>>& result)
+    bool tryCastVariant(std::variant<V1...> value, Option<std::variant<V2...>>& result)
     {
         return std::visit(overloads{[&](auto&& inner) -> bool {
             if constexpr(((std::is_same_v<decltype(inner), V2>) || ...))
@@ -45,40 +44,11 @@ namespace BraneScript
                 result = inner;
                 return false;
             }
-            result = std::nullopt;
+            result = None();
             return false;
         }},
                           std::move(value));
     }
-
-    enum class TSNodeType : uint16_t
-    {
-        Unknown = 0,
-        Number,
-        Identifier,
-        ScopedIdentifier,
-        Type,
-        TemplateArgument,
-        TemplateArguments,
-        Add,
-        Sub,
-        Mul,
-        Div,
-        Assign,
-        Block,
-        VariableDefinition,
-        SinkDef,
-        SinkList,
-        SourceDef,
-        SourceList,
-        Call,
-        PipelineStage,
-        AsyncOperation,
-        Function,
-        Pipeline,
-        Module,
-        SourceFile
-    };
 
     void foreachNodeChild(TSNode node, const std::function<void(TSNode)>& f)
     {
@@ -104,156 +74,25 @@ namespace BraneScript
         return ts_language_symbol_name(tree_sitter_branescript(), ts_node_symbol(node));
     }
 
-    class TSSymbolLookupTable
+    std::string_view symbolToName(ts_symbol_identifiers symbolId)
     {
-      private:
-        std::vector<TSNodeType> symbolToNodeType;
-        std::vector<TSSymbol> nodeTypeToSymbol;
-
-        void add_entry(const TSLanguage* lang, std::string_view ident, TSNodeType nodeType)
-        {
-            auto symbol = ts_language_symbol_for_name(lang, ident.data(), ident.size(), true);
-            if(symbol >= symbolToNodeType.size())
-                symbolToNodeType.resize(symbol + 1, (TSNodeType)UINT16_MAX);
-            if((uint16_t)nodeType >= nodeTypeToSymbol.size())
-                nodeTypeToSymbol.resize((uint16_t)nodeType + 1, (TSSymbol)UINT16_MAX);
-            symbolToNodeType[symbol] = nodeType;
-            nodeTypeToSymbol[(uint16_t)nodeType] = symbol;
-        }
-
-      public:
-        TSSymbolLookupTable(const TSLanguage* lang)
-        {
-            add_entry(lang, "number", TSNodeType::Number);
-            add_entry(lang, "module", TSNodeType::Module);
-            add_entry(lang, "identifier", TSNodeType::Identifier);
-            add_entry(lang, "scopedIdentifier", TSNodeType::ScopedIdentifier);
-            add_entry(lang, "type", TSNodeType::Type);
-            add_entry(lang, "templateArgument", TSNodeType::TemplateArgument);
-            add_entry(lang, "templateArguments", TSNodeType::TemplateArguments);
-            add_entry(lang, "add", TSNodeType::Add);
-            add_entry(lang, "sub", TSNodeType::Sub);
-            add_entry(lang, "mul", TSNodeType::Mul);
-            add_entry(lang, "div", TSNodeType::Div);
-            add_entry(lang, "assign", TSNodeType::Assign);
-            add_entry(lang, "block", TSNodeType::Block);
-            add_entry(lang, "variableDefinition", TSNodeType::VariableDefinition);
-            add_entry(lang, "sinkDef", TSNodeType::SinkDef);
-            add_entry(lang, "sinkList", TSNodeType::SinkList);
-            add_entry(lang, "sourceDef", TSNodeType::SourceDef);
-            add_entry(lang, "sourceList", TSNodeType::SourceList);
-            add_entry(lang, "call", TSNodeType::Call);
-            add_entry(lang, "pipelineStage", TSNodeType::PipelineStage);
-            add_entry(lang, "asyncOperation", TSNodeType::AsyncOperation);
-            add_entry(lang, "function", TSNodeType::Function);
-            add_entry(lang, "pipeline", TSNodeType::Pipeline);
-            add_entry(lang, "sourceFile", TSNodeType::SourceFile);
-        }
-
-        std::optional<TSNodeType> tryToNodeType(TSSymbol symbol) const
-        {
-            if(symbol > symbolToNodeType.size())
-                return std::nullopt;
-            auto nodeType = symbolToNodeType[symbol];
-            return (uint16_t)nodeType == UINT16_MAX ? std::nullopt : std::make_optional(nodeType);
-        }
-
-        std::optional<TSSymbol> tryToSymbol(TSNodeType nodeType) const
-        {
-            if((uint16_t)nodeType > nodeTypeToSymbol.size())
-                return std::nullopt;
-            auto symbol = nodeTypeToSymbol[(uint16_t)nodeType];
-            return symbol == UINT16_MAX ? std::nullopt : std::make_optional(symbol);
-        }
-    };
-
-    enum class TSFieldName : uint16_t
-    {
-        Id = 0,
-        Child,
-        Type,
-        Value,
-        Mut,
-        Defs,
-        Left,
-        Right,
-        Sources,
-        Sinks,
-        Stages,
-        TemplateArgs,
-    };
-
-    class TSFieldLookupTable
-    {
-      private:
-        std::vector<TSFieldId> _fieldIds;
-
-        void add_entry(const TSLanguage* lang, std::string_view textName, TSFieldName fieldName)
-        {
-            auto fID = ts_language_field_id_for_name(lang, textName.data(), textName.size());
-
-            if((uint16_t)fieldName >= _fieldIds.size())
-                _fieldIds.resize((uint16_t)fieldName + 1, (TSFieldId)0);
-            _fieldIds[(uint16_t)fieldName] = fID;
-        }
-
-      public:
-        TSFieldLookupTable(const TSLanguage* lang)
-        {
-            add_entry(lang, "id", TSFieldName::Id);
-            add_entry(lang, "child", TSFieldName::Child);
-            add_entry(lang, "type", TSFieldName::Type);
-            add_entry(lang, "value", TSFieldName::Value);
-            add_entry(lang, "mut", TSFieldName::Mut);
-            add_entry(lang, "defs", TSFieldName::Defs);
-            add_entry(lang, "left", TSFieldName::Left);
-            add_entry(lang, "right", TSFieldName::Right);
-            add_entry(lang, "sinks", TSFieldName::Sinks);
-            add_entry(lang, "sources", TSFieldName::Sources);
-            add_entry(lang, "stages", TSFieldName::Stages);
-            add_entry(lang, "templateArgs", TSFieldName::TemplateArgs);
-        }
-
-        TSFieldId get(TSFieldName name) const
-        {
-            assert((uint16_t)name < _fieldIds.size() && "Make sure all fields are defined in the constructor");
-            return _fieldIds[(uint16_t)name];
-        }
-    };
-
-    const TSSymbolLookupTable symbolLookupTable = TSSymbolLookupTable(tree_sitter_branescript());
-    const TSFieldLookupTable fieldLookupTable = TSFieldLookupTable(tree_sitter_branescript());
-
-    std::string_view typeToName(TSNodeType type)
-    {
-        auto symbol = symbolLookupTable.tryToSymbol(type);
-        if(!symbol)
-            return "Unknown";
-        return ts_language_symbol_name(tree_sitter_branescript(), symbol.value());
+        return ts_language_symbol_name(tree_sitter_branescript(), symbolId);
     }
 
-    TSNodeType nodeType(TSNode node)
+    template<ts_symbol_identifiers... Types>
+    bool nodeIsSymbol(TSNode node)
     {
-        auto nodeType = symbolLookupTable.tryToNodeType(ts_node_symbol(node));
-        if(!nodeType)
-            return TSNodeType::Unknown;
-        return *nodeType;
-    }
-
-    template<TSNodeType... Types>
-    bool nodeIsType(TSNode node)
-    {
-        auto nt = nodeType(node);
+        auto nt = ts_node_symbol(node);
         return ((nt == Types) || ...);
     }
 
-    template<TSNodeType... Types>
-    void advanceWhileType(TSNode node, const std::function<void(TSNode)>& f)
+    template<ts_symbol_identifiers... Types>
+    void advanceWhileSymbol(TSNode node, const std::function<void(TSNode)>& f)
     {
         bool nodeIsCorrectType = true;
         if(!ts_node_is_named(node))
             node = ts_node_next_named_sibling(node);
-        while(!ts_node_is_null(node) && nodeIsType<Types...>(node))
+        while(!ts_node_is_null(node) && nodeIsSymbol<Types...>(node))
         {
             f(node);
             node = ts_node_next_named_sibling(node);
@@ -294,11 +133,11 @@ namespace BraneScript
 
         std::list<Node<TextContext>> scopes;
 
-        std::optional<Node<TextContext>> currentScope()
+        Option<Node<TextContext>> currentScope()
         {
             if(scopes.empty())
-                return std::nullopt;
-            return scopes.back();
+                return None();
+            return Some(scopes.back());
         }
 
         ScopedScope pushScope(Node<TextContext> node)
@@ -327,29 +166,29 @@ namespace BraneScript
             messages.emplace_back(MessageType::Error, nodeRange(ctx), std::move(message));
         }
 
-        std::optional<TSNode> getField(TSNode node, TSFieldName field)
+        Option<TSNode> getField(TSNode node, ts_field_identifiers field)
         {
-            auto result = ts_node_child_by_field_id(node, fieldLookupTable.get(field));
+            auto result = ts_node_child_by_field_id(node, field);
             if(ts_node_is_null(result))
-                return std::nullopt;
-            return result;
+                return None();
+            return Some(result);
         }
 
-        bool expectNode(TSNode node, TSNodeType type)
+        bool expectSymbol(TSNode node, ts_symbol_identifiers type)
         {
-            auto nodeType = symbolLookupTable.tryToNodeType(ts_node_symbol(node));
+            auto nodeType = ts_node_symbol(node);
             if(nodeType && type == nodeType)
                 return true;
 
             std::string message =
-                std::format("Was expecting \"{}\" but found \"{}\" \n", typeToName(type), nodeText(node));
+                std::format("Was expecting \"{}\" but found \"{}\" \n", symbolToName(type), nodeText(node));
             errorMessage(node, message);
             return false;
         }
 
-        bool expectField(TSNode node, const std::vector<TSNodeType>& types)
+        bool expectField(TSNode node, const std::vector<ts_symbol_identifiers>& types)
         {
-            auto nodeType = symbolLookupTable.tryToNodeType(ts_node_symbol(node));
+            auto nodeType = ts_node_symbol(node);
             if(nodeType)
             {
                 for(auto t : types)
@@ -362,7 +201,7 @@ namespace BraneScript
             std::string message =
                 std::format("Found \"{}\", but was expecting one of the following:\n", nodeText(node));
             for(auto t : types)
-                message += std::format("{}\n", typeToName(t));
+                message += std::format("{}\n", symbolToName(t));
             errorMessage(node, message);
             return false;
         }
@@ -386,131 +225,127 @@ namespace BraneScript
             return new_node;
         }
 
-        std::optional<TextContextNode> parse(TSNode node)
+        Option<TextContextNode> parse(TSNode node)
         {
-            switch(nodeType(node))
+            switch((ts_symbol_identifiers)ts_node_symbol(node))
             {
-                case TSNodeType::SourceFile:
+                case sym_source_file:
                     assert(false && "Cannot call parse on root node!");
-                    return std::nullopt;
-                case TSNodeType::Module:
+                    return None();
+                case sym_module:
                     return parseModule(node);
-                case TSNodeType::Pipeline:
+                case sym_pipeline:
                     return parsePipeline(node);
-                case TSNodeType::Function:
+                case sym_function:
                     return parseFunction(node);
-                case TSNodeType::PipelineStage:
+                case sym_pipelineStage:
                     return parsePipelineStage(node);
-                case TSNodeType::AsyncOperation:
-                    return parseAsyncOperation(node);
-                case TSNodeType::Call:
+                case sym_callSig:
+                    return parseCallSig(node);
+                case sym_call:
                     return parseCall(node);
-                case TSNodeType::SourceList:
-                    return parseSourceList(node);
-                case TSNodeType::SinkList:
-                    return parseSinkList(node);
-                case TSNodeType::VariableDefinition:
+                case sym_anonStruct:
+                    return parseAnonStruct(node);
+                case sym_variableDefinition:
                     return parseVariableDefinition(node);
-                case TSNodeType::Block:
+                case sym_block:
                     return parseBlock(node);
-                case TSNodeType::Assign:
+                case sym_assign:
                     return parseAssign(node);
-                case TSNodeType::Div:
+                case sym_div:
                     return parseDiv(node);
-                case TSNodeType::Mul:
+                case sym_mul:
                     return parseMul(node);
-                case TSNodeType::Sub:
+                case sym_sub:
                     return parseSub(node);
-                case TSNodeType::Add:
+                case sym_add:
                     return parseAdd(node);
-                /*case TSNodeType::TemplateArguments:
-                    return parseTemplateArguments(node);
-                case TSNodeType::TemplateArgument:
-                    return parseTemplateArgument(node);*/
-                case TSNodeType::Type:
+                case sym_type:
                     return parseType(node);
-                case TSNodeType::ScopedIdentifier:
+                case sym_scopedIdentifier:
                     return parseScopedIdentifier(node);
-                case TSNodeType::Identifier:
+                case sym_identifier:
                     return parseIdentifier(node);
-                case TSNodeType::Number:
+                case sym_valueDef:
+                    return parseValueDef(node);
+                case sym_number:
                     return parseNumber(node);
-                case TSNodeType::SourceDef:
-                    return parseSourceDef(node);
-                case TSNodeType::SinkDef:
-                    return parseSinkDef(node);
-                case TSNodeType::Unknown:
+                case sym_anonStructType:
+                    return parseAnonStructType(node);
                 default:
                     if(ts_node_has_error(node))
                     {
                         errorMessage(node, std::format("Unexpected \"{}\"", nodeText(node)));
-                        return std::nullopt;
+                        return None();
                     }
-                    std::cout << "Unknown TSNode type for: " << nodeText(node) << std::endl;
-                    assert(false && "TSNodeType unhandled!");
-                    return std::nullopt;
+                    std::cout << std::format("Parser not implemented for symbol {} could not parse \"{}\"",
+                                             nodeName(node),
+                                             nodeText(node))
+                              << std::endl;
+                    return None();
             }
         }
 
-        std::optional<ExpressionContextNode> parseExpression(TSNode node)
+        Option<ExpressionContextNode> parseExpression(TSNode node)
         {
             auto parsed = parse(node);
             if(!parsed)
-                return std::nullopt;
+                return None();
 
-            std::optional<ExpressionContextNode> out;
-            tryCastVariant(*parsed, out);
+            Option<ExpressionContextNode> out;
+            tryCastVariant(parsed.value(), out);
             return out;
         }
 
-        std::optional<Node<ConstValueContext>> parseNumber(TSNode root)
+        Option<Node<ConstValueContext>> parseNumber(TSNode root)
         {
             std::string_view text = nodeText(root);
             float value;
-            auto [ptr, res] = std::from_chars(text.data(), text.data() + text.size(), value);
-            if(res == std::errc())
-            {
-                errorMessage(root, std::format("Error parsing float: {}", std::make_error_code(res).message()));
-                return std::nullopt;
-            }
+            /*auto [ptr, res] = std::from_chars(text.data(), text.data() + text.size(), value);*/
+            /*if(res == std::errc())*/
+            /*{*/
+            /*    errorMessage(root, std::format("Error parsing float: {}", std::make_error_code(res).message()));*/
+            /*    return None();*/
+            /*}*/
+            value = std::stof((std::string)text);
             auto constNode = makeNode<ConstValueContext>(root);
             constNode->value = value;
-            return constNode;
+            return Some(constNode);
         }
 
-        std::optional<Node<Identifier>> parseIdentifier(TSNode root)
+        Option<Node<Identifier>> parseIdentifier(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Identifier))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_identifier))
+                return None();
             auto ident = makeNode<Identifier>(root);
             ident->text = nodeText(root);
-            return ident;
+            return Some(ident);
         }
 
-        std::optional<Node<ScopedIdentifier>> parseScopedIdentifier(TSNode root)
+        Option<Node<ScopedIdentifier>> parseScopedIdentifier(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::ScopedIdentifier))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_scopedIdentifier))
+                return None();
             auto scopedId = makeNode<ScopedIdentifier>(root);
             auto scope = pushScope(scopedId);
             foreachNamedNodeChild(root, [&](TSNode ident) {
                 auto id = parseIdentifier(ident);
                 if(!id)
                     return;
-                scopedId->scopes.emplace_back(*id);
+                scopedId->scopes.emplace_back(id.value());
             });
             if(scopedId->scopes.empty())
             {
                 errorMessage(root, "Expected Identifier!");
-                return std::nullopt;
+                return None();
             }
-            return scopedId;
+            return Some(scopedId);
         }
 
-        std::optional<Node<TypeContext>> parseType(TSNode root)
+        Option<Node<TypeContext>> parseType(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Type))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_type))
+                return None();
 
             auto type = makeNode<TypeContext>(root);
             auto scope = pushScope(type);
@@ -556,172 +391,172 @@ namespace BraneScript
             if(!type->baseType)
             {
                 errorMessage(root, "Missing identifier");
-                return std::nullopt;
+                return None();
             }
 
-            return type;
+            return Some(type);
         }
 
-        // std::optional<Node<TemplateArgsContext>> parseTemplateArguments(TSNode root);
-        // std::optional<Node<TemplateArgContext>> parseTemplateArgument(TSNode root);
-        std::optional<Node<BinaryOperatorContext>> parseAdd(TSNode root)
+        // Option<Node<TemplateArgsContext>> parseTemplateArguments(TSNode root);
+        // Option<Node<TemplateArgContext>> parseTemplateArgument(TSNode root);
+        Option<Node<BinaryOperatorContext>> parseAdd(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Add))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_add))
+                return None();
             auto opr = makeNode<BinaryOperatorContext>(root);
             auto scope = pushScope(opr);
 
             opr->opType = BinaryOperator::Add;
 
-            auto tsLeft = getField(root, TSFieldName::Left);
+            auto tsLeft = getField(root, field_left);
             Expect(root, tsLeft, "Expected lvalue");
-            auto leftNode = parseExpression(*tsLeft);
+            auto leftNode = parseExpression(tsLeft.value());
             if(!leftNode)
-                return std::nullopt;
-            opr->left = *leftNode;
+                return None();
+            opr->left = leftNode.value();
 
-            auto tsRight = getField(root, TSFieldName::Left);
+            auto tsRight = getField(root, field_left);
             Expect(root, tsRight, "Expected rvalue");
-            auto rightNode = parseExpression(*tsRight);
+            auto rightNode = parseExpression(tsRight.value());
             if(!rightNode)
-                return std::nullopt;
-            opr->right = *rightNode;
+                return None();
+            opr->right = rightNode.value();
 
-            return opr;
+            return Some(opr);
         }
 
-        std::optional<Node<BinaryOperatorContext>> parseSub(TSNode root)
+        Option<Node<BinaryOperatorContext>> parseSub(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Sub))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_sub))
+                return None();
             auto opr = makeNode<BinaryOperatorContext>(root);
             auto scope = pushScope(opr);
 
             opr->opType = BinaryOperator::Sub;
 
-            auto tsLeft = getField(root, TSFieldName::Left);
+            auto tsLeft = getField(root, field_left);
             Expect(root, tsLeft, "Expected lvalue");
-            auto leftNode = parseExpression(*tsLeft);
+            auto leftNode = parseExpression(tsLeft.value());
             if(!leftNode)
-                return std::nullopt;
-            opr->left = *leftNode;
+                return None();
+            opr->left = leftNode.value();
 
-            auto tsRight = getField(root, TSFieldName::Left);
+            auto tsRight = getField(root, field_left);
             Expect(root, tsRight, "Expected rvalue");
-            auto rightNode = parseExpression(*tsRight);
+            auto rightNode = parseExpression(tsRight.value());
             if(!rightNode)
-                return std::nullopt;
-            opr->right = *rightNode;
+                return None();
+            opr->right = rightNode.value();
 
-            return opr;
+            return Some(opr);
         }
 
-        std::optional<Node<BinaryOperatorContext>> parseMul(TSNode root)
+        Option<Node<BinaryOperatorContext>> parseMul(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Mul))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_mul))
+                return None();
             auto opr = makeNode<BinaryOperatorContext>(root);
             auto scope = pushScope(opr);
 
             opr->opType = BinaryOperator::Mul;
 
-            auto tsLeft = getField(root, TSFieldName::Left);
+            auto tsLeft = getField(root, field_left);
             Expect(root, tsLeft, "Expected lvalue");
-            auto leftNode = parseExpression(*tsLeft);
+            auto leftNode = parseExpression(tsLeft.value());
             if(!leftNode)
-                return std::nullopt;
-            opr->left = *leftNode;
+                return None();
+            opr->left = leftNode.value();
 
-            auto tsRight = getField(root, TSFieldName::Left);
+            auto tsRight = getField(root, field_left);
             Expect(root, tsRight, "Expected rvalue");
-            auto rightNode = parseExpression(*tsRight);
+            auto rightNode = parseExpression(tsRight.value());
             if(!rightNode)
-                return std::nullopt;
-            opr->right = *rightNode;
+                return None();
+            opr->right = rightNode.value();
 
-            return opr;
+            return Some(opr);
         }
 
-        std::optional<Node<BinaryOperatorContext>> parseDiv(TSNode root)
+        Option<Node<BinaryOperatorContext>> parseDiv(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Div))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_div))
+                return None();
             auto opr = makeNode<BinaryOperatorContext>(root);
             auto scope = pushScope(opr);
 
             opr->opType = BinaryOperator::Div;
 
-            auto tsLeft = getField(root, TSFieldName::Left);
+            auto tsLeft = getField(root, field_left);
             Expect(root, tsLeft, "Expected lvalue");
-            auto leftNode = parseExpression(*tsLeft);
+            auto leftNode = parseExpression(tsLeft.value());
             if(!leftNode)
-                return std::nullopt;
-            opr->left = *leftNode;
+                return None();
+            opr->left = leftNode.value();
 
-            auto tsRight = getField(root, TSFieldName::Left);
+            auto tsRight = getField(root, field_left);
             Expect(root, tsRight, "Expected rvalue");
-            auto rightNode = parseExpression(*tsRight);
+            auto rightNode = parseExpression(tsRight.value());
             if(!rightNode)
-                return std::nullopt;
-            opr->right = *rightNode;
+                return None();
+            opr->right = rightNode.value();
 
-            return opr;
+            return Some(opr);
         }
 
-        std::optional<Node<VariableDefinitionContext>> parseVariableDefinition(TSNode root)
+        Option<Node<VariableDefinitionContext>> parseVariableDefinition(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::VariableDefinition))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_variableDefinition))
+                return None();
             auto def = makeNode<VariableDefinitionContext>(root);
             auto scope = pushScope(def);
 
             def->definedValue = makeNode<ValueContext>(root);
 
-            auto tsMut = getField(root, TSFieldName::Mut);
-            def->definedValue->isMut = tsMut.has_value();
+            auto tsMut = getField(root, field_mut);
+            def->definedValue->isMut = tsMut.isSome();
 
-            auto tsIdNode = getField(root, TSFieldName::Id);
+            auto tsIdNode = getField(root, field_id);
             Expect(root, tsIdNode, "Expected Identifier!");
-            auto idNode = parseIdentifier(*tsIdNode);
+            auto idNode = parseIdentifier(tsIdNode.value());
             if(!idNode)
-                return std::nullopt;
+                return None();
             def->definedValue->label = idNode;
 
-            auto tsTypeNode = getField(root, TSFieldName::Type);
+            auto tsTypeNode = getField(root, field_type);
             if(tsTypeNode)
-                def->definedValue->type = parseType(*tsTypeNode);
+                def->definedValue->type = parseType(tsTypeNode.value());
 
-            return def;
+            return Some(def);
         }
 
-        std::optional<Node<AssignmentContext>> parseAssign(TSNode root)
+        Option<Node<AssignmentContext>> parseAssign(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Assign))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_assign))
+                return None();
             auto assign = makeNode<AssignmentContext>(root);
             auto scope = pushScope(assign);
 
-            auto tsLeft = getField(root, TSFieldName::Left);
+            auto tsLeft = getField(root, field_left);
             Expect(root, tsLeft, "Expected lvalue");
-            auto leftNode = parseExpression(*tsLeft);
+            auto leftNode = parseExpression(tsLeft.value());
             if(!leftNode)
-                return std::nullopt;
-            assign->lValue = *leftNode;
+                return None();
+            assign->lValue = leftNode.value();
 
-            auto tsRight = getField(root, TSFieldName::Left);
+            auto tsRight = getField(root, field_right);
             Expect(root, tsRight, "Expected rvalue");
-            auto rightNode = parseExpression(*tsRight);
+            auto rightNode = parseExpression(tsRight.value());
             if(!rightNode)
-                return std::nullopt;
-            assign->rValue = *rightNode;
+                return None();
+            assign->rValue = rightNode.value();
 
-            return assign;
+            return Some(assign);
         }
 
-        std::optional<Node<BlockContext>> parseBlock(TSNode root)
+        Option<Node<BlockContext>> parseBlock(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::AsyncOperation))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_block))
+                return None();
             auto block = makeNode<BlockContext>(root);
             auto scope = pushScope(block);
 
@@ -729,113 +564,142 @@ namespace BraneScript
                 auto expr = parseExpression(node);
                 if(!expr)
                     return;
-                block->expressions.push_back(*expr);
+                block->expressions.push_back(expr.value());
             });
 
-            return block;
+            return Some(block);
         }
 
-        std::optional<Node<SinkDefContext>> parseSinkDef(TSNode root)
+        Option<Node<MemberInitContext>> parseMemberInit(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::SinkDef))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_memberInit))
+                return None();
 
-            auto def = makeNode<SinkDefContext>(root);
-            auto scope = pushScope(def);
+            auto member = makeNode<MemberInitContext>(root);
 
-            auto tsIdNode = getField(root, TSFieldName::Id);
-            Expect(root, tsIdNode, "Expected Identifier");
-            auto idNode = parseIdentifier(*tsIdNode);
-            if(!idNode)
-                return std::nullopt;
-            def->id = *idNode;
+            auto idField = getField(root, field_id);
+            Expect(root, idField, "Expected identifier");
 
-            auto tsValueNode = getField(root, TSFieldName::Value);
-            Expect(root, tsValueNode, "Expected Expression");
-            auto valueNode = parseExpression(*tsValueNode);
-            if(!valueNode)
-                return std::nullopt;
-            def->expression = *valueNode;
-            return def;
+            auto valueField = getField(root, field_value);
+            Expect(root, valueField, "Expected expression");
+
+            auto id = parseIdentifier(idField.value());
+            auto value = parseExpression(valueField.value());
+
+            if(!id)
+                return None();
+            member->id = id.value();
+            if(!value)
+                return None();
+            member->expression = value.value();
+
+            return Some(member);
         }
 
-        std::optional<Node<SinkListContext>> parseSinkList(TSNode root)
+        Option<Node<AnonStructContext>> parseAnonStruct(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::SinkList))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_anonStruct))
+                return None();
 
-            auto list = makeNode<SinkListContext>(root);
+            auto list = makeNode<AnonStructContext>(root);
             auto scope = pushScope(list);
 
             foreachNamedNodeChild(root, [&](TSNode tsSinkDefNode) {
-                auto sinkDefNode = parseSinkDef(tsSinkDefNode);
-                if(!sinkDefNode)
+                auto memberInit = parseMemberInit(tsSinkDefNode);
+                if(!memberInit)
                     return;
-                list->values.push_back(*sinkDefNode);
+                list->members.push_back(memberInit.value());
             });
 
-            return list;
+            return Some(list);
         }
 
-        std::optional<Node<ValueContext>> parseSourceDef(TSNode root)
+        Option<Node<AnonStructTypeContext>> parseAnonStructType(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::SourceDef))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_anonStruct))
+                return None();
+
+            auto structDef = makeNode<AnonStructTypeContext>(root);
+            auto scope = pushScope(structDef);
+
+            foreachNamedNodeChild(root, [&](TSNode tsSinkDefNode) {
+                auto memberDef = parseValueDef(tsSinkDefNode);
+                if(!memberDef)
+                    return;
+                structDef->members.push_back(memberDef.value());
+            });
+
+            return Some(structDef);
+        }
+
+        Option<Node<ValueContext>> parseValueDef(TSNode root)
+        {
+            if(!expectSymbol(root, sym_anonStructType))
+                return None();
 
             auto def = makeNode<ValueContext>(root);
             auto scope = pushScope(def);
 
             def->isLValue = true;
 
-            auto mutField = getField(root, TSFieldName::Mut);
-            def->isMut = mutField.has_value();
+            auto mutField = getField(root, field_mut);
+            def->isMut = mutField.isSome();
 
-            auto tsIdNode = getField(root, TSFieldName::Id);
+            auto tsIdNode = getField(root, field_id);
             Expect(root, tsIdNode, "Expected identifier");
-            def->label = parseIdentifier(*tsIdNode);
+            def->label = parseIdentifier(tsIdNode.value());
 
-            auto tsTypeNode = getField(root, TSFieldName::Type);
+            auto tsTypeNode = getField(root, field_type);
             Expect(root, tsTypeNode, "Expected type");
-            auto typeNode = parseType(*tsTypeNode);
+            auto typeNode = parseType(tsTypeNode.value());
             if(!typeNode)
-                return std::nullopt;
-            def->type = *typeNode;
+                return None();
+            def->type = typeNode.value();
 
-            return def;
+            return Some(def);
         }
 
-        std::optional<Node<SourceListContext>> parseSourceList(TSNode root)
+        Option<Node<CallSigContext>> parseCallSig(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::SourceList))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_callSig))
+                return None();
 
-            auto list = makeNode<SourceListContext>(root);
-            auto scope = pushScope(list);
+            auto callSig = makeNode<CallSigContext>(root);
 
-            foreachNamedNodeChild(root, [&](TSNode tsSourceDefNode) {
-                auto sourceDefNode = parseSourceDef(tsSourceDefNode);
-                if(!sourceDefNode)
-                    return;
-                list->defs.push_back(*sourceDefNode);
-            });
+            auto inputField = getField(root, field_input);
+            Expect(root, inputField, "Expected call signature input args");
+            auto input = parseAnonStructType(inputField.value());
+            if(!input)
+                return None();
+            callSig->input = input.value();
 
-            return list;
+
+            auto outputType = getField(root, field_output);
+            if(outputType.isNone())
+            {
+                auto output = parseAnonStructType(outputType.value());
+                if(!output)
+                    return None();
+                callSig->output = output.value();
+            }
+
+            return Some(callSig);
         }
 
-        std::optional<Node<CallContext>> parseCall(TSNode root)
+        Option<Node<CallContext>> parseCall(TSNode root)
         {
             auto range = nodeRange(root);
             warningMessage(root,
                            "Function calls not implemented yet! \n\"" +
                                std::string(source.substr(range.start_byte, range.end_byte - range.start_byte)) +
                                "\" will be ignored");
-            return std::nullopt;
+            return None();
         }
 
-        std::optional<Node<PipelineStageContext>> parsePipelineStage(TSNode root)
+        Option<Node<PipelineStageContext>> parsePipelineStage(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::PipelineStage))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_pipelineStage))
+                return None();
             auto stage = makeNode<PipelineStageContext>(root);
             auto scope = pushScope(stage);
 
@@ -843,114 +707,83 @@ namespace BraneScript
                 auto expr = parseExpression(node);
                 if(!expr)
                     return;
-                stage->expressions.push_back(*expr);
+                stage->expressions.push_back(expr.value());
             });
 
-            return stage;
+            return Some(stage);
         }
 
-        std::optional<Node<AsyncExpressionContext>> parseAsyncOperation(TSNode root)
-        {
-            if(!expectNode(root, TSNodeType::AsyncOperation))
-                return std::nullopt;
-            auto range = nodeRange(root);
-            warningMessage(root,
-                           "Async Operations not implemented yet! \n\"" +
-                               std::string(source.substr(range.start_byte, range.end_byte - range.start_byte)) +
-                               "\" will be ignored");
-            return std::nullopt;
-        }
-
-        std::optional<Node<FunctionContext>> parseFunction(TSNode root)
+        Option<Node<FunctionContext>> parseFunction(TSNode root)
         {
             warningMessage(root, "Functions not implemented yet!");
-            return std::nullopt;
+            return None();
         }
 
-        std::optional<Node<PipelineContext>> parsePipeline(TSNode root)
+        Option<Node<PipelineContext>> parsePipeline(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Pipeline))
-                return std::nullopt;
-            auto tsIdNode = getField(root, TSFieldName::Id);
+            if(!expectSymbol(root, sym_pipeline))
+                return None();
+            auto tsIdNode = getField(root, field_id);
             Expect(root, tsIdNode, "Identifier was not found");
-            auto idNode = parseIdentifier(*tsIdNode);
+            auto idNode = parseIdentifier(tsIdNode.value());
             auto pipe = makeNode<PipelineContext>(root);
-            idNode.value()->parent = pipe;
-            pipe->identifier = *idNode;
+            idNode.value()->parent = Some<std::weak_ptr<TextContext>>(pipe);
+            pipe->identifier = idNode.value();
 
-            auto tsSourcesNode = getField(root, TSFieldName::Sources);
-            Expect(root, tsSourcesNode, "Pipeline sources list not found");
-            auto sourcesNode = parseSourceList(*tsSourcesNode);
-            if(!sourcesNode)
-                return std::nullopt;
-            pipe->sources = *sourcesNode;
+            auto callSigField = getField(root, field_callSig);
+            Expect(root, callSigField, "Expected call signature");
+            auto callSig = parseCallSig(callSigField.value());
+            if(!callSig)
+                return None();
 
-            auto tsSinksNode = getField(root, TSFieldName::Sinks);
-            Expect(root, tsSinksNode, "Pipeline sinks not found");
-            auto sinksNode = parseSinkList(*tsSinksNode);
-            if(!sinksNode)
-                return std::nullopt;
-            pipe->sinks = *sinksNode;
-
-            auto tsStagesNode = getField(root, TSFieldName::Stages);
+            auto tsStagesNode = getField(root, field_stages);
             Expect(root, tsStagesNode, "Pipeline must have at least one stage");
-            advanceWhileType<TSNodeType::PipelineStage, TSNodeType::AsyncOperation>(*tsStagesNode,
-                                                                                    [&](TSNode tsStageNode) {
-                auto stageNode = parse(tsStageNode);
+            advanceWhileSymbol<sym_pipelineStage>(tsStagesNode.value(), [&](TSNode tsStageNode) {
+                auto stageNode = parsePipelineStage(tsStageNode);
                 if(!stageNode)
                     return;
-                std::visit(overloads{[&](Node<PipelineStageContext> stage) { pipe->stages.push_back(stage); },
-                                     [&](Node<AsyncExpressionContext> asyncOp) {
-                    pipe->stages.back()->asyncExpressions.push_back(asyncOp);
-                },
-                                     [&](auto& none) {
-                    errorMessage(tsStageNode,
-                                 std::string("Grammer was correct, but context created was wrong: ") +
-                                     typeid(none).name());
-                }},
-                           *stageNode);
+                pipe->stages.push_back(stageNode.value());
             });
 
-            return pipe;
+            return Some(pipe);
         }
 
-        std::optional<Node<ModuleContext>> parseModule(TSNode root)
+        Option<Node<ModuleContext>> parseModule(TSNode root)
         {
-            if(!expectNode(root, TSNodeType::Module))
-                return std::nullopt;
+            if(!expectSymbol(root, sym_module))
+                return None();
             auto mod = makeNode<ModuleContext>(root);
             auto scope = pushScope(mod);
 
-            auto identifier = getField(root, TSFieldName::Id);
+            auto identifier = getField(root, field_id);
             if(!identifier)
-                return std::nullopt;
+                return None();
 
-            auto idNode = parseIdentifier(*identifier);
+            auto idNode = parseIdentifier(identifier.value());
             if(!idNode)
-                return std::nullopt;
-            idNode.value()->parent = mod;
-            mod->identifier = *idNode;
+                return None();
+            idNode.value()->parent = Some<std::weak_ptr<TextContext>>(mod);
+            mod->identifier = idNode.value();
 
-            auto firstDef = getField(root, TSFieldName::Defs);
+            auto firstDef = getField(root, field_defs);
             if(!firstDef)
-                return mod;
-            for(auto currentDef = *firstDef; !ts_node_is_null(currentDef) && ts_node_is_named(currentDef);
+                return Some(mod);
+            for(auto currentDef = firstDef.value(); !ts_node_is_null(currentDef) && ts_node_is_named(currentDef);
                 currentDef = ts_node_next_named_sibling(currentDef))
             {
-                std::optional<TextContextNode> def = parse(currentDef);
+                Option<TextContextNode> def = parse(currentDef);
                 if(!def)
                     continue;
-                std::visit(
-                    overloads{[&](Node<PipelineContext>& pipeline) { mod->pipelines.push_back(std::move(pipeline)); },
-                              [&](Node<FunctionContext>& function) { mod->functions.push_back(std::move(function)); },
-                              [&](auto& none) {
+                MATCHV(def.value(),
+                       [&](Node<PipelineContext>& pipeline) { mod->pipelines.push_back(std::move(pipeline)); },
+                       [&](Node<FunctionContext>& function) { mod->functions.push_back(std::move(function)); },
+                       [&](auto& none) {
                     errorMessage(currentDef,
                                  std::string("Grammer was correct, but context created was wrong: ") +
                                      typeid(none).name());
-                }},
-                    *def);
+                });
             }
-            return mod;
+            return Some(mod);
         }
 
         ParserResult<DocumentContext> parseDocument()
@@ -1012,8 +845,8 @@ namespace BraneScript
     {
         if(_cachedResult)
             return _cachedResult.value();
-        ParserAPI ctx{_path, _source, _parser};
-        _cachedResult = std::make_optional(ctx.parseDocument());
+        ParserAPI ctx{_path, _source, _parser, {}, {}, {}};
+        _cachedResult = Some(ctx.parseDocument());
         return _cachedResult.value();
     }
 
