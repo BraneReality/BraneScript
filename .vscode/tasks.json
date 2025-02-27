@@ -16,9 +16,7 @@
             "taskName": "cmake-build-debug",
             "label": "cmake-build-debug",
             "type": "shell",
-            "dependsOn": [
-                "cmake-configure-debug"
-            ],
+            "dependsOn": [],
             "options": {
                 "cwd": "${workspaceRoot}"
             },
@@ -39,9 +37,7 @@
             "taskName": "cmake-build-release",
             "label": "cmake-build-release",
             "type": "shell",
-            "dependsOn": [
-                "cmake-configure-release"
-            ],
+            "dependsOn": [],
             "options": {
                 "cwd": "${workspaceRoot}"
             },

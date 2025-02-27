@@ -15,6 +15,6 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(ir)
 add_subdirectory(cli)
 add_subdirectory(parser)
-#add_subdirectory(compiler)
+add_subdirectory(compiler)
 add_subdirectory(types)
 

@@ -23,7 +23,7 @@ BraceWrapping:
   AfterCaseLabel: true
   AfterControlStatement: Always
   SplitEmptyFunction: false
-  BeforeLambdaBody: false
+  BeforeLambdaBody: true
   BeforeCatch: true
   BeforeWhile: true
   BeforeElse: true

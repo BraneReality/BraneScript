@@ -16,7 +16,7 @@ mod test {
             continue(args: (value: value), deps: [t1, t2]); // Go to the next pipeline stage after deps have been completed, if t1 or t2 returned a value we could pass them as args and the next stage would be able to access their return values, deps is only required to say "we don't care about the returns, so don't make them args".
         }
         end { // "end" is the stage label
-            break(value: count)
+            break(value: count);
         }
     ]
 
@@ -32,4 +32,8 @@ mod test {
             break(deps: [workers]);
         }
     ]
+}
+
+mod test2 {
+    
 }

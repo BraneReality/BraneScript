@@ -13,4 +13,7 @@ target_include_directories(parser PUBLIC ${braneutilities_SOURCE_DIR}/src)
 
 if(MINGW)
     target_compile_options(parser PRIVATE -Wmissing-field-initializers)
-endif()
+    if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+        target_compile_options(parser PRIVATE  -g -Og)
+    endif()
+endif(MINGW)

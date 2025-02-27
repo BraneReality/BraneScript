@@ -12,7 +12,7 @@ llvm_map_components_to_libnames(llvm_libs Support Core IRReader ...)
 target_link_libraries(main PRIVATE ${llvm_libs})]]
 
 add_executable(BraneScriptCli main.cpp)
-target_link_libraries(BraneScriptCli PRIVATE parser)
+target_link_libraries(BraneScriptCli PRIVATE parser compiler)
 
 install(TARGETS BraneScriptCli
     RUNTIME_DEPENDENCIES
