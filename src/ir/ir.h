@@ -7,6 +7,8 @@
 #include <variant>
 #include <vector>
 
+#include "enums/option.h"
+
 namespace BraneScript
 {
 
@@ -18,7 +20,7 @@ namespace BraneScript
     /// symbols, and negative representing external symbols, and 0 being a null value
     using IDRef = std::variant<std::string, int32_t>;
 
-    enum class BSBaseType
+    enum class IRNativeType
     {
         U8,
         I8,
@@ -34,111 +36,32 @@ namespace BraneScript
         I128
     };
 
-    struct BSStructType
-    {
-        IDRef structId;
-    };
-
-    struct BSRefType;
-    using BSType = std::variant<BSBaseType, IRNode<BSStructType>, IRNode<BSRefType>>;
-
-    struct BSRefType
-    {
-        BSType contained;
-        bool valueMutable;
-    };
+    using IRType = std::variant<IRNativeType, IDRef>;
 
     struct IRValue
     {
         uint32_t id;
     };
 
-    struct MovOp;
-    struct LoadOp;
-    struct StoreOp;
-
-    struct AddOp;
-    struct SubOp;
-    struct MulOp;
-    struct DivOp;
-    struct ModOp;
-
-    struct EqOp;
-    struct NeOp;
-    struct GtOp;
-    struct GeOp;
-
-    struct LogicNotOp;
-    struct LogicAndOp;
-    struct LogicOrOp;
-
-    struct BitNotOp;
-    struct BitAndOp;
-    struct BitOrOp;
-    struct BitXorOp;
-
-    struct I32ToF32;
-    struct U32ToF32;
-    struct F32ToI32;
-    struct U32ToF32;
-
-    struct ConstI32;
-    struct ConstU32;
-    struct ConstF32;
-
-    struct CallOp;
-    using Operation = std::variant<IRNode<MovOp>,
-                                   IRNode<LoadOp>,
-                                   IRNode<StoreOp>,
-
-                                   IRNode<AddOp>,
-                                   IRNode<SubOp>,
-                                   IRNode<MulOp>,
-                                   IRNode<DivOp>,
-                                   IRNode<ModOp>,
-
-                                   IRNode<EqOp>,
-                                   IRNode<NeOp>,
-                                   IRNode<GtOp>,
-                                   IRNode<GeOp>,
-
-                                   IRNode<LogicNotOp>,
-                                   IRNode<LogicAndOp>,
-                                   IRNode<LogicOrOp>,
-
-                                   IRNode<BitNotOp>,
-                                   IRNode<BitAndOp>,
-                                   IRNode<BitOrOp>,
-                                   IRNode<BitXorOp>,
-
-                                   IRNode<I32ToF32>,
-                                   IRNode<U32ToF32>,
-                                   IRNode<F32ToI32>,
-
-                                   IRNode<ConstI32>,
-                                   IRNode<ConstU32>,
-                                   IRNode<ConstF32>>;
-
-
-    using AsyncOperation = std::variant<
-
-        >;
-
     struct ConstI32
     {
+        IRValue dest;
         int32_t value;
     };
 
     struct ConstU32
     {
+        IRValue dest;
         uint32_t value;
     };
 
     struct ConstF32
     {
+        IRValue dest;
         float value;
     };
 
+    // Move (and cast if needed) one values data to another
     struct MovOp
     {
         IRValue src;
@@ -147,15 +70,21 @@ namespace BraneScript
 
     struct LoadOp
     {
-        std::variant<IRValue, ConstU32> store = ConstU32{0};
-        IRValue src;
+        IRValue ptr;
         IRValue dest;
     };
 
     struct StoreOp
     {
-        std::variant<IRValue, ConstU32> store = ConstU32{0};
+        IRValue ptr;
         IRValue src;
+    };
+
+    struct MemAcc
+    {
+        IRType structType;
+        uint8_t index;
+        IRValue ptr;
         IRValue dest;
     };
 
@@ -236,66 +165,79 @@ namespace BraneScript
     {
     };
 
-    struct I32ToF32 : public UnaryOp
-    {
-    };
-
-    struct U32ToF32 : public UnaryOp
-    {
-    };
-
-    struct F32ToI32 : public UnaryOp
-    {
-    };
-
-    struct F32ToU32 : public UnaryOp
-    {
-    };
-
-    struct BSCallOp
+    struct CallOp
     {
         IDRef function;
         std::vector<IRValue> inputs;
-        std::vector<IRValue> outputs;
+        IRValue output;
     };
 
-    struct BSPipelineStage
+    using IROperation = std::variant<MovOp,
+                                     LoadOp,
+                                     StoreOp,
+                                     MemAcc,
+
+                                     AddOp,
+                                     SubOp,
+                                     MulOp,
+                                     DivOp,
+                                     ModOp,
+
+                                     EqOp,
+                                     GeOp,
+
+                                     LogicNotOp,
+                                     LogicAndOp,
+                                     LogicOrOp,
+
+                                     BitNotOp,
+                                     BitAndOp,
+                                     BitOrOp,
+                                     BitXorOp,
+
+                                     ConstI32,
+                                     ConstU32,
+                                     ConstF32,
+
+                                     CallOp>;
+
+    struct IRStructMember
     {
-        std::vector<BSType> localVars;
-        std::vector<Operation> operations;
-        std::vector<AsyncOperation> asyncOps;
+        Option<std::string> id;
+        IRType type;
     };
 
-    struct BSStruct
+    struct IRStruct
+    {
+        Option<std::string> id;
+        std::vector<IRStructMember> members;
+    };
+
+    struct IRPipeline
+    {
+        Option<std::string> id;
+        IRType input;
+        IRType output;
+        std::vector<IDRef> stages;
+    };
+
+    struct IRFunction
+    {
+        Option<std::string> id;
+        std::vector<IRType> localVars;
+        IRType input;
+        IRType output;
+        std::vector<IROperation> operations;
+    };
+
+    struct IRModule
     {
         std::string id;
-        std::vector<BSType> members;
+        std::vector<IRStruct> structs;
+        std::vector<IRFunction> functions;
+        std::vector<IRPipeline> pipelines;
     };
 
-    struct BSPipeline
-    {
-        std::string id;
-        std::vector<BSType> inputs;
-        std::vector<BSType> outputs;
-        std::optional<std::vector<BSPipelineStage>> stages;
-    };
-
-    struct BSFunction
-    {
-        std::string id;
-        std::vector<BSType> localVars;
-        std::vector<BSType> inputs;
-        std::vector<BSType> outputs;
-        std::vector<Operation> operations;
-    };
-
-    struct BSModule
-    {
-        std::string name;
-        std::vector<std::shared_ptr<BSStruct>> structs;
-        std::vector<std::shared_ptr<BSFunction>> functions;
-        std::vector<std::shared_ptr<BSPipeline>> pipelines;
-    };
 
 } // namespace BraneScript
 

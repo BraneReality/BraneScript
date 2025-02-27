@@ -11,6 +11,8 @@
 #include "tree-sitter-branescript.h"
 #include <string_view>
 
+#include "compiler/compiler.h"
+#include "ir/irTextSerializer.h"
 #include "tree_sitter/api.h"
 
 // #include "TSBindings.h"
@@ -111,9 +113,9 @@ int main(int argc, char* argv[])
     printf("Parsing DocumentContext...\n");
     auto bs_parser = std::make_shared<BraneScript::BraneScriptParser>();
 
-    BraneScript::ParsedDocument doc(argv[1], source_code, bs_parser);
+    auto doc = std::make_shared<BraneScript::ParsedDocument>(argv[1], source_code, bs_parser);
 
-    auto parseRes = doc.getDocumentContext();
+    auto parseRes = doc->getDocumentContext();
 
     if(!parseRes.messages.empty())
     {
@@ -128,6 +130,33 @@ int main(int argc, char* argv[])
     printf("Found modules:\n");
     for(auto& mod : parseRes.document->modules)
         printf("%s\n", mod.second->identifier->text.c_str());
+
+    BraneScript::Compiler compiler;
+    Option<std::vector<BraneScript::IRModule>> compileRes = compiler.compile({doc});
+    if(!compileRes)
+        std::cout << "Failed to compile!" << std::endl;
+    else
+        std::cout << "compile completed with messages:" << std::endl;
+    for(auto& m : compiler.messages())
+    {
+        printf("[line %d, char %d]: %s\n",
+               m.source.range.value().start_point.row,
+               m.source.range.value().start_point.column,
+               m.message.c_str());
+    }
+
+    if(compileRes)
+    {
+        for(auto& mod : compileRes.value())
+        {
+            std::cout << "Compiled module: " << mod.id << std::endl;
+            auto writeRes = BraneScript::IRSerializer::irToText(mod);
+            if(writeRes)
+                std::cout << "IR: " << writeRes.ok() << std::endl;
+            else
+                std::cout << "Failed to write ir: " << writeRes.err() << std::endl;
+        }
+    }
 
     ts_tree_delete(tree);
     ts_parser_delete(parser);

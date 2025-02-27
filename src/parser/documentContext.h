@@ -33,13 +33,12 @@ namespace BraneScript
     struct BinaryOperatorContext;
     struct VariableDefinitionContext;
     struct AssignmentContext;
-    struct BlockContext;
     struct AnonStructContext;
     struct AnonStructTypeContext;
     struct CallContext;
     struct CallSigContext;
+    struct ScopeContext;
     struct PipelineStageContext;
-    struct AsyncExpressionContext;
     struct MemberInitContext;
     struct FunctionContext;
     struct PipelineContext;
@@ -53,54 +52,57 @@ namespace BraneScript
                                          Node<BinaryOperatorContext>,
                                          Node<VariableDefinitionContext>,
                                          Node<AssignmentContext>,
-                                         Node<BlockContext>,
                                          Node<AnonStructContext>,
                                          Node<AnonStructTypeContext>,
                                          Node<CallContext>,
                                          Node<CallSigContext>,
-                                         Node<AsyncExpressionContext>,
+                                         Node<ScopeContext>,
                                          Node<PipelineStageContext>,
                                          Node<MemberInitContext>,
                                          Node<FunctionContext>,
                                          Node<PipelineContext>,
+                                         Node<StructContext>,
                                          Node<ModuleContext>,
                                          Node<DocumentContext>>;
 
-    enum IDSearchOptions : uint8_t
+    struct TextSource
     {
-        IDSearchOptions_ChildrenOnly = 1 << 0, // Don't search upwards through the tree
-        IDSearchOptions_ParentsOnly = 1 << 1,  // Don't search downwards through the tree
+        std::string uri;
     };
 
     struct TextContext : public std::enable_shared_from_this<TextContext>
     {
         TSRange range;
+        Node<TextSource> source;
         Option<std::weak_ptr<TextContext>> parent;
 
         virtual ~TextContext() = default;
         virtual Option<TextContextNode> getNodeAtChar(TSPoint pos);
-        virtual Option<TextContextNode> findIdentifier(std::string_view identifier);
-        virtual Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions);
+
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier);
+        /// Searches up the context tree until we find an identifier that matches the first scope of the identifier,
+        /// Then attempts to search downwards through matching nodes until the full path matches.
+        virtual Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope);
         virtual std::string longId() const;
 
         template<typename T>
         Option<Node<T>> as()
         {
             static_assert(std::is_base_of<TextContext, T>::value, "T must be a subclass of DocumentContext");
-            auto* r = std::dynamic_pointer_cast<T>(shared_from_this());
+            auto r = std::dynamic_pointer_cast<T>(shared_from_this());
             if(!r)
                 return None();
-            return r;
+            return Some(r);
         }
 
         template<typename T>
         Option<Node<T>> as() const
         {
             static_assert(std::is_base_of<TextContext, T>::value, "T must be a subclass of DocumentContext");
-            auto* r = std::dynamic_pointer_cast<T>(shared_from_this());
+            auto r = std::dynamic_pointer_cast<T>(shared_from_this());
             if(!r)
                 return None();
-            return r;
+            return Some(r);
         }
 
         template<typename T>
@@ -147,8 +149,10 @@ namespace BraneScript
     {
         std::string text;
         operator std::string&();
-        bool operator==(const Identifier&) const;
-        bool operator!=(const Identifier&) const;
+
+        inline bool operator==(const Identifier& o) const { return o.text == text; }
+
+        inline bool operator!=(const Identifier& o) const { return o.text != text; }
     };
 
     enum class TypeModifiers
@@ -185,7 +189,6 @@ namespace BraneScript
         /*ValueContext(TypeContext type, bool isLValue, bool isConst, bool isRef);*/
         /*ValueContext(std::string label, TypeContext type, bool isLValue, bool isConst, bool isRef);*/
         /**/
-        virtual std::string signature() const;
         std::string longId() const override;
     };
 
@@ -216,6 +219,7 @@ namespace BraneScript
     struct ScopedIdentifier : public TextContext
     {
         std::vector<ScopeSegment> scopes;
+        std::string longId() const override;
     };
 
     struct ErrorContext
@@ -231,17 +235,36 @@ namespace BraneScript
 
     struct ExpressionErrorContext;
     struct ScopeContext;
+    struct IfContext;
+    struct WhileContext;
+    struct ForContext;
+    struct AssignmentContext;
+    struct ConstValueContext;
+    struct LabeledValueReferenceContext;
+    struct MemberAccessContext;
+    struct CreateReferenceContext;
+    struct DereferenceContext;
     struct UnaryOperatorContext;
     struct BinaryOperatorContext;
+    struct AnonStructContext;
+    struct CallContext;
 
     using ExpressionContextNode = std::variant<Node<ExpressionErrorContext>,
                                                Node<ScopeContext>,
+                                               Node<IfContext>,
+                                               Node<WhileContext>,
+                                               Node<ForContext>,
+                                               Node<AssignmentContext>,
+                                               Node<VariableDefinitionContext>,
+                                               Node<ConstValueContext>,
+                                               Node<ScopedIdentifier>,
+                                               Node<MemberAccessContext>,
+                                               Node<CreateReferenceContext>,
+                                               Node<DereferenceContext>,
                                                Node<UnaryOperatorContext>,
-                                               Node<BinaryOperatorContext>>;
-
-    struct AsyncExpressionContext : public TextContext
-    {
-    };
+                                               Node<BinaryOperatorContext>,
+                                               Node<AnonStructContext>,
+                                               Node<CallContext>>;
 
     struct ExpressionErrorContext : public ExpressionContext, ErrorContext
     {
@@ -263,7 +286,7 @@ namespace BraneScript
         std::vector<Node<ValueContext>> localVariables;
         std::vector<ExpressionContextNode> expressions;
 
-        virtual Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions);
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope) override;
     };
 
     struct CallSigContext : public TextContext
@@ -277,9 +300,9 @@ namespace BraneScript
     {
         Option<Node<Identifier>> identifier;
         Node<CallSigContext> callSig;
-        std::vector<Node<ValueContext>> localVariables;
-        std::vector<ExpressionContextNode> expressions;
-        std::vector<Node<AsyncExpressionContext>> asyncExpressions;
+        Node<ScopeContext> body;
+
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope) override;
     };
 
     struct IfContext : public ExpressionContext
@@ -391,11 +414,6 @@ namespace BraneScript
         ExpressionContextNode right;
     };
 
-    struct BlockContext : public ExpressionContext
-    {
-        std::vector<ExpressionContextNode> expressions;
-    };
-
     struct AnonStructTypeContext : public TextContext
     {
         NodeList<ValueContext> members;
@@ -407,7 +425,7 @@ namespace BraneScript
         ExpressionContextNode expression;
     };
 
-    struct AnonStructContext : public TextContext
+    struct AnonStructContext : public ExpressionContext
     {
         NodeList<MemberInitContext> members;
     };
@@ -420,34 +438,27 @@ namespace BraneScript
 
     struct FunctionContext : public TextContext
     {
-        Identifier identifier;
-        CallSigContext callSig;
+        Node<Identifier> identifier;
+        Node<CallSigContext> callSig;
 
         Node<ScopeContext> body;
 
-        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
-        std::string longId() const override;
-        std::string signature() const;
-    };
-
-    struct ImplContext : public TextContext
-    {
-        Node<TypeContext> type;
-        LabeledNodeMap<FunctionContext> methods;
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope) override;
         std::string longId() const override;
     };
 
     struct TraitContext : public TextContext
     {
         Node<Identifier> identifier;
-        NodeList<CallSigContext> methods;
+        LabeledNodeMap<CallSigContext> methods;
         std::string longId() const override;
     };
 
-    struct TraitImplContext : public ImplContext
+    struct ImplContext : public TextContext
     {
-        Node<Identifier> trait;
+        Option<Node<Identifier>> trait;
         Node<TypeContext> type;
+        LabeledNodeMap<FunctionContext> methods;
         std::string longId() const override;
     };
 
@@ -456,10 +467,9 @@ namespace BraneScript
         Node<Identifier> identifier;
         // Arguments
         Node<CallSigContext> callSig;
-
         NodeList<PipelineStageContext> stages;
 
-        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope) override;
         std::string longId() const override;
         std::string argSig() const;
         std::string signature() const;
@@ -469,24 +479,24 @@ namespace BraneScript
     {
         Node<Identifier> identifier;
 
-        NodeList<ValueContext> variables;
-        NodeList<FunctionContext> functions;
+        LabeledNodeMap<ValueContext> members;
         bool packed = false;
 
         Option<TextContextNode> getNodeAtChar(TSPoint pos) override;
-        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope) override;
         std::string longId() const override;
     };
 
     struct ModuleContext : public TextContext
     {
         Node<Identifier> identifier;
-        NodeList<StructContext> structs;
-        NodeList<FunctionContext> functions;
-        NodeList<PipelineContext> pipelines;
+        LabeledNodeMap<StructContext> structs;
+        LabeledNodeMap<FunctionContext> functions;
+        LabeledNodeMap<PipelineContext> pipelines;
 
         Option<TextContextNode> getNodeAtChar(TSPoint pos) override;
-        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
+
+        Option<TextContextNode> searchFor(Node<ScopedIdentifier> identifier, size_t scope) override;
         std::string longId() const override;
     };
 
@@ -496,7 +506,6 @@ namespace BraneScript
         LabeledNodeMap<ModuleContext> modules;
 
         Option<TextContextNode> getNodeAtChar(TSPoint pos) override;
-        Option<TextContextNode> findIdentifier(std::string_view identifier, uint8_t searchOptions) override;
     };
 } // namespace BraneScript
 

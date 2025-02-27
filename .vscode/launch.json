@@ -7,8 +7,9 @@
             "name": "Cli-Debug",
             "preLaunchTask": "cmake-install-debug",
             "expressions": "native",
-            "program": "./build/Debug/cli/BraneScriptCli",
+            "program": "${workspaceFolder}/build/Debug/cli/BraneScriptCli",
             "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/build/Debug/cli/",
             "args": [
                 "exampleScripts/test.bscript"
             ]

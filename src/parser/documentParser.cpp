@@ -38,10 +38,11 @@ namespace BraneScript
     template<class... V1, class... V2>
     bool tryCastVariant(std::variant<V1...> value, Option<std::variant<V2...>>& result)
     {
-        return std::visit(overloads{[&](auto&& inner) -> bool {
-            if constexpr(((std::is_same_v<decltype(inner), V2>) || ...))
+        return std::visit(overloads{[&](auto&& inner) -> bool
+        {
+            if constexpr(((std::is_convertible<decltype(inner), V2>()) || ...))
             {
-                result = inner;
+                result = Some(inner);
                 return false;
             }
             else
@@ -129,7 +130,8 @@ namespace BraneScript
     struct ParserAPI
     {
         std::filesystem::path path;
-        std::string_view source;
+        std::string_view sourceText;
+        Node<TextSource> source;
         std::shared_ptr<BraneScriptParser> parser;
         std::vector<ParserMessage> messages;
         TSTree* tree;
@@ -213,7 +215,7 @@ namespace BraneScript
         {
             auto start = ts_node_start_byte(node);
             auto end = ts_node_end_byte(node);
-            return {source.data() + start, end - start};
+            return {sourceText.data() + start, end - start};
         }
 
         template<typename T>
@@ -224,6 +226,7 @@ namespace BraneScript
             auto new_node = std::make_shared<T>();
             new_node->range = nodeRange(context);
             new_node->parent = currentScope();
+            new_node->source = source;
 
             return new_node;
         }
@@ -297,6 +300,8 @@ namespace BraneScript
 
             Option<ExpressionContextNode> out;
             tryCastVariant(parsed.value(), out);
+            if(!out)
+                errorMessage(node, std::format("Expected expression, but found: {}", nodeText(node)));
             return out;
         }
 
@@ -331,7 +336,9 @@ namespace BraneScript
                 return None();
             auto scopedId = makeNode<ScopedIdentifier>(root);
             auto scope = pushScope(scopedId);
-            foreachNamedNodeChild(root, [&](TSNode ident) {
+            foreachNamedNodeChild(root,
+                                  [&](TSNode ident)
+            {
                 auto id = parseIdentifier(ident);
                 if(!id)
                     return;
@@ -354,7 +361,9 @@ namespace BraneScript
             auto scope = pushScope(type);
 
             bool queuedReference = false;
-            foreachNodeChild(root, [&](TSNode node) {
+            foreachNodeChild(root,
+                             [&](TSNode node)
+            {
                 if(!ts_node_is_named(node))
                 {
                     auto text = nodeText(node);
@@ -513,12 +522,16 @@ namespace BraneScript
             auto def = makeNode<VariableDefinitionContext>(root);
             auto scope = pushScope(def);
 
+
             auto defField = getField(root, field_def);
             Expect(root, defField, "Expected variable definition");
             auto valueDef = parseValueDef(defField.value());
             if(!valueDef)
                 return None();
             def->definedValue = valueDef.value();
+
+            if(auto parentScope = def->getParent<ScopeContext>())
+                parentScope.value()->localVariables.push_back(def->definedValue);
 
             return Some(def);
         }
@@ -547,19 +560,30 @@ namespace BraneScript
             return Some(assign);
         }
 
-        Option<Node<BlockContext>> parseBlock(TSNode root)
+        Option<Node<ScopeContext>> parseBlock(TSNode root)
         {
             if(!expectSymbol(root, sym_block))
                 return None();
-            auto block = makeNode<BlockContext>(root);
+            auto block = makeNode<ScopeContext>(root);
             auto scope = pushScope(block);
 
-            foreachNamedNodeChild(root, [&](TSNode node) {
-                auto expr = parseExpression(node);
-                if(!expr)
-                    return;
-                block->expressions.push_back(expr.value());
-            });
+            auto expressions = getField(root, field_expressions);
+            if(expressions)
+            {
+                foreachNamedNodeChild(root,
+                                      [&](TSNode node)
+                {
+                    logMessage(node, std::format("parsing block child: {}", nodeText(node)));
+                    auto expr = parseExpression(node);
+                    if(!expr)
+                    {
+                        errorMessage(node, std::format("Was expecting expression but found: {}", nodeText(node)));
+                        return;
+                    }
+                    block->expressions.push_back(expr.value());
+                });
+            }
+
 
             return Some(block);
         }
@@ -570,19 +594,21 @@ namespace BraneScript
                 return None();
 
             auto member = makeNode<MemberInitContext>(root);
+            auto scope = pushScope(member);
 
             auto idField = getField(root, field_id);
             Expect(root, idField, "Expected identifier");
+            auto id = parseIdentifier(idField.value());
+            if(!id)
+                return None();
+            member->id = id.value();
 
             auto valueField = getField(root, field_value);
             Expect(root, valueField, "Expected expression");
 
-            auto id = parseIdentifier(idField.value());
             auto value = parseExpression(valueField.value());
 
-            if(!id)
-                return None();
-            member->id = id.value();
+
             if(!value)
                 return None();
             member->expression = value.value();
@@ -598,7 +624,9 @@ namespace BraneScript
             auto list = makeNode<AnonStructContext>(root);
             auto scope = pushScope(list);
 
-            foreachNamedNodeChild(root, [&](TSNode tsSinkDefNode) {
+            foreachNamedNodeChild(root,
+                                  [&](TSNode tsSinkDefNode)
+            {
                 auto memberInit = parseMemberInit(tsSinkDefNode);
                 if(!memberInit)
                     return;
@@ -616,7 +644,9 @@ namespace BraneScript
             auto structDef = makeNode<AnonStructTypeContext>(root);
             auto scope = pushScope(structDef);
 
-            foreachNamedNodeChild(root, [&](TSNode tsSinkDefNode) {
+            foreachNamedNodeChild(root,
+                                  [&](TSNode tsSinkDefNode)
+            {
                 auto memberDef = parseValueDef(tsSinkDefNode);
                 if(!memberDef)
                     return;
@@ -648,7 +678,7 @@ namespace BraneScript
             auto typeNode = parseType(tsTypeNode.value());
             if(!typeNode)
                 return None();
-            def->type = typeNode.value();
+            def->type = Some(typeNode.value());
 
             return Some(def);
         }
@@ -659,6 +689,7 @@ namespace BraneScript
                 return None();
 
             auto callSig = makeNode<CallSigContext>(root);
+            auto scope = pushScope(callSig);
 
             auto inputField = getField(root, field_input);
             Expect(root, inputField, "Expected call signature input args");
@@ -666,7 +697,6 @@ namespace BraneScript
             if(!input)
                 return None();
             callSig->input = input.value();
-
 
             auto outputType = getField(root, field_output);
             if(outputType)
@@ -676,6 +706,8 @@ namespace BraneScript
                     return None();
                 callSig->output = output.value();
             }
+            else
+                callSig->output = makeNode<AnonStructTypeContext>(root);
 
             return Some(callSig);
         }
@@ -685,6 +717,7 @@ namespace BraneScript
             if(!expectSymbol(root, sym_call))
                 return None();
             auto call = makeNode<CallContext>(root);
+            auto scope = pushScope(call);
 
             auto funcField = getField(root, field_func);
             Expect(root, funcField, "Expected callable expression");
@@ -720,13 +753,12 @@ namespace BraneScript
                 stage->callSig = callSig.value();
             }
 
-            foreachNamedNodeChild(root, [&](TSNode node) {
-                auto expr = parseExpression(node);
-                if(!expr)
-                    return;
-                stage->expressions.push_back(expr.value());
-            });
-
+            auto bodyField = getField(root, field_body);
+            Expect(root, bodyField, "Expected pipeline body");
+            auto body = parseBlock(bodyField.value());
+            if(!body)
+                return None();
+            stage->body = body.value();
             return Some(stage);
         }
 
@@ -740,10 +772,13 @@ namespace BraneScript
         {
             if(!expectSymbol(root, sym_pipeline))
                 return None();
+            auto pipe = makeNode<PipelineContext>(root);
+            auto scope = pushScope(pipe);
+
             auto tsIdNode = getField(root, field_id);
             Expect(root, tsIdNode, "Identifier was not found");
             auto idNode = parseIdentifier(tsIdNode.value());
-            auto pipe = makeNode<PipelineContext>(root);
+
             idNode.value()->parent = Some<std::weak_ptr<TextContext>>(pipe);
             pipe->identifier = idNode.value();
 
@@ -756,7 +791,9 @@ namespace BraneScript
 
             auto tsStagesNode = getField(root, field_stages);
             Expect(root, tsStagesNode, "Pipeline must have at least one stage");
-            advanceWhileSymbol<sym_pipelineStage>(tsStagesNode.value(), [&](TSNode tsStageNode) {
+            advanceWhileSymbol<sym_pipelineStage>(tsStagesNode.value(),
+                                                  [&](TSNode tsStageNode)
+            {
                 auto stageNode = parsePipelineStage(tsStageNode);
                 if(!stageNode)
                     return;
@@ -793,9 +830,12 @@ namespace BraneScript
                 if(!def)
                     continue;
                 MATCHV(def.value(),
-                       [&](Node<PipelineContext>& pipeline) { mod->pipelines.push_back(std::move(pipeline)); },
-                       [&](Node<FunctionContext>& function) { mod->functions.push_back(std::move(function)); },
-                       [&](auto& none) {
+                       [&](Node<PipelineContext>& pipeline)
+                { mod->pipelines.insert({pipeline->identifier->text, std::move(pipeline)}); },
+                       [&](Node<FunctionContext>& function)
+                { mod->functions.insert({function->identifier->text, std::move(function)}); },
+                       [&](auto& none)
+                {
                     errorMessage(currentDef,
                                  std::string("Grammer was correct, but context created was wrong: ") +
                                      typeid(none).name());
@@ -806,7 +846,7 @@ namespace BraneScript
 
         ParserResult<DocumentContext> parseDocument()
         {
-            tree = ts_parser_parse_string(parser->parser(), nullptr, source.data(), source.size());
+            tree = ts_parser_parse_string(parser->parser(), nullptr, sourceText.data(), sourceText.size());
 
             auto doc = std::make_shared<DocumentContext>();
             auto scope = pushScope(doc);
@@ -815,7 +855,9 @@ namespace BraneScript
 
             TSNode root = ts_tree_root_node(tree);
 
-            foreachNodeChild(root, [&](TSNode node) {
+            foreachNodeChild(root,
+                             [&](TSNode node)
+            {
                 Option<Node<ModuleContext>> newMod;
                 newMod = parseModule(node);
                 if(newMod)
@@ -864,7 +906,13 @@ namespace BraneScript
     {
         if(_cachedResult)
             return _cachedResult.value();
-        ParserAPI ctx{_path, _source, _parser, {}, {}, {}};
+        ParserAPI ctx{_path,
+                      _source,
+                      std::make_shared<TextSource>(TextSource{std::format("file://{}", _path.string())}),
+                      _parser,
+                      {},
+                      {},
+                      {}};
         _cachedResult = Some(ctx.parseDocument());
         return _cachedResult.value();
     }
