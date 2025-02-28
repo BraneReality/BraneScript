@@ -1,5 +1,5 @@
 mod test {
-    pipe add_multiple(start: i32, add1: i32, add2: i32) -> (count: f32) 
+    pipe add_multiple(start: i32, add1: i32, add2: i32) -> (count: i32) 
     [
         (start: i32, add1: i32, add2: i32) {
             let value : i32 = start + add1;

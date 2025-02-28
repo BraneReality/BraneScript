@@ -70,11 +70,8 @@ namespace BraneScript::IRSerializer
         { return std::format("(store {} {})", serializeIRValue(store.ptr), serializeIRValue(store.src)); },
             [](const MemAcc& memAcc)
         {
-            return std::format("(ma {} #{} {} {})",
-                               serializeType(memAcc.structType),
-                               memAcc.index,
-                               serializeIRValue(memAcc.ptr),
-                               serializeIRValue(memAcc.dest));
+            return std::format(
+                "(ma #{} {} {})", memAcc.index, serializeIRValue(memAcc.ptr), serializeIRValue(memAcc.dest));
         },
             [](const ConstI32& c) { return std::format("(const.i32 {} {})", serializeIRValue(c.dest), c.value); },
             [](const ConstU32& c) { return std::format("(const.u32 {} {})", serializeIRValue(c.dest), c.value); },
@@ -150,13 +147,14 @@ namespace BraneScript::IRSerializer
         },
             [](const CallOp& call)
         {
-            std::string inputs;
-            for(const auto& input : call.inputs)
-            {
-                inputs += " " + serializeIRValue(input);
-            }
-            return std::format("(call {}{} {})", serializeIDRef(call.function), inputs, serializeIRValue(call.output));
-        });
+            return std::format("(call {}{} {})",
+                               serializeIDRef(call.function),
+                               serializeIRValue(call.input),
+                               serializeIRValue(call.output));
+        },
+            [](const NextStageOp& call) { return std::format("(stage.next {})", serializeIRValue(call.input)); }
+
+        );
     }
 
     Result<std::string> irToText(const IRModule& module)
@@ -170,9 +168,9 @@ namespace BraneScript::IRSerializer
             std::string members;
             for(size_t m = 0; m < s.members.size(); ++m)
             {
-                std::string mid = s.members[i].id ? s.members[i].id.value() : std::format("-{}", i);
+                std::string mid = s.members[m].id ? s.members[m].id.value() : std::format("-{}", i);
 
-                members += std::format("(\"{}\" {})", mid, serializeType(s.members[i].type));
+                members += std::format("(\"{}\" {})", mid, serializeType(s.members[m].type));
             }
 
             structs += std::format("\n(struct \"{}\" {})", id, members);

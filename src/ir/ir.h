@@ -82,7 +82,6 @@ namespace BraneScript
 
     struct MemAcc
     {
-        IRType structType;
         uint8_t index;
         IRValue ptr;
         IRValue dest;
@@ -168,8 +167,13 @@ namespace BraneScript
     struct CallOp
     {
         IDRef function;
-        std::vector<IRValue> inputs;
+        IRValue input;
         IRValue output;
+    };
+
+    struct NextStageOp
+    {
+        IRValue input;
     };
 
     using IROperation = std::variant<MovOp,
@@ -199,7 +203,8 @@ namespace BraneScript
                                      ConstU32,
                                      ConstF32,
 
-                                     CallOp>;
+                                     CallOp,
+                                     NextStageOp>;
 
     struct IRStructMember
     {

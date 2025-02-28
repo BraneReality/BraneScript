@@ -2,11 +2,8 @@
 #include "enums/result.h"
 #include "ir.h"
 
-namespace BraneScript
+namespace BraneScript::IRSerializer
 {
-    namespace IRSerializer
-    {
-        Result<std::string> irToText(const IRModule& module);
-        Result<IRModule> textToIR(const& module);
-    } // namespace IRSerializer
-} // namespace BraneScript
+    Result<std::string> irToText(const IRModule& module);
+    Result<IRModule> textToIR(std::string_view text);
+} // namespace BraneScript::IRSerializer

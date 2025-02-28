@@ -39,6 +39,10 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(TreeSitterBraneScript)
 FetchContent_MakeAvailable(BraneUtilities)
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    add_compile_options("--target=x86_64-windows-gnu" "-gdwarf")
+endif()
+
 if(MINGW)
     set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -Wa,-mbig-obj -static -static-libgcc -static-libstdc++")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wa,-mbig-obj -static -static-libgcc -static-libstdc++")
