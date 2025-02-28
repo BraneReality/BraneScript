@@ -293,11 +293,58 @@ namespace BraneScript
 
         IRType getValueType(IRValue value) { return currentFunction.value()->localVars[value.id]; }
 
-        IRValue allocValue(IRType value)
+        IRValue allocValue(IRType type)
         {
             IRValue id{.id = (uint32_t)currentFunction.value()->localVars.size()};
-            currentFunction.value()->localVars.push_back(value);
+            currentFunction.value()->localVars.push_back(type);
             return id;
+        }
+
+        Option<IRValue> compileAnonStruct(Node<AnonStructContext> ctx)
+        {
+            std::vector<IRValue> memberValues;
+            for(auto& input : ctx->members)
+            {
+                // TODO validate argument names
+                auto argExpr = compileExpression(input->expression);
+                if(!argExpr)
+                {
+                    recordError("expected value", ctx);
+                    return None();
+                }
+                memberValues.push_back(argExpr.value());
+            }
+
+            std::vector<IRStructMember> memberDefs;
+            memberDefs.reserve(ctx->members.size());
+            for(size_t i = 0; i < ctx->members.size(); ++i)
+            {
+                memberDefs.push_back(
+                    IRStructMember{.id = Some(ctx->members[i]->id->text), .type = getValueType(memberValues[i])});
+            }
+
+            Result<IRType, CompilerMessage> structType = resolveType(memberDefs);
+            if(!structType)
+            {
+                recordError("could not resolve anon struct type", ctx);
+                return None();
+            }
+            // Alloc a struct, but the runtime will give us rootPtr as an I32 pointer
+            IRValue rootPtr = allocValue(structType.ok());
+            for(size_t i = 0; i < memberValues.size(); ++i)
+            {
+                MemAcc memberAccess{};
+                memberAccess.ptr = rootPtr;
+                memberAccess.dest = allocValue(IRNativeType::I32);
+                memberAccess.index = (uint8_t)i;
+                appendOp(memberAccess);
+
+                StoreOp store{};
+                store.ptr = memberAccess.dest;
+                store.src = memberValues[i];
+                appendOp(store);
+            }
+            return Some(rootPtr);
         }
 
         Option<IRValue> compileExpression(ExpressionContextNode expression)
@@ -337,7 +384,6 @@ namespace BraneScript
             },
                           [&](Node<AssignmentContext>& ctx) -> Option<IRValue>
             {
-                recordLog("compiling assign", ctx);
                 auto destRes = compileExpression(ctx->lValue);
                 if(!destRes)
                     return None();
@@ -362,7 +408,6 @@ namespace BraneScript
             },
                           [&](Node<ScopedIdentifier>& ctx) -> Option<IRValue>
             {
-                recordLog("compiling scoped reference", ctx);
                 auto searchRes = ctx->searchFor(ctx, 0);
                 if(!searchRes)
                 {
@@ -410,7 +455,6 @@ namespace BraneScript
             },
                           [&](Node<BinaryOperatorContext>& ctx) -> Option<IRValue>
             {
-                recordLog("compiling binary operator", ctx);
                 auto leftRes = compileExpression(ctx->left);
                 if(!leftRes)
                     return None();
@@ -484,49 +528,7 @@ namespace BraneScript
 
                 return None();
             },
-                          [&](Node<AnonStructContext>& ctx) -> Option<IRValue>
-            {
-                recordError("anon structs not implemented yet", ctx);
-                std::vector<IRValue> memberValues;
-                for(auto& input : ctx->members)
-                {
-                    // TODO validate argument names
-                    recordLog("parsing arg", ctx);
-                    auto argExpr = compileExpression(input->expression);
-                    if(!argExpr)
-                    {
-                        recordError("expected value", ctx);
-                        return None();
-                    }
-                    memberValues.push_back(argExpr.value());
-                }
-
-                std::vector<IRStructMember> memberDefs;
-                for(size_t i = 0; i < ctx->members.size(); ++i)
-                {
-                    memberDefs.push_back(
-                        IRStructMember{.id = Some(ctx->members[i]->id->text), .type = getValueType(memberValues[i])});
-                }
-
-                auto structType = resolveType(memberDefs);
-                // Alloc a struct, but the runtime will give us rootPtr as an I32 pointer
-                auto rootPtr = allocValue(structType);
-                for(size_t i = 0; i < memberValues.size(); ++i)
-                {
-                    MemAcc memberAccess;
-                    memberAccess.ptr = rootPtr;
-                    memberAccess.dest = allocValue(IRNativeType::I32);
-                    memberAccess.structType = structType;
-                    memberAccess.index = (uint8_t)i;
-                    appendOp(memberAccess);
-
-                    StoreOp store;
-                    store.ptr = memberAccess.dest;
-                    store.src = memberValues[i];
-                    appendOp(store);
-                }
-                return Some(rootPtr);
-            },
+                          [&](Node<AnonStructContext>& ctx) -> Option<IRValue> { return compileAnonStruct(ctx); },
                           [&](Node<CallContext>& ctx) -> Option<IRValue>
             {
                 auto idCast = std::get_if<Node<ScopedIdentifier>>(&ctx->callable);
@@ -538,48 +540,49 @@ namespace BraneScript
                     return None();
                 }
 
-                CallOp call{};
                 if((*idCast)->longId() == "continue")
                 {
-                    call.function = "continue";
-                    call.output = allocValue(resolveType(std::make_unique<AnonStructTypeContext>()));
+                    NextStageOp ns{};
+                    auto inputStruct = compileAnonStruct(ctx->args);
+                    if(!inputStruct)
+                    {
+                        recordError("Invalid call sig", ctx->args);
+                        return None();
+                    }
+                    ns.input = inputStruct.value();
+                    appendOp(ns);
+                    return None();
                 }
-                else
+                CallOp call{};
+                auto searchRes = ctx->searchFor(*idCast, 0);
+                if(!searchRes)
                 {
-                    auto searchRes = ctx->searchFor(*idCast, 0);
-                    if(!searchRes)
-                    {
-                        recordError(std::format("{} not found", (*idCast)->longId()), ctx);
-                        return None();
-                    }
-
-                    auto functionCast = std::get_if<Node<FunctionContext>>(&searchRes.value());
-                    if(!functionCast)
-                    {
-                        recordError(
-                            std::format("{} is not a function",
-                                        MATCHV(searchRes.value(), [](const auto& ctx) { return ctx->longId(); })),
-                            ctx);
-                        return None();
-                    }
-
-                    call.function = functionCast->get()->longId();
-                    call.output = allocValue(resolveType(functionCast->get()->callSig->output));
+                    recordError(std::format("{} not found", (*idCast)->longId()), ctx);
+                    return None();
                 }
 
-
-                for(auto& input : ctx->args->members)
+                auto functionCast = std::get_if<Node<FunctionContext>>(&searchRes.value());
+                if(!functionCast)
                 {
-                    // TODO validate argument names
-                    recordLog("parsing arg", ctx);
-                    auto argExpr = compileExpression(input->expression);
-                    if(!argExpr)
-                    {
-                        recordError("invalid argument", ctx);
-                        return None();
-                    }
-                    call.inputs.push_back(argExpr.value());
+                    recordError(std::format("{} is not a function",
+                                            MATCHV(searchRes.value(), [](const auto& ctx) { return ctx->longId(); })),
+                                ctx);
+                    return None();
                 }
+
+                call.function = functionCast->get()->longId();
+                auto retType = resolveType(functionCast->get()->callSig->output);
+                if(!retType)
+                    return None();
+                call.output = allocValue(retType.ok());
+
+                auto inputStruct = compileAnonStruct(ctx->args);
+                if(!inputStruct)
+                {
+                    recordError("Invalid call sig", ctx->args);
+                    return None();
+                }
+                call.input = inputStruct.value();
 
                 // TODO account for unit returns
                 appendOp(call);
@@ -592,7 +595,10 @@ namespace BraneScript
             for(auto& localVar : scope->localVariables)
             {
                 IRValue localId{(uint32_t)currentFunction.value()->localVars.size()};
-                currentFunction.value()->localVars.push_back(resolveType(localVar->type.value()));
+                auto typeRes = resolveType(localVar->type.value());
+                if(!typeRes)
+                    return None();
+                currentFunction.value()->localVars.push_back(typeRes.ok());
                 localVarLookup.insert({localVar, localId});
             }
 
@@ -611,7 +617,7 @@ namespace BraneScript
             auto& func = currentModule.value()->functions[funcId];
             currentFunction = Some(&func);
 
-            auto inType = resolveType(callSig->output);
+            auto inType = resolveType(callSig->input);
             if(!inType)
             {
                 messages.push_back(inType.err());
@@ -632,7 +638,10 @@ namespace BraneScript
             for(auto& arg : callSig->input->members)
             {
                 IRValue localId{(uint32_t)currentFunction.value()->localVars.size()};
-                currentFunction.value()->localVars.push_back(resolveType(arg->type.value()));
+                auto typeRes = resolveType(arg->type.value());
+                if(!typeRes)
+                    return None();
+                currentFunction.value()->localVars.push_back(typeRes.ok());
                 localVarLookup.insert({arg, localId});
             }
 
@@ -650,7 +659,7 @@ namespace BraneScript
             currentPipeline = Some(&pipe);
 
 
-            auto inType = resolveType(ctx->callSig->output);
+            auto inType = resolveType(ctx->callSig->input);
             if(!inType)
             {
                 messages.push_back(inType.err());
