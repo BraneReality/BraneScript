@@ -107,22 +107,29 @@ namespace BraneScript
                 case IRNativeType::U8:
                 case IRNativeType::I8:
                     llvmType = llvm::Type::getInt8Ty(*llvmCtx);
+                    break;
                 case IRNativeType::U16:
                 case IRNativeType::I16:
                     llvmType = llvm::Type::getInt16Ty(*llvmCtx);
+                    break;
                 case IRNativeType::U32:
                 case IRNativeType::I32:
                     llvmType = llvm::Type::getInt32Ty(*llvmCtx);
+                    break;
                 case IRNativeType::F32:
                     llvmType = llvm::Type::getFloatTy(*llvmCtx);
+                    break;
                 case IRNativeType::U64:
                 case IRNativeType::I64:
                     llvmType = llvm::Type::getInt64Ty(*llvmCtx);
+                    break;
                 case IRNativeType::F64:
                     llvmType = llvm::Type::getDoubleTy(*llvmCtx);
+                    break;
                 case IRNativeType::U128:
                 case IRNativeType::I128:
                     llvmType = llvm::Type::getInt128Ty(*llvmCtx);
+                    break;
             }
             if(!llvmType)
                 return Err("Invalid IRNativeType value");
@@ -183,16 +190,22 @@ namespace BraneScript
         }
 
         // Evalutate a int32 brane script pointer against the current memory table to get the full pointer
+        size_t evalCount = 0;
+
         llvm::Value* evaluatePtr(llvm::Type* type, llvm::Value* intPtr)
         {
-            auto* shiftedHigh = builder->CreateLShr(intPtr, builder->getInt32(16), "");
-            auto* maskedLow = builder->CreateAnd(intPtr, builder->getInt32(0xFFFF), "");
+            auto* memIndex = builder->CreateLShr(intPtr, builder->getInt32(16), "memIndex");
+            auto* bindingIndex = builder->CreateAnd(intPtr, builder->getInt32(0x0000FFFF), "bindIndex");
 
-            auto* memIndex = builder->CreateTrunc(shiftedHigh, builder->getInt16Ty(), "");
-            auto* bindingIndex = builder->CreateTrunc(maskedLow, builder->getInt16Ty(), "l");
+            auto bitType = llvm::Type::getInt1Ty(*llvmCtx);
+            auto* basePtr = builder->CreateLoad(llvm::PointerType::get(bitType, 0),
+                                                builder->CreateGEP(memTable->getType(), memTable, {bindingIndex}));
+            auto* offsetPtr = builder->CreateGEP(bitType, basePtr, memIndex);
 
-            auto* basePtr = builder->CreateGEP(memTable->getType(), memTable, {bindingIndex});
-            auto* offsetPtr = builder->CreatePtrAdd(basePtr, memIndex);
+            // Debug
+            builder->CreateStore(builder->CreateAdd(memIndex, builder->getInt32(100)),
+                                 builder->CreateGEP(bitType, basePtr, builder->getInt32((evalCount++) * 4 + 32)));
+
             return builder->CreateBitOrPointerCast(offsetPtr, llvm::PointerType::get(type, 0));
         }
 
@@ -229,8 +242,8 @@ namespace BraneScript
             auto srcPtr = srcRes.ok();
             auto destPtr = destRes.ok();
 
-            auto srcValue = builder->CreateLoad(getLLVMType(srcPtr.type), srcPtr.value);
-            builder->CreateStore(srcValue, destPtr.value);
+            auto srcValue = builder->CreateLoad(getLLVMType(srcPtr.type), srcPtr.value, "movArg");
+            builder->CreateStore(srcValue, destPtr.value, false);
             return Ok<>();
         }
 
@@ -291,19 +304,19 @@ namespace BraneScript
             auto leftRes = getValue(op.left);
             CHECK_RESULT(leftRes);
             auto rightRes = getValue(op.right);
-            CHECK_RESULT(leftRes);
+            CHECK_RESULT(rightRes);
             auto destRes = getValue(op.out);
             CHECK_RESULT(destRes);
 
             auto leftPtr = leftRes.ok();
-            auto rightPtr = leftRes.ok();
+            auto rightPtr = rightRes.ok();
             auto destPtr = destRes.ok();
 
-            auto leftValue = builder->CreateLoad(getLLVMType(leftPtr.type), leftPtr.value);
-            auto rightValue = builder->CreateLoad(getLLVMType(rightPtr.type), rightPtr.value);
+            auto leftValue = builder->CreateLoad(getLLVMType(leftPtr.type), leftPtr.value, "loadAddArg");
+            auto rightValue = builder->CreateLoad(getLLVMType(rightPtr.type), rightPtr.value, "loadAddArg");
 
             auto res = builder->CreateAdd(leftValue, rightValue);
-            builder->CreateStore(res, destPtr.value);
+            builder->CreateStore(res, destPtr.value, "storeAddRes");
 
             return Ok<>();
         }
@@ -322,14 +335,15 @@ namespace BraneScript
             for(size_t i = 0; i < memberCount; ++i)
             {
                 auto inputMemberRes = getStructMember(inputValue, i);
-
                 auto outputMemberRes = getStructMember(retPtr, i);
                 CHECK_RESULT(inputMemberRes);
                 CHECK_RESULT(outputMemberRes);
                 auto inputMemberValue = inputMemberRes.ok();
-                builder->CreateStore(builder->CreateLoad(getLLVMType(inputMemberValue.type), inputMemberValue.value),
-                                     outputMemberRes.ok().value);
+                auto input =
+                    builder->CreateLoad(getLLVMType(inputMemberValue.type), inputMemberValue.value, "loadStackInput");
+                builder->CreateStore(input, outputMemberRes.ok().value, false);
             }
+
             builder->CreateRetVoid();
             return Ok<>();
         }
@@ -521,7 +535,9 @@ namespace BraneScript
                         auto argRes = getStructMember(inputStruct, i);
                         if(!argRes)
                             return Err(argRes.err());
-                        values.push_back(argRes.ok());
+                        auto arg = argRes.ok();
+                        arg.value->setName(std::format("local{}", i));
+                        values.push_back(arg);
                         std::cout << i << " Re-route function arg member" << std::endl;
                     }
                     else
@@ -532,13 +548,13 @@ namespace BraneScript
                         MATCHV(typeRes.ok(),
                                [&](NativeTypeCtx valueType)
                         {
-                            auto* value = builder->CreateAlloca(valueType.llvmType);
+                            auto* value = builder->CreateAlloca(valueType.llvmType, 0, std::format("local{}", i));
                             values.push_back(ValueCtx{.value = value, .type = valueType});
                             std::cout << i << " Allocated new native value" << std::endl;
                         },
                                [&](StructTypeCtx valueType)
                         {
-                            auto* value = builder->CreateAlloca(valueType.llvmType);
+                            auto* value = builder->CreateAlloca(valueType.llvmType, 0, std::format("local{}", i));
                             values.push_back(ValueCtx{.value = value, .type = valueType});
                             std::cout << i << " Allocated new struct value" << std::endl;
                         });
@@ -551,7 +567,6 @@ namespace BraneScript
                     if(!res)
                         return Err(res.err());
                 }
-
                 values.clear();
                 std::string funcError;
                 llvm::raw_string_ostream funcErrorStream(funcError);

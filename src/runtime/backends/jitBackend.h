@@ -9,9 +9,13 @@ namespace BraneScript
     {
         uint16_t binding;
         uint16_t index;
+
+        int32_t asInt() { return *((int32_t*)this); }
+
+        static JitPtr fromInt(int32_t data) { return *((JitPtr*)&data); }
     };
 
-    using JitFuncHandle = void(__cdecl*)(void*, JitPtr, JitPtr);
+    using JitFuncHandle = void(__cdecl*)(void*, int32_t, int32_t);
 
     struct JitStructType;
     using JitType = std::variant<IRNativeType, std::shared_ptr<JitStructType>>;
