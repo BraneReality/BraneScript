@@ -171,6 +171,65 @@ int main(int argc, char* argv[])
         std::cout << "Was able to load function: " << func.first << std::endl;
     }
 
+    void* bindingsPage[65535];
+    int8_t memPage[65535];
+    for(auto& i : memPage)
+        i = 0;
+    for(auto& i : bindingsPage)
+        i = memPage;
+
+    struct Args
+    {
+        uint32_t a;
+        uint32_t b;
+        uint32_t c;
+
+        std::string print() { return std::format("(a: {}, b: {}, c: {})", a, b, c); }
+    };
+
+    auto f0 = backend.functions().at("-f0");
+    auto f1 = backend.functions().at("-f1");
+
+    BraneScript::JitPtr input = {.binding = 0, .index = sizeof(Args)};
+    BraneScript::JitPtr output = {.binding = 0, .index = sizeof(Args) * 2};
+    std::cout << "JitPtr size: " << sizeof(input) << std::endl;
+
+    auto inputPtr = (Args*)bindingsPage[input.binding] + input.index;
+    auto outputPtr = (Args*)bindingsPage[output.binding] + output.index;
+
+    *inputPtr = Args{.a = 2, .b = 5, .c = 3};
+
+    std::cout << "Running -f1 with args " << inputPtr->print() << std::endl;
+    f0(bindingsPage, input.asInt(), output.asInt());
+    std::cout << "-f1 returned: " << outputPtr->print() << std::endl;
+
+    std::cout << "Mem: ";
+    for(size_t i = 0; i < 128; ++i)
+    {
+        std::cout << std::format("{} ", memPage[i]);
+        if(i % 30 == 0 && i != 0)
+            std::cout << std::endl;
+    }
+    std::cout << std::endl;
+
+    // Move output so we can feed it back through, and clean up output memory
+    *inputPtr = *outputPtr;
+    inputPtr->c = 0;
+    *outputPtr = Args{0, 0, 0};
+
+    std::cout << "Running -f2 with args " << inputPtr->print() << std::endl;
+    f1(bindingsPage, input.asInt(), output.asInt());
+    std::cout << "-f2 returned: " << outputPtr->print() << std::endl;
+
+
+    std::cout << "Mem: ";
+    for(size_t i = 0; i < 128; ++i)
+    {
+        std::cout << std::format("{} ", memPage[i]);
+        if(i % 30 == 0 && i != 0)
+            std::cout << std::endl;
+    }
+    std::cout << std::endl;
 
     ts_tree_delete(tree);
     ts_parser_delete(parser);
