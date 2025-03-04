@@ -4,7 +4,6 @@
 
 #include <cassert>
 #include <charconv>
-#include <expected>
 #include <format>
 #include <functional>
 #include <iostream>
@@ -427,7 +426,7 @@ namespace BraneScript
                 return None();
             opr->left = leftNode.value();
 
-            auto tsRight = getField(root, field_left);
+            auto tsRight = getField(root, field_right);
             Expect(root, tsRight, "Expected rvalue");
             auto rightNode = parseExpression(tsRight.value());
             if(!rightNode)

@@ -40,7 +40,7 @@ namespace BraneScript
 
     struct IRValue
     {
-        uint32_t id;
+        uint32_t id = 0xFFFFFFFF;
     };
 
     struct ConstI32
@@ -220,18 +220,18 @@ namespace BraneScript
 
     struct IRPipeline
     {
-        Option<std::string> id;
-        IRType input;
-        IRType output;
+        std::string id;
+        IDRef input;
+        IDRef output;
         std::vector<IDRef> stages;
     };
 
     struct IRFunction
     {
-        Option<std::string> id;
+        std::string id;
         std::vector<IRType> localVars;
-        IRType input;
-        IRType output;
+        IDRef input;
+        IDRef output;
         std::vector<IROperation> operations;
     };
 

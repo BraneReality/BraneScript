@@ -2,11 +2,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "gdb",
+            "type": "codelldb",
             "request": "launch",
             "name": "Cli-Debug",
             "preLaunchTask": "cmake-install-debug",
-            "expressions": "native",
             "program": "${workspaceFolder}/build/Debug/cli/BraneScriptCli.exe",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/build/Debug/cli/",

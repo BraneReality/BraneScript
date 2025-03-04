@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include "parser/documentParser.h"
+#include "runtime/backends/llvm/llvmJitBackend.h"
 #include "tree-sitter-branescript.h"
 #include <string_view>
 
@@ -157,6 +158,19 @@ int main(int argc, char* argv[])
                 std::cout << "Failed to write ir: " << writeRes.err() << std::endl;
         }
     }
+    else
+        return 1;
+
+    BraneScript::LLVMJitBackend backend;
+    backend.stageModule(std::make_shared<BraneScript::IRModule>(compileRes.value()[0]));
+    backend.processModules();
+
+
+    for(auto& func : backend.functions())
+    {
+        std::cout << "Was able to load function: " << func.first << std::endl;
+    }
+
 
     ts_tree_delete(tree);
     ts_parser_delete(parser);

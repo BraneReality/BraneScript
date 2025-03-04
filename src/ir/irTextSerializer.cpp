@@ -163,7 +163,7 @@ namespace BraneScript::IRSerializer
         for(size_t i = 0; i < module.structs.size(); ++i)
         {
             auto& s = module.structs[i];
-            std::string id = s.id ? s.id.value() : std::format("-{}", i);
+            std::string id = s.id ? s.id.value() : std::format("-s{}", i);
 
             std::string members;
             for(size_t m = 0; m < s.members.size(); ++m)
@@ -180,7 +180,6 @@ namespace BraneScript::IRSerializer
         for(size_t i = 0; i < module.functions.size(); ++i)
         {
             auto& f = module.functions[i];
-            std::string id = f.id ? f.id.value() : std::format("-{}", i);
 
             std::string input = serializeType(f.input);
             std::string output = serializeType(f.output);
@@ -197,14 +196,13 @@ namespace BraneScript::IRSerializer
                 ops += "\n\t" + serializeOp(op);
             }
 
-            functions += std::format("\n(func \"{}\" {} {} (vars{}) (ops{}))", id, input, output, vars, ops);
+            functions += std::format("\n(func \"{}\" {} {} (vars{}) (ops{}))", f.id, input, output, vars, ops);
         }
 
         std::string pipelines;
         for(size_t i = 0; i < module.pipelines.size(); ++i)
         {
             auto& p = module.pipelines[i];
-            std::string id = p.id ? p.id.value() : std::format("-{}", i);
 
             std::string input = serializeType(p.input);
             std::string output = serializeType(p.output);
@@ -213,7 +211,7 @@ namespace BraneScript::IRSerializer
             for(auto& stage : p.stages)
                 stages += " " + serializeIDRef(stage);
 
-            pipelines += std::format("\n(pipe \"{}\" {} {} (stages{}))", id, input, output, stages);
+            pipelines += std::format("\n(pipe \"{}\" {} {} (stages{}))", p.id, input, output, stages);
         }
         return Ok(std::format("(module \"{}\" {} {} {})", module.id, structs, functions, pipelines));
     }
