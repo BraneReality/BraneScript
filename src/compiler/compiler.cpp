@@ -1,7 +1,6 @@
 #include "compiler.h"
 
 #include <cassert>
-#include <expected>
 #include <format>
 #include <utility>
 #include "enums/matchv.h"
@@ -339,10 +338,10 @@ namespace BraneScript
                 memberAccess.index = (uint8_t)i;
                 appendOp(memberAccess);
 
-                StoreOp store{};
-                store.ptr = memberAccess.dest;
-                store.src = memberValues[i];
-                appendOp(store);
+                MovOp mov{};
+                mov.dest = memberAccess.dest;
+                mov.src = memberValues[i];
+                appendOp(mov);
             }
             return Some(rootPtr);
         }
@@ -613,9 +612,11 @@ namespace BraneScript
         compileFunction(Option<std::string> identifier, Node<CallSigContext> callSig, Node<ScopeContext> body)
         {
             int32_t funcId = (int32_t)currentModule.value()->functions.size();
-            currentModule.value()->functions.push_back(IRFunction{.id = std::move(identifier)});
+            currentModule.value()->functions.push_back(IRFunction{});
             auto& func = currentModule.value()->functions[funcId];
             currentFunction = Some(&func);
+
+            func.id = identifier ? identifier.value() : std::format("-f{}", funcId);
 
             auto inType = resolveType(callSig->input);
             if(!inType)
@@ -624,7 +625,7 @@ namespace BraneScript
                 return None();
             }
             else
-                func.input = inType.ok();
+                func.input = std::get<IDRef>(inType.ok());
             auto outType = resolveType(callSig->output);
             if(!outType)
             {
@@ -632,7 +633,7 @@ namespace BraneScript
                 return None();
             }
             else
-                func.output = outType.ok();
+                func.output = std::get<IDRef>(outType.ok());
 
             localVarLookup.clear();
             for(auto& arg : callSig->input->members)
@@ -654,7 +655,7 @@ namespace BraneScript
         void compilePipeline(Node<PipelineContext> ctx)
         {
             int32_t pipeId = (int32_t)currentModule.value()->pipelines.size();
-            currentModule.value()->pipelines.push_back(IRPipeline{.id = Some(ctx->identifier->text)});
+            currentModule.value()->pipelines.push_back(IRPipeline{.id = ctx->identifier->text});
             auto& pipe = currentModule.value()->pipelines[pipeId];
             currentPipeline = Some(&pipe);
 
@@ -666,7 +667,7 @@ namespace BraneScript
                 return;
             }
             else
-                pipe.input = inType.ok();
+                pipe.input = std::get<IDRef>(inType.ok());
             auto outType = resolveType(ctx->callSig->output);
             if(!outType)
             {
@@ -674,7 +675,7 @@ namespace BraneScript
                 return;
             }
             else
-                pipe.output = outType.ok();
+                pipe.output = std::get<IDRef>(outType.ok());
 
             std::vector<IRNode<IRFunction>> stageFunctions;
             for(auto& stage : ctx->stages)

@@ -1,6 +1,17 @@
 {
     "dependencies": [
         {
+            "name": "llvm",
+            "default-features": false,
+            "features": [
+                "enable-assertions",
+                "enable-eh",
+                "enable-ffi",
+                "utils",
+                "default-targets"
+            ]
+        },
+        {
             "name": "tree-sitter"
         },
         {

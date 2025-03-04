@@ -16,5 +16,7 @@ add_subdirectory(ir)
 add_subdirectory(cli)
 add_subdirectory(parser)
 add_subdirectory(compiler)
+add_subdirectory(runtime)
 add_subdirectory(types)
+
 

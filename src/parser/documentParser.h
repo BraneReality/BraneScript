@@ -5,7 +5,6 @@
 #ifndef BRANESCRIPT_TSBINDINGS_H
 #define BRANESCRIPT_TSBINDINGS_H
 
-#include <expected>
 #include <memory>
 #include <string>
 #include "documentContext.h"
