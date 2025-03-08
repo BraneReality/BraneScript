@@ -5,25 +5,33 @@
             "type": "codelldb",
             "request": "launch",
             "name": "Cli-Debug",
-            "preLaunchTask": "cmake-install-debug",
-            "program": "${workspaceFolder}/build/Debug/cli/BraneScriptCli.exe",
+            "preLaunchTask": "cargo-build-debug",
+            "program": "${workspaceFolder}/target/x86_64-pc-windows-gnu/debug/brane_script_cli",
+            "sourceLanguages": [
+                "rust"
+            ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/build/Debug/cli/",
+            "cwd": "${workspaceFolder}/brane_script_cli",
             "args": [
-                "exampleScripts/test.bscript"
+                "${workspaceFolder}/exampleScripts/test.bscript"
             ]
         },
         {
             "type": "gdb",
             "request": "launch",
             "name": "Cli-Release",
-            "preLaunchTask": "cmake-install-release",
             "expressions": "native",
-            "program": "./build/Release/cli/BraneScriptCli",
+            "program": "cargo",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/build/Release/cli/",
+            "sourceLanguages": [
+                "rust"
+            ],
+            "cwd": "${workspaceFolder}/brane_script_cli",
             "args": [
-                "exampleScripts/test.bscript"
+                "run",
+                "--release",
+                "--",
+                "${workspaceFolder}/exampleScripts/test.bscript"
             ]
         }
     ]

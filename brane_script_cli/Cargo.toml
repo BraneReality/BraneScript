@@ -1,0 +1,11 @@
+[package]
+name = "brane_script_cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.5.31", features = ["derive"] }
+
+brane_script_compiler = {path = "../brane_script_compiler" }
+tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", branch="main" }
