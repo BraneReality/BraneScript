@@ -2,6 +2,7 @@ build/*
 docs/*
 deps/*
 .cache
+target/
 
 .idea
 /graph_info.json

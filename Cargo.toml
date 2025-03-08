@@ -1,0 +1,12 @@
+[workspace]
+
+resolver = "2"
+
+members = [
+    "brane_script_cli",
+    "brane_script_compiler",
+    "brane_script_runtime"
+]
+
+[workspace.dependencies]
+anyhow = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "brane_script_compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+brane_script_runtime = {path = "../brane_script_runtime"}
+tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", rev="73915b8" }
+
+anyhow.workspace = true
+type-sitter = { version = "0.7.0", default-features = false }
+
+[build-dependencies]
+tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", rev="73915b8" }
+git2 = "0.20.0"
+type-sitter-gen = { path = "../../type-sitter/type-sitter-gen" }
+
