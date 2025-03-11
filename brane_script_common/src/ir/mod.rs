@@ -178,8 +178,8 @@ pub enum IROp {
         output: IRValue,
     },
     NextStage {
+        args_t: IDRef,
         args: IRValue,
-        deps: Option<IRValue>,
     },
 }
 
@@ -209,6 +209,14 @@ impl IRStruct {
         let mut offset = 0;
         let mut max_alignment = 1;
 
+        if self.members.is_empty() {
+            return Ok(IRStructLayout {
+                byte_offsets,
+                size: 1,
+                alignment: 1,
+            });
+        }
+
         for member in &self.members {
             let (size, align) = member.r#type.size_layout(module)?;
 
@@ -225,6 +233,8 @@ impl IRStruct {
         if !self.packed {
             offset = (offset + max_alignment - 1) & !(max_alignment - 1); // Align total size
         }
+
+        assert_ne!(0, offset, "structs with members cannot be zero sized!");
 
         Ok(IRStructLayout {
             byte_offsets,
@@ -328,12 +338,8 @@ impl fmt::Display for IROp {
                 input,
                 output,
             } => write!(f, "(call {} {} {})", func, input, output),
-            IROp::NextStage { args, deps } => {
-                if let Some(deps) = deps {
-                    write!(f, "(stage.next {} {})", args, deps)
-                } else {
-                    write!(f, "(stage.next {})", args)
-                }
+            IROp::NextStage { args_t, args } => {
+                write!(f, "(stage.next {} {})", args_t, args)
             }
         }
     }
@@ -342,8 +348,8 @@ impl fmt::Display for IROp {
 impl fmt::Display for IRFunction {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(func \"{}\" {} {}", self.id, self.input, self.output)?;
-        for op in &self.operations {
-            write!(f, "\n    {}", op)?;
+        for (i, op) in self.operations.iter().enumerate() {
+            write!(f, "\n   {:4} <- {}", i, op)?;
         }
         write!(f, ")")
     }

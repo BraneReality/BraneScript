@@ -68,35 +68,39 @@ fn main() -> anyhow::Result<()> {
         pub c: i32,
     }
 
-    let stack_ptr = 35i32;
+    let stack_ptr = 4i32;
     let args = unsafe { (stack_page.as_mut_ptr().add(stack_ptr as usize)) as *mut Args };
-    unsafe { *args = Args { a: 5, b: 3, c: 8 } }
+    unsafe { std::ptr::write_unaligned(args, Args { a: 5, b: 3, c: 11 }) }
 
     print!("stack before call: ");
-    for c in 0..200 {
+    for c in 0..40 {
         print!("{} ", stack_page[c]);
     }
+    println!("");
     println!("");
 
     println!("running s0 with args {:?}", unsafe { &*args });
     s0(bindings_page.as_ptr(), stack_ptr);
     println!("s0 returned {:?}", unsafe { &*args });
 
+    println!("");
     print!("stack after call: ");
-    for c in 0..200 {
+    for c in 0..40 {
         print!("{} ", stack_page[c]);
     }
+    println!("\n");
     println!("");
 
     println!("running s1 with args {:?}", unsafe { &*args });
     s1(bindings_page.as_ptr(), stack_ptr);
     println!("s1 returned {:?}", unsafe { &*args });
 
+    println!("");
     print!("stack after call: ");
-    for c in 0..200 {
+    for c in 0..40 {
         print!("{} ", stack_page[c]);
     }
-    println!("");
+    println!("\n");
 
     Ok(())
 }
