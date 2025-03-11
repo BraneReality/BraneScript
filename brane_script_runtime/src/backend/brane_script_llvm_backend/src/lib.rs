@@ -124,7 +124,7 @@ impl LLVMJitBackend {
                         LLVMOrcLLJITGetDataLayoutStr(self.lljit),
                     );
                     let tsm = LLVMOrcCreateNewThreadSafeModule(module.as_mut_ptr(), ts_ctx);
-                    println!("staged module:\n{}", module.print_to_string());
+                    println!("staged module:\n{}", module.print_to_string().to_string());
 
                     std::mem::forget(module);
                     self.staged_modules
