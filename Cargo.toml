@@ -3,10 +3,14 @@
 resolver = "2"
 
 members = [
-    "brane_script_cli",
+    "brane_script_cli", 
+    "brane_script_common",
     "brane_script_compiler",
-    "brane_script_runtime"
+    "brane_script_runtime",
+    "brane_script_runtime/src/backend/brane_script_llvm_backend"
 ]
 
 [workspace.dependencies]
 anyhow = "1"
+serde = { version = "1.0.218", features = ["derive"] }
+defer = "0.2.1"

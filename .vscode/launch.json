@@ -6,7 +6,7 @@
             "request": "launch",
             "name": "Cli-Debug",
             "preLaunchTask": "cargo-build-debug",
-            "program": "${workspaceFolder}/target/x86_64-pc-windows-gnu/debug/brane_script_cli",
+            "program": "${workspaceFolder}/target/debug/brane_script_cli",
             "sourceLanguages": [
                 "rust"
             ],

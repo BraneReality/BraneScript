@@ -8,4 +8,6 @@ anyhow.workspace = true
 clap = { version = "4.5.31", features = ["derive"] }
 
 brane_script_compiler = {path = "../brane_script_compiler" }
+brane_script_common = {path = "../brane_script_common" }
+brane_script_runtime = {path = "../brane_script_runtime" }
 tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", branch="main" }

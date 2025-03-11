@@ -1,6 +1,5 @@
-use git2::Repository;
-use std::path::{Path, PathBuf};
-use std::{env, fs};
+use std::fs;
+use std::path::PathBuf;
 use type_sitter_gen::generate_nodes;
 
 fn main() {
