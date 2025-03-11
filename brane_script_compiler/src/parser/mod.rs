@@ -1,54 +1,57 @@
 use anyhow::anyhow;
 use std::{collections::HashMap, str::FromStr, sync::Arc};
-use type_sitter::{HasChild, HasChildren, Node, TreeCursor};
+use type_sitter::{HasChild, Node};
 
-use crate::document_context::{
-    AnonStructContext, AnonStructTypeContext, AssignmentContext, BinaryOperator,
-    BinaryOperatorContext, BlockContext, CallContext, CallSigContext, ConstValue,
-    ConstValueContext, DocumentContext, ExpressionContext, Identifier, MemberInitContext,
-    ModuleContext, PipelineContext, PipelineStageContext, ScopeSegment, ScopedIdentifier,
-    TextContext, TextSource, TypeContext, TypeModifiers, ValueContext, VariableDefinitionContext,
+use crate::{
+    document_context::{
+        AnonStructContext, AnonStructTypeContext, AssignmentContext, BinaryOperator,
+        BinaryOperatorContext, BlockContext, CallContext, CallSigContext, ConstValue,
+        ConstValueContext, DocumentContext, ExpressionContext, Identifier, MemberInitContext,
+        ModuleContext, PipelineContext, PipelineStageContext, ScopeSegment, ScopedIdentifier,
+        TextContext, TextSource, TypeContext, TypeModifiers, ValueContext,
+        VariableDefinitionContext,
+    },
+    MessageType, ToolchainMessage,
 };
+
 pub mod nodes;
 use nodes::*;
 
-pub enum ParserMessageType {
-    Verbose(String),
-    Log(String),
-    Warning(String),
-    Error(anyhow::Error),
-}
-
-pub struct ParserMessage {
-    pub ctx: TextContext,
-    pub data: ParserMessageType,
-}
-
 pub struct DocumentParserResult {
     pub document: Option<DocumentContext>,
-    pub messages: Vec<ParserMessage>,
+    pub messages: Vec<ToolchainMessage>,
 }
 
 pub struct DocumentParser<'a> {
     source_text: &'a str,
     source: Arc<TextSource>,
-    messages: Vec<ParserMessage>,
+    messages: Vec<ToolchainMessage>,
 
     local_variables: Vec<ValueContext>,
 }
 
 impl<'a, 'b> DocumentParser<'a> {
     fn record_err<E: Into<anyhow::Error>>(&mut self, err: E, ctx: TextContext) {
-        self.messages.push(ParserMessage {
-            ctx,
-            data: ParserMessageType::Error(err.into()),
+        self.messages.push(ToolchainMessage {
+            message: format!(
+                "[{}, {}] {}",
+                ctx.range.start_point.row,
+                ctx.range.start_point.column,
+                err.into()
+            ),
+            r#type: MessageType::Error,
         });
     }
 
     fn record_log<T: Into<String>>(&mut self, text: T, ctx: TextContext) {
-        self.messages.push(ParserMessage {
-            ctx,
-            data: ParserMessageType::Log(text.into()),
+        self.messages.push(ToolchainMessage {
+            message: format!(
+                "[{}, {}] {}",
+                ctx.range.start_point.row,
+                ctx.range.start_point.column,
+                text.into()
+            ),
+            r#type: MessageType::Log,
         });
     }
 
@@ -294,6 +297,8 @@ impl<'a, 'b> DocumentParser<'a> {
     ) -> anyhow::Result<PipelineStageContext> {
         let ctx = self.node_ctx(node);
 
+        let identifier = None; // add something like this in when we need it self.parse_identifier(self.map_incorrect(ctx.))
+
         let call_sig = match node.callSig() {
             Some(call_sig) => self.parse_call_sig(self.map_incorrect(call_sig)?)?,
             None => return Err(anyhow!("call sig missing!")),
@@ -303,6 +308,7 @@ impl<'a, 'b> DocumentParser<'a> {
 
         Ok(PipelineStageContext {
             ctx,
+            identifier,
             call_sig,
             body,
         })
@@ -376,7 +382,7 @@ impl<'a, 'b> DocumentParser<'a> {
             ctx,
             identifier,
             structs: HashMap::new(),
-            fuctions: HashMap::new(),
+            functions: HashMap::new(),
             pipelines,
         });
     }
@@ -413,7 +419,7 @@ impl<'a, 'b> DocumentParser<'a> {
 
         let mut has_error = false;
         for m in doc_parser.messages.iter() {
-            if let ParserMessageType::Error(_) = &m.data {
+            if let MessageType::Error = &m.r#type {
                 has_error = true;
                 break;
             }

@@ -9,9 +9,10 @@ tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBra
 
 anyhow.workspace = true
 type-sitter = { version = "0.7.0", default-features = false }
+annotate-snippets = "0.11.5"
+defer = "0.2.1"
 
 [build-dependencies]
 tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", rev="73915b8" }
-git2 = "0.20.0"
-type-sitter-gen = { path = "../../type-sitter/type-sitter-gen" }
+type-sitter-gen = "0.7.2" 
 

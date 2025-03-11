@@ -4,4 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+brane_script_llvm_backend = { path = "src/backend/brane_script_llvm_backend"}
+brane_script_common = { path = "../brane_script_common" }
 
+serde.workspace = true
+defer.workspace = true

@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use std::{path::PathBuf, sync::Arc};
 use type_sitter::{Node, Parser, Tree};
 
-pub use crate::parser::ParserMessage;
+pub use crate::ToolchainMessage;
 
 pub struct ParsedDocument {
     parser: Parser<SourceFile<'static>>,
@@ -14,7 +14,7 @@ pub struct ParsedDocument {
     path: PathBuf,
     source: String,
     cached_ctx: Option<DocumentContext>,
-    messages: Vec<ParserMessage>,
+    messages: Vec<ToolchainMessage>,
 }
 
 impl ParsedDocument {
