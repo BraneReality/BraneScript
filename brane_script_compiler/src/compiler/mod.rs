@@ -5,7 +5,6 @@ use brane_script_runtime::ir::{
     IDRef, IRFunction, IRModule, IRNativeType, IROp, IRPipeline, IRStruct, IRStructMember, IRType,
     IRValue,
 };
-use defer::defer;
 
 use crate::{
     document_context::{
@@ -13,7 +12,6 @@ use crate::{
         ContextRef, DocumentContext, ExpressionContext, ModuleContext, PipelineContext,
         ProjectContext, ScopeSegment, StructContext, TextContext, TypeContext, TypeModifiers,
     },
-    parsed_document::ParsedDocument,
     MessageType, ToolchainMessage,
 };
 
@@ -50,19 +48,41 @@ struct IRWriterScope {
     /// Operands to execute when the scope closes
     defered_ops: Vec<Box<dyn FnOnce(&mut IRWriter) -> anyhow::Result<()>>>,
     /// Values with labels
-    labeled_values: HashMap<String, IRValue>,
+    labeled_values: HashMap<String, WriterIRValue>,
 }
 
 pub struct IRWriter {
     /// (operation, Option<type operation returns, is i32 ptr to value>
-    pub operations: Vec<(IROp, Option<(IRType, bool)>)>,
+    pub operations: Vec<(IROp, Option<IRValueCtx>)>,
     pub scopes: LinkedList<IRWriterScope>,
+}
+
+pub struct IROpCtx {}
+
+#[derive(Clone)]
+pub struct IRValueCtx {
+    pub r#type: IRType,
+    // if true the value holds the (type|struct address), if fase we have an i32 representing pointer to one of those
+    // types
+    pub is_deref: bool,
+}
+
+#[derive(Clone)]
+pub struct WriterIRValue {
+    pub ctx: IRValueCtx,
+    pub value: IRValue,
 }
 
 impl IRWriter {
     pub fn new(arg_type: IDRef) -> IRWriter {
         IRWriter {
-            operations: vec![(IROp::NoOp, Some((IRType::Struct(arg_type), false)))],
+            operations: vec![(
+                IROp::NoOp,
+                Some(IRValueCtx {
+                    r#type: IRType::Struct(arg_type),
+                    is_deref: true,
+                }),
+            )],
             scopes: LinkedList::new(),
         }
     }
@@ -72,17 +92,14 @@ impl IRWriter {
     }
 
     /// Write a new operation and record it's return value for future use
-    pub fn write(
-        &mut self,
-        op: IROp,
-        out_type: Option<IRType>,
-        ret_is_ptr: bool,
-    ) -> Option<IRValue> {
+    pub fn write(&mut self, op: IROp, out_type: Option<IRValueCtx>) -> Option<WriterIRValue> {
         let op_index = self.operations.len() as u32;
-        self.operations
-            .push((op, out_type.as_ref().map(|t| (t.clone(), ret_is_ptr))));
-        if let Some(_) = out_type {
-            Some(IRValue { 0: op_index })
+        self.operations.push((op, out_type.clone()));
+        if let Some(ctx) = out_type {
+            Some(WriterIRValue {
+                ctx,
+                value: IRValue { 0: op_index },
+            })
         } else {
             None
         }
@@ -118,15 +135,16 @@ impl IRWriter {
     }
 
     /// Get the stored type of a value
-    pub fn get_value_type(&self, value: IRValue) -> Option<(IRType, bool)> {
+    pub fn get_value_ctx(&self, value: IRValue) -> anyhow::Result<IRValueCtx> {
         self.operations
             .get(value.0 as usize)
-            .as_ref()
-            .map(|(_, t)| t.clone())
-            .flatten()
+            .ok_or(anyhow!("no value {}", value.0))?
+            .1
+            .clone()
+            .ok_or(anyhow!("op {} does not return a value", value.0))
     }
 
-    pub fn set_labeled_value(&mut self, label: impl Into<String>, value: IRValue) {
+    pub fn set_labeled_value(&mut self, label: impl Into<String>, value: WriterIRValue) {
         self.scopes
             .back_mut()
             .expect("needs at least one scope")
@@ -134,27 +152,25 @@ impl IRWriter {
             .insert(label.into(), value);
     }
 
-    pub fn get_labeled_value(&self, label: &str) -> Option<IRValue> {
+    pub fn get_labeled_value(&self, label: &str) -> Option<WriterIRValue> {
         for scope in self.scopes.iter().rev() {
             if let Some(value) = scope.labeled_values.get(label) {
-                return Some(*value);
+                return Some(value.clone());
             }
         }
         None
     }
 
     // allocate stack memory of a type and get a i32 value representing a pointer back
-    pub fn alloca(&mut self, r#type: IRType) -> IRValue {
-        let is_shallow_ptr = match r#type {
-            IRType::Native(_) => true,
-            IRType::Struct(_) => false,
-        };
+    pub fn alloca(&mut self, r#type: IRType) -> WriterIRValue {
         self.write(
             IROp::AllocA {
                 r#type: r#type.clone(),
             },
-            Some(r#type),
-            is_shallow_ptr,
+            Some(IRValueCtx {
+                r#type,
+                is_deref: false,
+            }),
         )
         .expect("we should always get a value if we pass a ret type")
     }
@@ -165,7 +181,7 @@ impl IRWriter {
         ptr: IRValue,
         index: usize,
         module: &IRModule,
-    ) -> anyhow::Result<IRValue> {
+    ) -> anyhow::Result<WriterIRValue> {
         let structure = match module.get_struct(structure_type) {
             Some(s) => s,
             None => bail!("could not find struct for index"),
@@ -180,116 +196,86 @@ impl IRWriter {
             None => bail!("Tried to access non-existant struct member"),
         };
 
+        if *ptr_offset == 0 {
+            let m_type = structure.members[index].r#type.clone();
+            return Ok(WriterIRValue {
+                ctx: IRValueCtx {
+                    is_deref: match &m_type {
+                        IRType::Native(_) => false,
+                        IRType::Struct(_) => true,
+                    },
+                    r#type: m_type,
+                },
+                value: ptr,
+            });
+        }
+
         let offset_value = self.get_const_u32(*ptr_offset as u32);
-        let member_ptr_index = self.add(ptr, offset_value)?;
+        let member_ptr_index = self.add(IRNativeType::I32, ptr, offset_value.value)?;
 
-        // Correct output type
-        let op = &mut self.operations[member_ptr_index.0 as usize];
-        let m_type = &structure.members[index].r#type;
-        op.1 = Some((
-            m_type.clone(),
-            match m_type {
-                IRType::Native(_) => true,
-                IRType::Struct(_) => false,
+        Ok(WriterIRValue {
+            ctx: IRValueCtx {
+                r#type: structure.members[index].r#type.clone(),
+                is_deref: false,
             },
-        ));
-
-        Ok(member_ptr_index)
+            value: member_ptr_index.value,
+        })
     }
 
     /// Operation that registers a const
-    pub fn get_const_u32(&mut self, value: u32) -> IRValue {
+    pub fn get_const_u32(&mut self, value: u32) -> WriterIRValue {
         self.write(
             IROp::ConstU32 { value },
-            Some(IRType::Native(IRNativeType::U32)),
-            false,
+            Some(IRValueCtx {
+                r#type: IRType::Native(IRNativeType::U32),
+                is_deref: true,
+            }),
         )
         .expect("we should always get a value if we pass a ret type")
     }
 
-    pub fn resolve_value(&mut self, value: IRValue) -> anyhow::Result<IRValue> {
-        let storage = match self.get_value_type(value) {
-            Some(s) => s,
-            None => bail!("value not found!"),
-        };
-
-        Ok(if storage.1 {
-            match storage.0 {
-                IRType::Native(nt) => self.load(nt, value)?,
-                IRType::Struct(_) => {
-                    bail!("Cannot load struct types! Use get_struct_member_ptr() to access data")
-                }
+    pub fn deref_value(&mut self, value: &WriterIRValue) -> anyhow::Result<WriterIRValue> {
+        Ok(if !value.ctx.is_deref {
+            match value.ctx.r#type {
+                IRType::Native(nt) => self.load(nt, value.value)?,
+                IRType::Struct(_) => self.load(IRNativeType::I32, value.value)?,
             }
         } else {
-            value
+            value.clone()
         })
     }
 
-    pub fn add(&mut self, left: IRValue, right: IRValue) -> anyhow::Result<IRValue> {
-        let left = self.resolve_value(left)?;
-        let right = self.resolve_value(right)?;
-
+    pub fn add(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
         Ok(self
             .write(
                 IROp::Add { left, right },
-                Some(self.get_value_type(left).unwrap().0),
-                false,
+                Some(IRValueCtx {
+                    r#type: IRType::Native(r#type),
+                    is_deref: true,
+                }),
             )
             .expect("we should always get a value if we pass a ret type"))
     }
 
-    pub fn sub(&mut self, left: IRValue, right: IRValue) -> anyhow::Result<IRValue> {
-        let left = self.resolve_value(left)?;
-        let right = self.resolve_value(right)?;
-
-        Ok(self
-            .write(
-                IROp::Sub { left, right },
-                Some(self.get_value_type(left).unwrap().0),
-                false,
-            )
-            .expect("we should always get a value if we pass a ret type"))
-    }
-
-    pub fn mul(&mut self, left: IRValue, right: IRValue) -> anyhow::Result<IRValue> {
-        let left = self.resolve_value(left)?;
-        let right = self.resolve_value(right)?;
-
-        Ok(self
-            .write(
-                IROp::Mul { left, right },
-                Some(self.get_value_type(left).unwrap().0),
-                false,
-            )
-            .expect("we should always get a value if we pass a ret type"))
-    }
-
-    pub fn div(&mut self, left: IRValue, right: IRValue) -> anyhow::Result<IRValue> {
-        let left = self.resolve_value(left)?;
-        let right = self.resolve_value(right)?;
-
-        Ok(self
-            .write(
-                IROp::Div { left, right },
-                Some(self.get_value_type(left).unwrap().0),
-                false,
-            )
-            .expect("we should always get a value if we pass a ret type"))
-    }
-
-    fn load(&mut self, r#type: IRNativeType, ptr: IRValue) -> anyhow::Result<IRValue> {
+    fn load(&mut self, r#type: IRNativeType, ptr: IRValue) -> anyhow::Result<WriterIRValue> {
         Ok(self
             .write(
                 IROp::Load { ptr, r#type },
-                Some(IRType::Native(r#type)),
-                false,
+                Some(IRValueCtx {
+                    r#type: IRType::Native(r#type),
+                    is_deref: true,
+                }),
             )
             .expect("we should always get a value if we pass a ret type"))
     }
 
     fn store(&mut self, src: IRValue, dest: IRValue) -> anyhow::Result<()> {
-        let src = self.resolve_value(src)?;
-        self.write(IROp::Store { src, ptr: dest }, None, false);
+        self.write(IROp::Store { src, ptr: dest }, None);
         Ok(())
     }
 
@@ -297,9 +283,19 @@ impl IRWriter {
         todo!();
     }
 
-    fn next_stage(&mut self, args: IRValue, deps: Option<IRValue>) -> anyhow::Result<()> {
-        let args = self.resolve_value(args)?;
-        self.write(IROp::NextStage { args, deps }, None, false);
+    fn next_stage(&mut self, args: WriterIRValue, deps: Option<IRValue>) -> anyhow::Result<()> {
+        let struct_t = match args.ctx.r#type {
+            IRType::Native(_) => bail!("Can't return native type!"),
+            IRType::Struct(idref) => idref,
+        };
+        assert!(deps.is_none(), "todo");
+        self.write(
+            IROp::NextStage {
+                args_t: struct_t,
+                args: args.value,
+            },
+            None,
+        );
         Ok(())
     }
 
@@ -319,11 +315,11 @@ impl IRWriter {
             let dest_mem_ptr = self.get_struct_member_ptr(struct_type, dest, i, module)?;
             match &s.members[i].r#type {
                 IRType::Native(r#type) => {
-                    let value = self.load(r#type.clone(), src_mem_ptr)?;
-                    self.store(value, dest_mem_ptr)?;
+                    let value = self.load(r#type.clone(), src_mem_ptr.value)?;
+                    self.store(value.value, dest_mem_ptr.value)?;
                 }
                 IRType::Struct(struct_type) => {
-                    self.copy_struct(struct_type, src_mem_ptr, dest_mem_ptr, module)?;
+                    self.copy_struct(struct_type, src_mem_ptr.value, dest_mem_ptr.value, module)?;
                 }
             }
         }
@@ -600,7 +596,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         ctx: &AnonStructContext,
         writer: &mut IRWriter,
         module: &mut IRModule,
-    ) -> anyhow::Result<IRValue> {
+    ) -> anyhow::Result<WriterIRValue> {
         let mut member_values = Vec::new();
         for m in ctx.members.iter() {
             let m_value = self.compile_expression(&m.expression, writer, module)?;
@@ -617,7 +613,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         for i in 0..ctx.members.len() {
             member_defs.push(IRStructMember {
                 id: Some(ctx.members[i].id.text.clone()),
-                r#type: writer.get_value_type(member_values[i]).unwrap().0,
+                r#type: member_values[i].ctx.r#type.clone(),
             })
         }
         let struct_type = self
@@ -625,14 +621,19 @@ impl<'ctx> GenerateIRPass<'ctx> {
             .map_err(|e| anyhow!(e.message))?;
         let root_ptr = writer.alloca(IRType::Struct(struct_type.clone()));
         for i in 0..member_values.len() {
-            let mem_ptr = writer.get_struct_member_ptr(&struct_type, root_ptr, i, module)?;
+            let mem_ptr = writer.get_struct_member_ptr(&struct_type, root_ptr.value, i, module)?;
             match &member_defs[i].r#type {
-                IRType::Native(r#type) => {
-                    let value = writer.load(r#type.clone(), member_values[i])?;
-                    writer.store(value, mem_ptr)?;
+                IRType::Native(_) => {
+                    let value = writer.deref_value(&member_values[i])?;
+                    writer.store(value.value, mem_ptr.value)?;
                 }
                 IRType::Struct(struct_type) => {
-                    writer.copy_struct(struct_type, member_values[i], mem_ptr, module)?;
+                    writer.copy_struct(
+                        struct_type,
+                        member_values[i].value,
+                        mem_ptr.value,
+                        module,
+                    )?;
                 }
             }
         }
@@ -645,17 +646,20 @@ impl<'ctx> GenerateIRPass<'ctx> {
         expression: &ExpressionContext,
         writer: &mut IRWriter,
         module: &mut IRModule,
-    ) -> anyhow::Result<Option<IRValue>> {
+    ) -> anyhow::Result<Option<WriterIRValue>> {
         Ok(match expression {
             ExpressionContext::Scope(block) => self.compile_block(block.as_ref(), writer, module),
             ExpressionContext::Assignment(assignment) => {
                 let src = self
                     .compile_expression(&assignment.src, writer, module)?
                     .ok_or(anyhow!("arg is not value!"))?;
+                let src = writer.deref_value(&src)?;
                 let dest = self
                     .compile_expression(&assignment.dest, writer, module)?
                     .ok_or(anyhow!("arg is not value!"))?;
-                writer.store(src, dest)?;
+
+                // TODO handle structs
+                writer.store(src.value, dest.value)?;
                 None
             }
             ExpressionContext::VariableDefinition(var_def) => {
@@ -676,7 +680,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
                     .map_err(|e| anyhow!(e.message))?;
                 let mem = writer.alloca(var_type);
 
-                writer.set_labeled_value(var_label.text.clone(), mem);
+                writer.set_labeled_value(var_label.text.clone(), mem.clone());
                 Some(mem)
             }
             ExpressionContext::ConstValue(_) => todo!(),
@@ -693,29 +697,34 @@ impl<'ctx> GenerateIRPass<'ctx> {
                 let ptr = self
                     .compile_expression(&gep.base_expression, writer, module)?
                     .ok_or(anyhow!("expression is not value!"))?;
-                let struct_type = writer
-                    .get_value_type(ptr)
-                    .ok_or(anyhow!("couldn't get value type!"))?
-                    .0;
-                let struct_type = match struct_type {
+                let struct_type = match ptr.ctx.r#type {
                     IRType::Native(_) => bail!("Can't get member of non-struct type!"),
                     IRType::Struct(st) => st,
                 };
-                Some(writer.get_struct_member_ptr(&struct_type, ptr, gep.member, module)?)
+                Some(writer.get_struct_member_ptr(&struct_type, ptr.value, gep.member, module)?)
             }
             ExpressionContext::UnaryOperator(uop) => todo!(),
             ExpressionContext::BinaryOperator(bop) => {
                 let left = self
                     .compile_expression(&bop.left, writer, module)?
                     .ok_or(anyhow!("arg is not value!"))?;
+                let left = writer.deref_value(&left)?;
                 let right = self
                     .compile_expression(&bop.right, writer, module)?
                     .ok_or(anyhow!("arg is not value!"))?;
+                let right = writer.deref_value(&right)?;
+
+                let ops_type = match left.ctx.r#type {
+                    IRType::Native(nt) => nt,
+                    IRType::Struct(_) => bail!("Struts don't support binary operators yet!"),
+                };
+
+                // TODO make it so we don't continue evaluating logic comparisions if they're already resolved
                 Some(match bop.op_type {
-                    BinaryOperator::Add => writer.add(left, right)?,
-                    BinaryOperator::Sub => writer.sub(left, right)?,
-                    BinaryOperator::Mul => writer.mul(left, right)?,
-                    BinaryOperator::Div => writer.div(left, right)?,
+                    BinaryOperator::Add => writer.add(ops_type, left.value, right.value)?,
+                    BinaryOperator::Sub => todo!(),
+                    BinaryOperator::Mul => todo!(),
+                    BinaryOperator::Div => todo!(),
                     BinaryOperator::Mod => todo!(),
                     BinaryOperator::Equal => todo!(),
                     BinaryOperator::NotEqual => todo!(),
@@ -744,7 +753,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
 
                 let arg_v = self.compile_anon_struct(&call.args, writer, module)?;
 
-                //TODO make these more elant
+                //TODO make these more elegant
                 match format!("{}", id).as_str() {
                     "next_stage" => {
                         writer.next_stage(arg_v, None)?;
@@ -769,7 +778,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         block: &BlockContext,
         writer: &mut IRWriter,
         module: &mut IRModule,
-    ) -> Option<IRValue> {
+    ) -> Option<WriterIRValue> {
         let mut last_expression = None;
         for expr in block.expressions.iter() {
             match self.compile_expression(expr, writer, module) {
