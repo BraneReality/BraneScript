@@ -107,9 +107,6 @@ pub enum IROp {
     ConstI32 {
         value: i32,
     },
-    ConstU32 {
-        value: u32,
-    },
     ConstF32 {
         value: f32,
     },
@@ -124,39 +121,63 @@ pub enum IROp {
         src: IRValue,
         ptr: IRValue,
     },
-    Add {
+    IAdd {
         left: IRValue,
         right: IRValue,
     },
-    Sub {
+    FAdd {
         left: IRValue,
         right: IRValue,
     },
-    Mul {
+    ISub {
         left: IRValue,
         right: IRValue,
     },
-    Div {
+    FSub {
         left: IRValue,
         right: IRValue,
     },
-    Rem {
+    IMul {
         left: IRValue,
         right: IRValue,
     },
-    Eq {
+    FMul {
         left: IRValue,
         right: IRValue,
     },
-    Ne {
+    SDiv {
         left: IRValue,
         right: IRValue,
     },
-    Gt {
+    UDiv {
         left: IRValue,
         right: IRValue,
     },
-    Ge {
+    FDiv {
+        left: IRValue,
+        right: IRValue,
+    },
+    URem {
+        left: IRValue,
+        right: IRValue,
+    },
+    SRem {
+        left: IRValue,
+        right: IRValue,
+    },
+    CmpEq {
+        left: IRValue,
+        right: IRValue,
+    },
+    CmpNe {
+        left: IRValue,
+        right: IRValue,
+    },
+    CmpGt {
+        left: IRValue,
+        right: IRValue,
+    },
+    CmpGe {
         left: IRValue,
         right: IRValue,
     },
@@ -316,20 +337,25 @@ impl fmt::Display for IROp {
         match self {
             IROp::NoOp => write!(f, "(nop)"),
             IROp::ConstI32 { value } => write!(f, "(const.i32 {})", value),
-            IROp::ConstU32 { value } => write!(f, "(const.u32 {})", value),
             IROp::ConstF32 { value } => write!(f, "(const.f32 {})", value),
             IROp::AllocA { r#type } => write!(f, "(alloc {})", r#type),
             IROp::Load { r#type, ptr } => write!(f, "(load {} {})", r#type.to_str(), ptr),
             IROp::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
-            IROp::Add { left, right } => write!(f, "(add {} {})", left, right),
-            IROp::Sub { left, right } => write!(f, "(sub {} {})", left, right),
-            IROp::Mul { left, right } => write!(f, "(mul {} {})", left, right),
-            IROp::Div { left, right } => write!(f, "(div {} {})", left, right),
-            IROp::Rem { left, right } => write!(f, "(rem {} {})", left, right),
-            IROp::Eq { left, right } => write!(f, "(eq {} {})", left, right),
-            IROp::Ne { left, right } => write!(f, "(ne {} {})", left, right),
-            IROp::Gt { left, right } => write!(f, "(gt {} {})", left, right),
-            IROp::Ge { left, right } => write!(f, "(ge {} {})", left, right),
+            IROp::IAdd { left, right } => write!(f, "(i_add {} {})", left, right),
+            IROp::FAdd { left, right } => write!(f, "(s_add {} {})", left, right),
+            IROp::ISub { left, right } => write!(f, "(i_sub {} {})", left, right),
+            IROp::FSub { left, right } => write!(f, "(f_sub {} {})", left, right),
+            IROp::IMul { left, right } => write!(f, "(i_mul {} {})", left, right),
+            IROp::FMul { left, right } => write!(f, "(f_mul {} {})", left, right),
+            IROp::SDiv { left, right } => write!(f, "(s_div {} {})", left, right),
+            IROp::UDiv { left, right } => write!(f, "(u_div {} {})", left, right),
+            IROp::FDiv { left, right } => write!(f, "(f_div {} {})", left, right),
+            IROp::SRem { left, right } => write!(f, "(s_rem {} {})", left, right),
+            IROp::URem { left, right } => write!(f, "(u_rem {} {})", left, right),
+            IROp::CmpEq { left, right } => write!(f, "(eq {} {})", left, right),
+            IROp::CmpNe { left, right } => write!(f, "(ne {} {})", left, right),
+            IROp::CmpGt { left, right } => write!(f, "(gt {} {})", left, right),
+            IROp::CmpGe { left, right } => write!(f, "(ge {} {})", left, right),
             IROp::And { left, right } => write!(f, "(and {} {})", left, right),
             IROp::Or { left, right } => write!(f, "(or {} {})", left, right),
             IROp::Xor { left, right } => write!(f, "(xor {} {})", left, right),

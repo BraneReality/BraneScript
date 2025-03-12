@@ -210,7 +210,7 @@ impl IRWriter {
             });
         }
 
-        let offset_value = self.get_const_u32(*ptr_offset as u32);
+        let offset_value = self.get_const_i32(*ptr_offset as i32);
         let member_ptr_index = self.add(IRNativeType::I32, ptr, offset_value.value)?;
 
         Ok(WriterIRValue {
@@ -223,9 +223,9 @@ impl IRWriter {
     }
 
     /// Operation that registers a const
-    pub fn get_const_u32(&mut self, value: u32) -> WriterIRValue {
+    pub fn get_const_i32(&mut self, value: i32) -> WriterIRValue {
         self.write(
-            IROp::ConstU32 { value },
+            IROp::ConstI32 { value },
             Some(IRValueCtx {
                 r#type: IRType::Native(IRNativeType::U32),
                 is_deref: true,
@@ -251,15 +251,191 @@ impl IRWriter {
         left: IRValue,
         right: IRValue,
     ) -> anyhow::Result<WriterIRValue> {
-        Ok(self
-            .write(
-                IROp::Add { left, right },
-                Some(IRValueCtx {
-                    r#type: IRType::Native(r#type),
-                    is_deref: true,
-                }),
-            )
-            .expect("we should always get a value if we pass a ret type"))
+        Ok(match r#type {
+            IRNativeType::I128
+            | IRNativeType::U128
+            | IRNativeType::I64
+            | IRNativeType::U64
+            | IRNativeType::I32
+            | IRNativeType::U32
+            | IRNativeType::I16
+            | IRNativeType::U16
+            | IRNativeType::U8
+            | IRNativeType::I8 => self
+                .write(
+                    IROp::IAdd { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::F32 | IRNativeType::F64 => self
+                .write(
+                    IROp::FAdd { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+        })
+    }
+
+    pub fn sub(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        Ok(match r#type {
+            IRNativeType::I128
+            | IRNativeType::U128
+            | IRNativeType::I64
+            | IRNativeType::U64
+            | IRNativeType::I32
+            | IRNativeType::U32
+            | IRNativeType::I16
+            | IRNativeType::U16
+            | IRNativeType::U8
+            | IRNativeType::I8 => self
+                .write(
+                    IROp::ISub { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::F32 | IRNativeType::F64 => self
+                .write(
+                    IROp::FSub { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+        })
+    }
+
+    pub fn mul(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        Ok(match r#type {
+            IRNativeType::I128
+            | IRNativeType::I64
+            | IRNativeType::I32
+            | IRNativeType::I16
+            | IRNativeType::I8
+            | IRNativeType::U16
+            | IRNativeType::U32
+            | IRNativeType::U64
+            | IRNativeType::U8
+            | IRNativeType::U128 => self
+                .write(
+                    IROp::IMul { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::F32 | IRNativeType::F64 => self
+                .write(
+                    IROp::FMul { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+        })
+    }
+
+    pub fn div(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        Ok(match r#type {
+            IRNativeType::I128
+            | IRNativeType::I64
+            | IRNativeType::I32
+            | IRNativeType::I16
+            | IRNativeType::I8 => self
+                .write(
+                    IROp::SDiv { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::U16
+            | IRNativeType::U32
+            | IRNativeType::U64
+            | IRNativeType::U8
+            | IRNativeType::U128 => self
+                .write(
+                    IROp::UDiv { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::F32 | IRNativeType::F64 => self
+                .write(
+                    IROp::FDiv { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+        })
+    }
+
+    pub fn rem(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        Ok(match r#type {
+            IRNativeType::I128
+            | IRNativeType::I64
+            | IRNativeType::I32
+            | IRNativeType::I16
+            | IRNativeType::I8 => self
+                .write(
+                    IROp::SRem { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::U16
+            | IRNativeType::U32
+            | IRNativeType::U64
+            | IRNativeType::U8
+            | IRNativeType::U128 => self
+                .write(
+                    IROp::URem { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::F32 | IRNativeType::F64 => bail!("can't get remainder of floating types"),
+        })
     }
 
     fn load(&mut self, r#type: IRNativeType, ptr: IRValue) -> anyhow::Result<WriterIRValue> {
@@ -714,32 +890,41 @@ impl<'ctx> GenerateIRPass<'ctx> {
                     .ok_or(anyhow!("arg is not value!"))?;
                 let right = writer.deref_value(&right)?;
 
-                let ops_type = match left.ctx.r#type {
-                    IRType::Native(nt) => nt,
-                    IRType::Struct(_) => bail!("Struts don't support binary operators yet!"),
-                };
-
                 // TODO make it so we don't continue evaluating logic comparisions if they're already resolved
-                Some(match bop.op_type {
-                    BinaryOperator::Add => writer.add(ops_type, left.value, right.value)?,
-                    BinaryOperator::Sub => todo!(),
-                    BinaryOperator::Mul => todo!(),
-                    BinaryOperator::Div => todo!(),
-                    BinaryOperator::Mod => todo!(),
-                    BinaryOperator::Equal => todo!(),
-                    BinaryOperator::NotEqual => todo!(),
-                    BinaryOperator::Greater => todo!(),
-                    BinaryOperator::GreaterEqual => todo!(),
-                    BinaryOperator::Less => todo!(),
-                    BinaryOperator::LessEqual => todo!(),
-                    BinaryOperator::LogicAnd => todo!(),
-                    BinaryOperator::LogicOr => todo!(),
-                    BinaryOperator::BitwiseAnd => todo!(),
-                    BinaryOperator::BitwiseOr => todo!(),
-                    BinaryOperator::BitwiseXOr => todo!(),
-                    BinaryOperator::BitshiftLeft => todo!(),
-                    BinaryOperator::BitshiftRight => todo!(),
-                })
+                match left.ctx.r#type {
+                    IRType::Struct(_) => bail!("Struts don't support binary operators yet!"),
+                    IRType::Native(l_type) => {
+                        let r_type = match right.ctx.r#type {
+                            IRType::Struct(_) => bail!("Operator overrides not implemented yet!"),
+                            IRType::Native(nt) => nt,
+                        };
+
+                        if l_type != r_type {
+                            bail!("Operator args must be same type ({}, {})", l_type, r_type);
+                        }
+
+                        Some(match bop.op_type {
+                            BinaryOperator::Add => writer.add(l_type, left.value, right.value)?,
+                            BinaryOperator::Sub => writer.sub(l_type, left.value, right.value)?,
+                            BinaryOperator::Mul => writer.mul(l_type, left.value, right.value)?,
+                            BinaryOperator::Div => writer.div(l_type, left.value, right.value)?,
+                            BinaryOperator::Mod => writer.rem(l_type, left.value, right.value)?,
+                            BinaryOperator::Equal => todo!(),
+                            BinaryOperator::NotEqual => todo!(),
+                            BinaryOperator::Greater => todo!(),
+                            BinaryOperator::GreaterEqual => todo!(),
+                            BinaryOperator::Less => todo!(),
+                            BinaryOperator::LessEqual => todo!(),
+                            BinaryOperator::LogicAnd => todo!(),
+                            BinaryOperator::LogicOr => todo!(),
+                            BinaryOperator::BitwiseAnd => todo!(),
+                            BinaryOperator::BitwiseOr => todo!(),
+                            BinaryOperator::BitwiseXOr => todo!(),
+                            BinaryOperator::BitshiftLeft => todo!(),
+                            BinaryOperator::BitshiftRight => todo!(),
+                        })
+                    }
+                }
             }
             ExpressionContext::AnonStruct(anon_struct) => {
                 Some(self.compile_anon_struct(&anon_struct, writer, module)?)

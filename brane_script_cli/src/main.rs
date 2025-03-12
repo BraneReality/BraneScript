@@ -68,7 +68,7 @@ fn main() -> anyhow::Result<()> {
         pub c: i32,
     }
 
-    let stack_ptr = 4i32;
+    let stack_ptr = 20i32;
     let args = unsafe { (stack_page.as_mut_ptr().add(stack_ptr as usize)) as *mut Args };
     unsafe { std::ptr::write_unaligned(args, Args { a: 5, b: 3, c: 11 }) }
 

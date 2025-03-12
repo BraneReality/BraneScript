@@ -356,11 +356,10 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
     fn build_op(&mut self, op: &IROp, func: &IRFunction, module: &IRModule) -> anyhow::Result<()> {
         let new_value = match op {
             IROp::NoOp => return Ok(()), // Return so we don't push a value
-            IROp::ConstI32 { value: _ } => todo!(),
-            IROp::ConstU32 { value } => Some(
+            IROp::ConstI32 { value } => Some(
                 self.context
                     .i32_type()
-                    .const_int(*value as u64, false)
+                    .const_int(unsafe { std::mem::transmute(*value as i64) }, false)
                     .into(),
             ),
             IROp::ConstF32 { value: _ } => todo!(),
@@ -405,63 +404,131 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 self.builder.build_store(true_ptr, src_v)?;
                 None
             }
-            IROp::Add { left, right } => {
+            IROp::IAdd { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
-                Some(match (left, right) {
-                    (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
-                        self.builder.build_int_add(left, right, "")?.into()
-                    }
-                    (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
-                        self.builder.build_float_add(left, right, "")?.into()
-                    }
-                    _ => bail!("Invalid arg pair for add! ({:?}, {:?})", left, right),
-                })
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_add(left, right, "")?.into())
+                } else {
+                    bail!("IAdd args were not both int values ({}, {})", left, right)
+                }
             }
-            IROp::Sub { left, right } => {
+            IROp::FAdd { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
-                Some(match (left, right) {
-                    (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
-                        self.builder.build_int_sub(left, right, "")?.into()
-                    }
-                    (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
-                        self.builder.build_float_sub(left, right, "")?.into()
-                    }
-                    _ => bail!("Invalid arg pair for sub! ({:?}, {:?})", left, right),
-                })
+                if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_float_add(left, right, "")?.into())
+                } else {
+                    bail!("FAdd args were not both float values ({}, {})", left, right)
+                }
             }
-            IROp::Mul { left, right } => {
+            IROp::ISub { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
-                Some(match (left, right) {
-                    (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
-                        self.builder.build_int_mul(left, right, "")?.into()
-                    }
-                    (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
-                        self.builder.build_float_mul(left, right, "")?.into()
-                    }
-                    _ => bail!("Invalid arg pair for mul! ({:?}, {:?})", left, right),
-                })
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_sub(left, right, "")?.into())
+                } else {
+                    bail!("ISub args were not both int values ({}, {})", left, right)
+                }
             }
-            IROp::Div { left, right } => {
+            IROp::FSub { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
-                Some(match (left, right) {
-                    (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) => {
-                        todo!("we need to separate the operands");
-                    }
-                    (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
-                        self.builder.build_float_div(left, right, "")?.into()
-                    }
-                    _ => bail!("Invalid arg pair for div! ({:?}, {:?})", left, right),
-                })
+                if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_float_sub(left, right, "")?.into())
+                } else {
+                    bail!("FSub args were not both float values ({}, {})", left, right)
+                }
             }
-            IROp::Rem { left, right } => todo!(),
-            IROp::Eq { left, right } => todo!(),
-            IROp::Ne { left, right } => todo!(),
-            IROp::Gt { left, right } => todo!(),
-            IROp::Ge { left, right } => todo!(),
+            IROp::IMul { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_mul(left, right, "")?.into())
+                } else {
+                    bail!("IMul args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::FMul { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_float_mul(left, right, "")?.into())
+                } else {
+                    bail!("FMul args were not both float values ({}, {})", left, right)
+                }
+            }
+            IROp::SDiv { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_signed_div(left, right, "")?.into())
+                } else {
+                    bail!("SDiv args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::UDiv { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_unsigned_div(left, right, "")?.into())
+                } else {
+                    bail!("UDiv args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::FDiv { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_float_div(left, right, "")?.into())
+                } else {
+                    bail!("FDiv args were not both float values ({}, {})", left, right)
+                }
+            }
+            IROp::SRem { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_unsigned_rem(left, right, "")?.into())
+                } else {
+                    bail!("SRem args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::URem { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_unsigned_rem(left, right, "")?.into())
+                } else {
+                    bail!("URem args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::CmpEq { left, right } => todo!(),
+            IROp::CmpNe { left, right } => todo!(),
+            IROp::CmpGt { left, right } => todo!(),
+            IROp::CmpGe { left, right } => todo!(),
             IROp::And { left, right } => todo!(),
             IROp::Or { left, right } => todo!(),
             IROp::Xor { left, right } => todo!(),

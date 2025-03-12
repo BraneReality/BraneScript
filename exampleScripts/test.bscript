@@ -3,10 +3,11 @@ mod test {
     [
         (start: i32, add1: i32, add2: i32) {
             let value : i32 = start + add1;
+
             next_stage(args: (value: value, add2: add2), deps: []);
         }
         (value: i32, add2: i32) {
-            let value : i32 = value + add2;
+            let value : i32 = add2 / value;
             next_stage(args: (count: value));
         }
     ]
