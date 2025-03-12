@@ -434,7 +434,15 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
-            IRNativeType::F32 | IRNativeType::F64 => bail!("can't get remainder of floating types"),
+            IRNativeType::F32 | IRNativeType::F64 => self
+                .write(
+                    IROp::FRem { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .expect("we should always get a value if we pass a ret type"),
         })
     }
 

@@ -165,6 +165,10 @@ pub enum IROp {
         left: IRValue,
         right: IRValue,
     },
+    FRem {
+        left: IRValue,
+        right: IRValue,
+    },
     CmpEq {
         left: IRValue,
         right: IRValue,
@@ -352,6 +356,7 @@ impl fmt::Display for IROp {
             IROp::FDiv { left, right } => write!(f, "(f_div {} {})", left, right),
             IROp::SRem { left, right } => write!(f, "(s_rem {} {})", left, right),
             IROp::URem { left, right } => write!(f, "(u_rem {} {})", left, right),
+            IROp::FRem { left, right } => write!(f, "(f_rem {} {})", left, right),
             IROp::CmpEq { left, right } => write!(f, "(eq {} {})", left, right),
             IROp::CmpNe { left, right } => write!(f, "(ne {} {})", left, right),
             IROp::CmpGt { left, right } => write!(f, "(gt {} {})", left, right),

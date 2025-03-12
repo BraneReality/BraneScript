@@ -603,7 +603,7 @@ impl<'tree> ::type_sitter::Node<'tree> for Div<'tree> {
 }
 /**Typed node `expression`
 
-This node has a named child of type `{add | anonStruct | assign | call | div | expression | mul | number | scopedIdentifier | sub | variableDefinition}`:
+This node has a named child of type `{add | anonStruct | assign | call | div | expression | mod | mul | number | scopedIdentifier | sub | variableDefinition}`:
 
 - [`Add`]
 - [`Anonstruct`]
@@ -611,6 +611,7 @@ This node has a named child of type `{add | anonStruct | assign | call | div | e
 - [`Call`]
 - [`Div`]
 - [`Expression`]
+- [`Mod`]
 - [`Mul`]
 - [`Number`]
 - [`Scopedidentifier`]
@@ -627,7 +628,7 @@ pub struct Expression<'tree>(::type_sitter::raw::Node<'tree>);
 impl<'tree> Expression<'tree> {}
 #[automatically_derived]
 impl<'tree> ::type_sitter::HasChild<'tree> for Expression<'tree> {
-    type Child = anon_unions::Add_Anonstruct_Assign_Call_Div_Expression_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
+    type Child = anon_unions::Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
         'tree,
     >;
 }
@@ -814,6 +815,77 @@ impl<'tree> ::type_sitter::Node<'tree> for Memberinit<'tree> {
     #[inline]
     unsafe fn from_raw_unchecked(node: ::type_sitter::raw::Node<'tree>) -> Self {
         debug_assert_eq!(node.kind(), "memberInit");
+        Self(node)
+    }
+    #[inline]
+    fn raw(&self) -> &::type_sitter::raw::Node<'tree> {
+        &self.0
+    }
+    #[inline]
+    fn raw_mut(&mut self) -> &mut ::type_sitter::raw::Node<'tree> {
+        &mut self.0
+    }
+    #[inline]
+    fn into_raw(self) -> ::type_sitter::raw::Node<'tree> {
+        self.0
+    }
+}
+/**Typed node `mod`
+
+This node has these fields:
+
+- `left`: `expression` ([`Expression`])
+- `right`: `expression` ([`Expression`])
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+#[allow(non_camel_case_types)]
+pub struct Mod<'tree>(::type_sitter::raw::Node<'tree>);
+#[automatically_derived]
+#[allow(unused)]
+impl<'tree> Mod<'tree> {
+    /**Get the field `left`.
+
+This child has type `expression` ([`Expression`])*/
+    #[inline]
+    pub fn left(&self) -> ::type_sitter::NodeResult<'tree, Expression<'tree>> {
+        ::type_sitter::Node::raw(self)
+            .child_by_field_name("left")
+            .map(<Expression<'tree> as ::type_sitter::Node<'tree>>::try_from_raw)
+            .expect(
+                "required child not present, there should at least be a MISSING node in its place",
+            )
+    }
+    /**Get the field `right`.
+
+This child has type `expression` ([`Expression`])*/
+    #[inline]
+    pub fn right(&self) -> ::type_sitter::NodeResult<'tree, Expression<'tree>> {
+        ::type_sitter::Node::raw(self)
+            .child_by_field_name("right")
+            .map(<Expression<'tree> as ::type_sitter::Node<'tree>>::try_from_raw)
+            .expect(
+                "required child not present, there should at least be a MISSING node in its place",
+            )
+    }
+}
+#[automatically_derived]
+impl<'tree> ::type_sitter::Node<'tree> for Mod<'tree> {
+    type WithLifetime<'a> = Mod<'a>;
+    const KIND: &'static str = "mod";
+    #[inline]
+    fn try_from_raw(
+        node: ::type_sitter::raw::Node<'tree>,
+    ) -> ::type_sitter::NodeResult<'tree, Self> {
+        if node.kind() == "mod" {
+            Ok(Self(node))
+        } else {
+            Err(::type_sitter::IncorrectKind::new::<Self>(node))
+        }
+    }
+    #[inline]
+    unsafe fn from_raw_unchecked(node: ::type_sitter::raw::Node<'tree>) -> Self {
+        debug_assert_eq!(node.kind(), "mod");
         Self(node)
     }
     #[inline]
@@ -2135,6 +2207,49 @@ This node has no named children
 pub mod symbols {
     #[allow(unused_imports)]
     use super::*;
+    /**Typed node `%`
+
+This node has no named children
+*/
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    #[allow(non_camel_case_types)]
+    pub struct Mod<'tree>(::type_sitter::raw::Node<'tree>);
+    #[automatically_derived]
+    #[allow(unused)]
+    impl<'tree> Mod<'tree> {}
+    #[automatically_derived]
+    impl<'tree> ::type_sitter::Node<'tree> for Mod<'tree> {
+        type WithLifetime<'a> = Mod<'a>;
+        const KIND: &'static str = "%";
+        #[inline]
+        fn try_from_raw(
+            node: ::type_sitter::raw::Node<'tree>,
+        ) -> ::type_sitter::NodeResult<'tree, Self> {
+            if node.kind() == "%" {
+                Ok(Self(node))
+            } else {
+                Err(::type_sitter::IncorrectKind::new::<Self>(node))
+            }
+        }
+        #[inline]
+        unsafe fn from_raw_unchecked(node: ::type_sitter::raw::Node<'tree>) -> Self {
+            debug_assert_eq!(node.kind(), "%");
+            Self(node)
+        }
+        #[inline]
+        fn raw(&self) -> &::type_sitter::raw::Node<'tree> {
+            &self.0
+        }
+        #[inline]
+        fn raw_mut(&mut self) -> &mut ::type_sitter::raw::Node<'tree> {
+            &mut self.0
+        }
+        #[inline]
+        fn into_raw(self) -> ::type_sitter::raw::Node<'tree> {
+            self.0
+        }
+    }
     /**Typed node `&`
 
 This node has no named children
@@ -2956,13 +3071,14 @@ This node has no named children
 pub mod anon_unions {
     #[allow(unused_imports)]
     use super::*;
-    /**One of `{add | anonStruct | assign | call | div | expression | mul | number | scopedIdentifier | sub | variableDefinition}`:
+    /**One of `{add | anonStruct | assign | call | div | expression | mod | mul | number | scopedIdentifier | sub | variableDefinition}`:
 - [`Add`]
 - [`Anonstruct`]
 - [`Assign`]
 - [`Call`]
 - [`Div`]
 - [`Expression`]
+- [`Mod`]
 - [`Mul`]
 - [`Number`]
 - [`Scopedidentifier`]
@@ -2970,7 +3086,7 @@ pub mod anon_unions {
 - [`Variabledefinition`]*/
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[allow(non_camel_case_types)]
-    pub enum Add_Anonstruct_Assign_Call_Div_Expression_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
+    pub enum Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
         'tree,
     > {
         Add(Add<'tree>),
@@ -2979,6 +3095,7 @@ pub mod anon_unions {
         Call(Call<'tree>),
         Div(Div<'tree>),
         Expression(Expression<'tree>),
+        Mod(Mod<'tree>),
         Mul(Mul<'tree>),
         Number(Number<'tree>),
         Scopedidentifier(Scopedidentifier<'tree>),
@@ -2989,7 +3106,7 @@ pub mod anon_unions {
     #[allow(unused)]
     impl<
         'tree,
-    > Add_Anonstruct_Assign_Call_Div_Expression_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
+    > Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
         'tree,
     > {
         ///Returns the node if it is of type `add` ([`Add`]), otherwise returns `None`
@@ -3028,6 +3145,12 @@ pub mod anon_unions {
             #[allow(irrefutable_let_patterns)]
             if let Self::Expression(x) = self { Some(x) } else { None }
         }
+        ///Returns the node if it is of type `mod` ([`Mod`]), otherwise returns `None`
+        #[inline]
+        pub fn as_mod(self) -> ::std::option::Option<Mod<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::Mod(x) = self { Some(x) } else { None }
+        }
         ///Returns the node if it is of type `mul` ([`Mul`]), otherwise returns `None`
         #[inline]
         pub fn as_mul(self) -> ::std::option::Option<Mul<'tree>> {
@@ -3065,13 +3188,13 @@ pub mod anon_unions {
     }
     #[automatically_derived]
     impl<'tree> ::type_sitter::Node<'tree>
-    for Add_Anonstruct_Assign_Call_Div_Expression_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
+    for Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
         'tree,
     > {
-        type WithLifetime<'a> = Add_Anonstruct_Assign_Call_Div_Expression_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
+        type WithLifetime<'a> = Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition<
             'a,
         >;
-        const KIND: &'static str = "{add | anonStruct | assign | call | div | expression | mul | number | scopedIdentifier | sub | variableDefinition}";
+        const KIND: &'static str = "{add | anonStruct | assign | call | div | expression | mod | mul | number | scopedIdentifier | sub | variableDefinition}";
         #[inline]
         fn try_from_raw(
             node: ::type_sitter::raw::Node<'tree>,
@@ -3126,6 +3249,15 @@ pub mod anon_unions {
                     Ok(unsafe {
                         Self::Expression(
                             <Expression<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
+                "mod" => {
+                    Ok(unsafe {
+                        Self::Mod(
+                            <Mod<
                                 'tree,
                             > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
                         )
@@ -3188,6 +3320,7 @@ pub mod anon_unions {
                 Self::Call(x) => ::type_sitter::Node::raw(x),
                 Self::Div(x) => ::type_sitter::Node::raw(x),
                 Self::Expression(x) => ::type_sitter::Node::raw(x),
+                Self::Mod(x) => ::type_sitter::Node::raw(x),
                 Self::Mul(x) => ::type_sitter::Node::raw(x),
                 Self::Number(x) => ::type_sitter::Node::raw(x),
                 Self::Scopedidentifier(x) => ::type_sitter::Node::raw(x),
@@ -3204,6 +3337,7 @@ pub mod anon_unions {
                 Self::Call(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Div(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Expression(x) => ::type_sitter::Node::raw_mut(x),
+                Self::Mod(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Mul(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Number(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Scopedidentifier(x) => ::type_sitter::Node::raw_mut(x),
@@ -3220,6 +3354,7 @@ pub mod anon_unions {
                 Self::Call(x) => x.into_raw(),
                 Self::Div(x) => x.into_raw(),
                 Self::Expression(x) => x.into_raw(),
+                Self::Mod(x) => x.into_raw(),
                 Self::Mul(x) => x.into_raw(),
                 Self::Number(x) => x.into_raw(),
                 Self::Scopedidentifier(x) => x.into_raw(),

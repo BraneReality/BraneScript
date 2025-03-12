@@ -191,7 +191,7 @@ impl<'a, 'b> DocumentParser<'a> {
         &mut self,
         node: nodes::Expression<'b>,
     ) -> anyhow::Result<ExpressionContext> {
-        use anon_unions::Add_Anonstruct_Assign_Call_Div_Expression_Mul_Number_Scopedidentifier_Sub_Variabledefinition::*;
+        use anon_unions::Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition::*;
         Ok(match self.map_incorrect(node.child())? {
             Add(add) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
                 ctx: self.node_ctx(add),
@@ -216,6 +216,12 @@ impl<'a, 'b> DocumentParser<'a> {
                 op_type: BinaryOperator::Div,
                 left: self.parse_expression(self.map_incorrect(div.left())?)?,
                 right: self.parse_expression(self.map_incorrect(div.right())?)?,
+            })),
+            Mod(modulus) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
+                ctx: self.node_ctx(modulus),
+                op_type: BinaryOperator::Mod,
+                left: self.parse_expression(self.map_incorrect(modulus.left())?)?,
+                right: self.parse_expression(self.map_incorrect(modulus.right())?)?,
             })),
             Anonstruct(anonstruct) => {
                 ExpressionContext::AnonStruct(Box::new(self.parse_anon_struct(anonstruct)?))

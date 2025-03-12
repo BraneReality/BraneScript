@@ -509,12 +509,23 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
                     (left, right)
                 {
-                    Some(self.builder.build_int_unsigned_rem(left, right, "")?.into())
+                    Some(self.builder.build_int_signed_rem(left, right, "")?.into())
                 } else {
                     bail!("SRem args were not both int values ({}, {})", left, right)
                 }
             }
             IROp::URem { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_int_unsigned_rem(left, right, "")?.into())
+                } else {
+                    bail!("URem args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::FRem { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =

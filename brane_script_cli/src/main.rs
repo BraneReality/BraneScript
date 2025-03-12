@@ -70,7 +70,7 @@ fn main() -> anyhow::Result<()> {
 
     let stack_ptr = 20i32;
     let args = unsafe { (stack_page.as_mut_ptr().add(stack_ptr as usize)) as *mut Args };
-    unsafe { std::ptr::write_unaligned(args, Args { a: 5, b: 3, c: 11 }) }
+    unsafe { std::ptr::write_unaligned(args, Args { a: 5, b: 3, c: 6 }) }
 
     print!("stack before call: ");
     for c in 0..40 {
