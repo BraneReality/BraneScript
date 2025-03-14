@@ -1,24 +1,20 @@
 use anyhow::{anyhow, bail};
-use brane_script_common::{
-    BS_PAGE_SIZE,
-    ir::{IRFunction, IRModule, IROp, IRType, IRValue},
-};
+use brane_script_common::ir::{IRFunction, IRModule, IROp, IRType, IRValue};
 use defer::defer;
 pub use inkwell::{
     builder::Builder as InkBuilder, context::Context as InkContext, module::Module as InkModule,
 };
 use inkwell::{
-    types::{ArrayType, BasicTypeEnum, FunctionType, PointerType},
-    values::{AnyValueEnum, BasicValueEnum, FunctionValue, IntValue, PointerValue},
+    types::{BasicTypeEnum, FunctionType},
+    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
 use llvm_sys::{
     core::{LLVMSetDataLayout, LLVMSetTarget},
     error::*,
     orc2::{lljit::*, *},
-    target::LLVMSetModuleDataLayout,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ptr::{null_mut, slice_from_raw_parts},
     sync::{Mutex, RwLock, atomic::AtomicBool},
     u64,
@@ -355,7 +351,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
 
     fn build_op(&mut self, op: &IROp, func: &IRFunction, module: &IRModule) -> anyhow::Result<()> {
         let new_value = match op {
-            IROp::NoOp => return Ok(()), // Return so we don't push a value
+            IROp::NoOp => return Ok(()),
             IROp::ConstI32 { value } => Some(
                 self.context
                     .i32_type()
@@ -566,6 +562,22 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 self.fast_copy(return_value_ptr, return_dest_ptr, return_size)?;
                 self.builder.build_return(None)?;
                 None
+            }
+            IROp::INeg { arg } => {
+                let arg = self.get_value(*arg)?;
+                if let BasicValueEnum::IntValue(arg) = arg {
+                    Some(self.builder.build_int_neg(arg, "")?.into())
+                } else {
+                    bail!("INeg arg was not an int value {}", arg)
+                }
+            }
+            IROp::FNeg { arg } => {
+                let arg = self.get_value(*arg)?;
+                if let BasicValueEnum::FloatValue(arg) = arg {
+                    Some(self.builder.build_float_neg(arg, "")?.into())
+                } else {
+                    bail!("FNeg arg was not an float value {}", arg)
+                }
             }
         };
         self.op_values.push(new_value);

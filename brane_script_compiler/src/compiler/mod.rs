@@ -11,6 +11,7 @@ use crate::{
         AnonStructContext, AnonStructTypeContext, BinaryOperator, BlockContext, CallSigContext,
         ContextRef, DocumentContext, ExpressionContext, ModuleContext, PipelineContext,
         ProjectContext, ScopeSegment, StructContext, TextContext, TypeContext, TypeModifiers,
+        UnaryOperator,
     },
     MessageType, ToolchainMessage,
 };
@@ -443,6 +444,41 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
+        })
+    }
+
+    fn neg(&mut self, value: &WriterIRValue) -> anyhow::Result<WriterIRValue> {
+        Ok(match &value.ctx.r#type {
+            IRType::Struct(idref) => bail!("can't negate structs"),
+            IRType::Native(nt) => match nt {
+                IRNativeType::I8
+                | IRNativeType::I16
+                | IRNativeType::I32
+                | IRNativeType::I64
+                | IRNativeType::I128 => self
+                    .write(
+                        IROp::INeg { arg: value.value },
+                        Some(IRValueCtx {
+                            r#type: value.ctx.r#type.clone(),
+                            is_deref: true,
+                        }),
+                    )
+                    .unwrap(),
+                IRNativeType::F32 | IRNativeType::F64 => self
+                    .write(
+                        IROp::FNeg { arg: value.value },
+                        Some(IRValueCtx {
+                            r#type: value.ctx.r#type.clone(),
+                            is_deref: true,
+                        }),
+                    )
+                    .unwrap(),
+                IRNativeType::U8
+                | IRNativeType::U16
+                | IRNativeType::U32
+                | IRNativeType::U64
+                | IRNativeType::U128 => bail!("cannot negate unsigned type"),
+            },
         })
     }
 
@@ -887,7 +923,27 @@ impl<'ctx> GenerateIRPass<'ctx> {
                 };
                 Some(writer.get_struct_member_ptr(&struct_type, ptr.value, gep.member, module)?)
             }
-            ExpressionContext::UnaryOperator(uop) => todo!(),
+            ExpressionContext::UnaryOperator(uop) => {
+                let expression = self
+                    .compile_expression(&uop.expression, writer, module)?
+                    .ok_or(anyhow!("arg is not value!"))?;
+
+                // TODO make it so we don't continue evaluating logic comparisions if they're already resolved
+                use UnaryOperator::*;
+                Some(match expression.ctx.r#type {
+                    IRType::Struct(_) => bail!("Structs don't support unary operators yet!"),
+                    IRType::Native(r#type) => match uop.op_type {
+                        Ref => todo!(),
+                        Deref => todo!(),
+                        Negate => {
+                            let expression = writer.deref_value(&expression)?;
+                            writer.neg(&expression)?
+                        }
+                        LogicNot => todo!(),
+                        BitNot => todo!(),
+                    },
+                })
+            }
             ExpressionContext::BinaryOperator(bop) => {
                 let left = self
                     .compile_expression(&bop.left, writer, module)?
@@ -900,10 +956,10 @@ impl<'ctx> GenerateIRPass<'ctx> {
 
                 // TODO make it so we don't continue evaluating logic comparisions if they're already resolved
                 match left.ctx.r#type {
-                    IRType::Struct(_) => bail!("Struts don't support binary operators yet!"),
+                    IRType::Struct(_) => bail!("Structs don't support binary operators yet!"),
                     IRType::Native(l_type) => {
                         let r_type = match right.ctx.r#type {
-                            IRType::Struct(_) => bail!("Operator overrides not implemented yet!"),
+                            IRType::Struct(_) => bail!("Types were not the same!"),
                             IRType::Native(nt) => nt,
                         };
 

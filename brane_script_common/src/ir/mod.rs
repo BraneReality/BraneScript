@@ -121,6 +121,14 @@ pub enum IROp {
         src: IRValue,
         ptr: IRValue,
     },
+    // Unary ops
+    INeg {
+        arg: IRValue,
+    },
+    FNeg {
+        arg: IRValue,
+    },
+    // Binary ops
     IAdd {
         left: IRValue,
         right: IRValue,
@@ -345,6 +353,8 @@ impl fmt::Display for IROp {
             IROp::AllocA { r#type } => write!(f, "(alloc {})", r#type),
             IROp::Load { r#type, ptr } => write!(f, "(load {} {})", r#type.to_str(), ptr),
             IROp::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
+            IROp::INeg { arg } => write!(f, "(i_neg {})", arg),
+            IROp::FNeg { arg } => write!(f, "(f_neg {})", arg),
             IROp::IAdd { left, right } => write!(f, "(i_add {} {})", left, right),
             IROp::FAdd { left, right } => write!(f, "(s_add {} {})", left, right),
             IROp::ISub { left, right } => write!(f, "(i_sub {} {})", left, right),
