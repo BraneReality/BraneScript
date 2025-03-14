@@ -8,8 +8,8 @@ use crate::{
         BinaryOperatorContext, BlockContext, CallContext, CallSigContext, ConstValue,
         ConstValueContext, DocumentContext, ExpressionContext, Identifier, MemberInitContext,
         ModuleContext, PipelineContext, PipelineStageContext, ScopeSegment, ScopedIdentifier,
-        TextContext, TextSource, TypeContext, TypeModifiers, ValueContext,
-        VariableDefinitionContext,
+        TextContext, TextSource, TypeContext, TypeModifiers, UnaryOperator, UnaryOperatorContext,
+        ValueContext, VariableDefinitionContext,
     },
     MessageType, ToolchainMessage,
 };
@@ -223,14 +223,36 @@ impl<'a, 'b> DocumentParser<'a> {
         })
     }
 
+    fn parse_unary_op(
+        &mut self,
+        node: nodes::UnaryOperator<'b>,
+    ) -> anyhow::Result<UnaryOperatorContext> {
+        let expression = self.parse_expression(self.map_incorrect(node.expression())?)?;
+        use nodes::anon_unions::Not_And_Mul_Sub_BitNot::*;
+        Ok(UnaryOperatorContext {
+            ctx: self.node_ctx(node),
+            expression,
+            op_type: match self.map_incorrect(node.operator())? {
+                Not(_) => UnaryOperator::LogicNot,
+                And(_) => UnaryOperator::Ref,
+                Mul(_) => UnaryOperator::Deref,
+                Sub(_) => UnaryOperator::Negate,
+                BitNot(_) => UnaryOperator::BitNot,
+            },
+        })
+    }
+
     fn parse_expression(
         &mut self,
         node: nodes::Expression<'b>,
     ) -> anyhow::Result<ExpressionContext> {
-        use anon_unions::Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition::*;
+        use anon_unions::Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_UnaryOperator_Variabledefinition::*;
         Ok(match self.map_incorrect(node.child())? {
             BinaryOperator(bin_op) => {
                 ExpressionContext::BinaryOperator(Box::new(self.parse_binary_op(bin_op)?))
+            }
+            UnaryOperator(una_op) => {
+                ExpressionContext::UnaryOperator(Box::new(self.parse_unary_op(una_op)?))
             }
             Anonstruct(anonstruct) => {
                 ExpressionContext::AnonStruct(Box::new(self.parse_anon_struct(anonstruct)?))

@@ -145,8 +145,8 @@ pub struct MemberAccessContext {
 
 #[derive(Clone)]
 pub enum UnaryOperator {
-    Deref,    // &var
-    Def,      // *var
+    Ref,      // &var
+    Deref,    // *var
     Negate,   // -var
     LogicNot, // !var
     BitNot,   // ~var
@@ -156,7 +156,7 @@ pub enum UnaryOperator {
 pub struct UnaryOperatorContext {
     pub ctx: TextContext,
     pub op_type: UnaryOperator,
-    pub arg: ExpressionContext,
+    pub expression: ExpressionContext,
 }
 
 #[derive(Clone)]

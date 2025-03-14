@@ -578,7 +578,7 @@ impl<'tree> ::type_sitter::Node<'tree> for Comment<'tree> {
 }
 /**Typed node `expression`
 
-This node has a named child of type `{anonStruct | assign | binary_operator | call | expression | number | scopedIdentifier | variableDefinition}`:
+This node has a named child of type `{anonStruct | assign | binary_operator | call | expression | number | scopedIdentifier | unary_operator | variableDefinition}`:
 
 - [`Anonstruct`]
 - [`Assign`]
@@ -587,6 +587,7 @@ This node has a named child of type `{anonStruct | assign | binary_operator | ca
 - [`Expression`]
 - [`Number`]
 - [`Scopedidentifier`]
+- [`UnaryOperator`]
 - [`Variabledefinition`]
 
 */
@@ -599,7 +600,7 @@ pub struct Expression<'tree>(::type_sitter::raw::Node<'tree>);
 impl<'tree> Expression<'tree> {}
 #[automatically_derived]
 impl<'tree> ::type_sitter::HasChild<'tree> for Expression<'tree> {
-    type Child = anon_unions::Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition<
+    type Child = anon_unions::Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_UnaryOperator_Variabledefinition<
         'tree,
     >;
 }
@@ -1560,6 +1561,90 @@ impl<'tree> ::type_sitter::Node<'tree> for Type<'tree> {
         self.0
     }
 }
+/**Typed node `unary_operator`
+
+This node has these fields:
+
+- `expression`: `expression` ([`Expression`])
+- `operator`: `{! | & | * | - | ~}` ([`symbols::Not`] | [`symbols::And`] | [`symbols::Mul`] | [`symbols::Sub`] | [`symbols::BitNot`])
+*/
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+#[allow(non_camel_case_types)]
+pub struct UnaryOperator<'tree>(::type_sitter::raw::Node<'tree>);
+#[automatically_derived]
+#[allow(unused)]
+impl<'tree> UnaryOperator<'tree> {
+    /**Get the field `expression`.
+
+This child has type `expression` ([`Expression`])*/
+    #[inline]
+    pub fn expression(&self) -> ::type_sitter::NodeResult<'tree, Expression<'tree>> {
+        ::type_sitter::Node::raw(self)
+            .child_by_field_name("expression")
+            .map(<Expression<'tree> as ::type_sitter::Node<'tree>>::try_from_raw)
+            .expect(
+                "required child not present, there should at least be a MISSING node in its place",
+            )
+    }
+    /**Get the field `operator`.
+
+This child has type `{! | & | * | - | ~}`:
+
+- [`symbols::Not`]
+- [`symbols::And`]
+- [`symbols::Mul`]
+- [`symbols::Sub`]
+- [`symbols::BitNot`]
+*/
+    #[inline]
+    pub fn operator(
+        &self,
+    ) -> ::type_sitter::NodeResult<'tree, anon_unions::Not_And_Mul_Sub_BitNot<'tree>> {
+        ::type_sitter::Node::raw(self)
+            .child_by_field_name("operator")
+            .map(
+                <anon_unions::Not_And_Mul_Sub_BitNot<
+                    'tree,
+                > as ::type_sitter::Node<'tree>>::try_from_raw,
+            )
+            .expect(
+                "required child not present, there should at least be a MISSING node in its place",
+            )
+    }
+}
+#[automatically_derived]
+impl<'tree> ::type_sitter::Node<'tree> for UnaryOperator<'tree> {
+    type WithLifetime<'a> = UnaryOperator<'a>;
+    const KIND: &'static str = "unary_operator";
+    #[inline]
+    fn try_from_raw(
+        node: ::type_sitter::raw::Node<'tree>,
+    ) -> ::type_sitter::NodeResult<'tree, Self> {
+        if node.kind() == "unary_operator" {
+            Ok(Self(node))
+        } else {
+            Err(::type_sitter::IncorrectKind::new::<Self>(node))
+        }
+    }
+    #[inline]
+    unsafe fn from_raw_unchecked(node: ::type_sitter::raw::Node<'tree>) -> Self {
+        debug_assert_eq!(node.kind(), "unary_operator");
+        Self(node)
+    }
+    #[inline]
+    fn raw(&self) -> &::type_sitter::raw::Node<'tree> {
+        &self.0
+    }
+    #[inline]
+    fn raw_mut(&mut self) -> &mut ::type_sitter::raw::Node<'tree> {
+        &mut self.0
+    }
+    #[inline]
+    fn into_raw(self) -> ::type_sitter::raw::Node<'tree> {
+        self.0
+    }
+}
 /**Typed node `valueDef`
 
 This node has these fields:
@@ -1965,6 +2050,49 @@ This node has no named children
 pub mod symbols {
     #[allow(unused_imports)]
     use super::*;
+    /**Typed node `!`
+
+This node has no named children
+*/
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    #[allow(non_camel_case_types)]
+    pub struct Not<'tree>(::type_sitter::raw::Node<'tree>);
+    #[automatically_derived]
+    #[allow(unused)]
+    impl<'tree> Not<'tree> {}
+    #[automatically_derived]
+    impl<'tree> ::type_sitter::Node<'tree> for Not<'tree> {
+        type WithLifetime<'a> = Not<'a>;
+        const KIND: &'static str = "!";
+        #[inline]
+        fn try_from_raw(
+            node: ::type_sitter::raw::Node<'tree>,
+        ) -> ::type_sitter::NodeResult<'tree, Self> {
+            if node.kind() == "!" {
+                Ok(Self(node))
+            } else {
+                Err(::type_sitter::IncorrectKind::new::<Self>(node))
+            }
+        }
+        #[inline]
+        unsafe fn from_raw_unchecked(node: ::type_sitter::raw::Node<'tree>) -> Self {
+            debug_assert_eq!(node.kind(), "!");
+            Self(node)
+        }
+        #[inline]
+        fn raw(&self) -> &::type_sitter::raw::Node<'tree> {
+            &self.0
+        }
+        #[inline]
+        fn raw_mut(&mut self) -> &mut ::type_sitter::raw::Node<'tree> {
+            &mut self.0
+        }
+        #[inline]
+        fn into_raw(self) -> ::type_sitter::raw::Node<'tree> {
+            self.0
+        }
+    }
     /**Typed node `!=`
 
 This node has no named children
@@ -3298,11 +3426,54 @@ This node has no named children
             self.0
         }
     }
+    /**Typed node `~`
+
+This node has no named children
+*/
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    #[allow(non_camel_case_types)]
+    pub struct BitNot<'tree>(::type_sitter::raw::Node<'tree>);
+    #[automatically_derived]
+    #[allow(unused)]
+    impl<'tree> BitNot<'tree> {}
+    #[automatically_derived]
+    impl<'tree> ::type_sitter::Node<'tree> for BitNot<'tree> {
+        type WithLifetime<'a> = BitNot<'a>;
+        const KIND: &'static str = "~";
+        #[inline]
+        fn try_from_raw(
+            node: ::type_sitter::raw::Node<'tree>,
+        ) -> ::type_sitter::NodeResult<'tree, Self> {
+            if node.kind() == "~" {
+                Ok(Self(node))
+            } else {
+                Err(::type_sitter::IncorrectKind::new::<Self>(node))
+            }
+        }
+        #[inline]
+        unsafe fn from_raw_unchecked(node: ::type_sitter::raw::Node<'tree>) -> Self {
+            debug_assert_eq!(node.kind(), "~");
+            Self(node)
+        }
+        #[inline]
+        fn raw(&self) -> &::type_sitter::raw::Node<'tree> {
+            &self.0
+        }
+        #[inline]
+        fn raw_mut(&mut self) -> &mut ::type_sitter::raw::Node<'tree> {
+            &mut self.0
+        }
+        #[inline]
+        fn into_raw(self) -> ::type_sitter::raw::Node<'tree> {
+            self.0
+        }
+    }
 }
 pub mod anon_unions {
     #[allow(unused_imports)]
     use super::*;
-    /**One of `{anonStruct | assign | binary_operator | call | expression | number | scopedIdentifier | variableDefinition}`:
+    /**One of `{anonStruct | assign | binary_operator | call | expression | number | scopedIdentifier | unary_operator | variableDefinition}`:
 - [`Anonstruct`]
 - [`Assign`]
 - [`BinaryOperator`]
@@ -3310,10 +3481,11 @@ pub mod anon_unions {
 - [`Expression`]
 - [`Number`]
 - [`Scopedidentifier`]
+- [`UnaryOperator`]
 - [`Variabledefinition`]*/
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     #[allow(non_camel_case_types)]
-    pub enum Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition<
+    pub enum Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_UnaryOperator_Variabledefinition<
         'tree,
     > {
         Anonstruct(Anonstruct<'tree>),
@@ -3323,13 +3495,14 @@ pub mod anon_unions {
         Expression(Expression<'tree>),
         Number(Number<'tree>),
         Scopedidentifier(Scopedidentifier<'tree>),
+        UnaryOperator(UnaryOperator<'tree>),
         Variabledefinition(Variabledefinition<'tree>),
     }
     #[automatically_derived]
     #[allow(unused)]
     impl<
         'tree,
-    > Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition<
+    > Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_UnaryOperator_Variabledefinition<
         'tree,
     > {
         ///Returns the node if it is of type `anonStruct` ([`Anonstruct`]), otherwise returns `None`
@@ -3376,6 +3549,12 @@ pub mod anon_unions {
             #[allow(irrefutable_let_patterns)]
             if let Self::Scopedidentifier(x) = self { Some(x) } else { None }
         }
+        ///Returns the node if it is of type `unary_operator` ([`UnaryOperator`]), otherwise returns `None`
+        #[inline]
+        pub fn as_unary_operator(self) -> ::std::option::Option<UnaryOperator<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::UnaryOperator(x) = self { Some(x) } else { None }
+        }
         ///Returns the node if it is of type `variableDefinition` ([`Variabledefinition`]), otherwise returns `None`
         #[inline]
         pub fn as_variabledefinition(
@@ -3387,13 +3566,13 @@ pub mod anon_unions {
     }
     #[automatically_derived]
     impl<'tree> ::type_sitter::Node<'tree>
-    for Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition<
+    for Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_UnaryOperator_Variabledefinition<
         'tree,
     > {
-        type WithLifetime<'a> = Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition<
+        type WithLifetime<'a> = Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_UnaryOperator_Variabledefinition<
             'a,
         >;
-        const KIND: &'static str = "{anonStruct | assign | binary_operator | call | expression | number | scopedIdentifier | variableDefinition}";
+        const KIND: &'static str = "{anonStruct | assign | binary_operator | call | expression | number | scopedIdentifier | unary_operator | variableDefinition}";
         #[inline]
         fn try_from_raw(
             node: ::type_sitter::raw::Node<'tree>,
@@ -3462,6 +3641,15 @@ pub mod anon_unions {
                         )
                     })
                 }
+                "unary_operator" => {
+                    Ok(unsafe {
+                        Self::UnaryOperator(
+                            <UnaryOperator<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
                 "variableDefinition" => {
                     Ok(unsafe {
                         Self::Variabledefinition(
@@ -3484,6 +3672,7 @@ pub mod anon_unions {
                 Self::Expression(x) => ::type_sitter::Node::raw(x),
                 Self::Number(x) => ::type_sitter::Node::raw(x),
                 Self::Scopedidentifier(x) => ::type_sitter::Node::raw(x),
+                Self::UnaryOperator(x) => ::type_sitter::Node::raw(x),
                 Self::Variabledefinition(x) => ::type_sitter::Node::raw(x),
             }
         }
@@ -3497,6 +3686,7 @@ pub mod anon_unions {
                 Self::Expression(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Number(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Scopedidentifier(x) => ::type_sitter::Node::raw_mut(x),
+                Self::UnaryOperator(x) => ::type_sitter::Node::raw_mut(x),
                 Self::Variabledefinition(x) => ::type_sitter::Node::raw_mut(x),
             }
         }
@@ -3510,6 +3700,7 @@ pub mod anon_unions {
                 Self::Expression(x) => x.into_raw(),
                 Self::Number(x) => x.into_raw(),
                 Self::Scopedidentifier(x) => x.into_raw(),
+                Self::UnaryOperator(x) => x.into_raw(),
                 Self::Variabledefinition(x) => x.into_raw(),
             }
         }
@@ -4155,6 +4346,143 @@ pub mod anon_unions {
                 Self::BitXor(x) => x.into_raw(),
                 Self::Or(x) => x.into_raw(),
                 Self::OrOr(x) => x.into_raw(),
+            }
+        }
+    }
+    /**One of `{! | & | * | - | ~}`:
+- [`symbols::Not`]
+- [`symbols::And`]
+- [`symbols::Mul`]
+- [`symbols::Sub`]
+- [`symbols::BitNot`]*/
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[allow(non_camel_case_types)]
+    pub enum Not_And_Mul_Sub_BitNot<'tree> {
+        Not(symbols::Not<'tree>),
+        And(symbols::And<'tree>),
+        Mul(symbols::Mul<'tree>),
+        Sub(symbols::Sub<'tree>),
+        BitNot(symbols::BitNot<'tree>),
+    }
+    #[automatically_derived]
+    #[allow(unused)]
+    impl<'tree> Not_And_Mul_Sub_BitNot<'tree> {
+        ///Returns the node if it is of type `!` ([`symbols::Not`]), otherwise returns `None`
+        #[inline]
+        pub fn as_not(self) -> ::std::option::Option<symbols::Not<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::Not(x) = self { Some(x) } else { None }
+        }
+        ///Returns the node if it is of type `&` ([`symbols::And`]), otherwise returns `None`
+        #[inline]
+        pub fn as_and(self) -> ::std::option::Option<symbols::And<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::And(x) = self { Some(x) } else { None }
+        }
+        ///Returns the node if it is of type `*` ([`symbols::Mul`]), otherwise returns `None`
+        #[inline]
+        pub fn as_mul(self) -> ::std::option::Option<symbols::Mul<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::Mul(x) = self { Some(x) } else { None }
+        }
+        ///Returns the node if it is of type `-` ([`symbols::Sub`]), otherwise returns `None`
+        #[inline]
+        pub fn as_sub(self) -> ::std::option::Option<symbols::Sub<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::Sub(x) = self { Some(x) } else { None }
+        }
+        ///Returns the node if it is of type `~` ([`symbols::BitNot`]), otherwise returns `None`
+        #[inline]
+        pub fn as_bit_not(self) -> ::std::option::Option<symbols::BitNot<'tree>> {
+            #[allow(irrefutable_let_patterns)]
+            if let Self::BitNot(x) = self { Some(x) } else { None }
+        }
+    }
+    #[automatically_derived]
+    impl<'tree> ::type_sitter::Node<'tree> for Not_And_Mul_Sub_BitNot<'tree> {
+        type WithLifetime<'a> = Not_And_Mul_Sub_BitNot<'a>;
+        const KIND: &'static str = "{! | & | * | - | ~}";
+        #[inline]
+        fn try_from_raw(
+            node: ::type_sitter::raw::Node<'tree>,
+        ) -> ::type_sitter::NodeResult<'tree, Self> {
+            match node.kind() {
+                "!" => {
+                    Ok(unsafe {
+                        Self::Not(
+                            <symbols::Not<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
+                "&" => {
+                    Ok(unsafe {
+                        Self::And(
+                            <symbols::And<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
+                "*" => {
+                    Ok(unsafe {
+                        Self::Mul(
+                            <symbols::Mul<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
+                "-" => {
+                    Ok(unsafe {
+                        Self::Sub(
+                            <symbols::Sub<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
+                "~" => {
+                    Ok(unsafe {
+                        Self::BitNot(
+                            <symbols::BitNot<
+                                'tree,
+                            > as ::type_sitter::Node<'tree>>::from_raw_unchecked(node),
+                        )
+                    })
+                }
+                _ => Err(::type_sitter::IncorrectKind::new::<Self>(node)),
+            }
+        }
+        #[inline]
+        fn raw(&self) -> &::type_sitter::raw::Node<'tree> {
+            match self {
+                Self::Not(x) => ::type_sitter::Node::raw(x),
+                Self::And(x) => ::type_sitter::Node::raw(x),
+                Self::Mul(x) => ::type_sitter::Node::raw(x),
+                Self::Sub(x) => ::type_sitter::Node::raw(x),
+                Self::BitNot(x) => ::type_sitter::Node::raw(x),
+            }
+        }
+        #[inline]
+        fn raw_mut(&mut self) -> &mut ::type_sitter::raw::Node<'tree> {
+            match self {
+                Self::Not(x) => ::type_sitter::Node::raw_mut(x),
+                Self::And(x) => ::type_sitter::Node::raw_mut(x),
+                Self::Mul(x) => ::type_sitter::Node::raw_mut(x),
+                Self::Sub(x) => ::type_sitter::Node::raw_mut(x),
+                Self::BitNot(x) => ::type_sitter::Node::raw_mut(x),
+            }
+        }
+        #[inline]
+        fn into_raw(self) -> ::type_sitter::raw::Node<'tree> {
+            match self {
+                Self::Not(x) => x.into_raw(),
+                Self::And(x) => x.into_raw(),
+                Self::Mul(x) => x.into_raw(),
+                Self::Sub(x) => x.into_raw(),
+                Self::BitNot(x) => x.into_raw(),
             }
         }
     }
