@@ -187,42 +187,51 @@ impl<'a, 'b> DocumentParser<'a> {
         Ok(AnonStructContext { ctx, members })
     }
 
+    fn parse_binary_op(
+        &mut self,
+        node: nodes::BinaryOperator<'b>,
+    ) -> anyhow::Result<BinaryOperatorContext> {
+        let left = self.parse_expression(self.map_incorrect(node.left())?)?;
+        let right = self.parse_expression(self.map_incorrect(node.right())?)?;
+        use nodes::anon_unions::NotEq_Mod_And_AndAnd_Mul_Add_Sub_SubGt_Dot_Div_Lt_LtLt_LtEq_EqEq_Gt_GtEq_GtGt_BitXor_Or_OrOr::*;
+        Ok(BinaryOperatorContext {
+            ctx: self.node_ctx(node),
+            left,
+            right,
+            op_type: match self.map_incorrect(node.operator())? {
+                NotEq(_) => BinaryOperator::NotEqual,
+                Mod(_) => BinaryOperator::Mod,
+                And(_) => BinaryOperator::BitwiseAnd,
+                AndAnd(_) => BinaryOperator::LogicAnd,
+                Mul(_) => BinaryOperator::Mul,
+                Add(_) => BinaryOperator::Add,
+                Sub(_) => BinaryOperator::Sub,
+                SubGt(_) => todo!(), // -> pointer member access
+                Dot(_) => todo!(),   // . member access
+                Div(_) => BinaryOperator::Div,
+                Lt(_) => BinaryOperator::Less,
+                LtLt(_) => BinaryOperator::BitshiftLeft,
+                LtEq(_) => BinaryOperator::LessEqual,
+                EqEq(_) => BinaryOperator::Equal,
+                Gt(_) => BinaryOperator::Greater,
+                GtEq(_) => BinaryOperator::GreaterEqual,
+                GtGt(_) => BinaryOperator::BitshiftRight,
+                BitXor(_) => BinaryOperator::BitwiseXOr,
+                Or(_) => BinaryOperator::BitwiseOr,
+                OrOr(_) => BinaryOperator::LogicOr,
+            },
+        })
+    }
+
     fn parse_expression(
         &mut self,
         node: nodes::Expression<'b>,
     ) -> anyhow::Result<ExpressionContext> {
-        use anon_unions::Add_Anonstruct_Assign_Call_Div_Expression_Mod_Mul_Number_Scopedidentifier_Sub_Variabledefinition::*;
+        use anon_unions::Anonstruct_Assign_BinaryOperator_Call_Expression_Number_Scopedidentifier_Variabledefinition::*;
         Ok(match self.map_incorrect(node.child())? {
-            Add(add) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
-                ctx: self.node_ctx(add),
-                op_type: BinaryOperator::Add,
-                left: self.parse_expression(self.map_incorrect(add.left())?)?,
-                right: self.parse_expression(self.map_incorrect(add.right())?)?,
-            })),
-            Sub(sub) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
-                ctx: self.node_ctx(sub),
-                op_type: BinaryOperator::Sub,
-                left: self.parse_expression(self.map_incorrect(sub.left())?)?,
-                right: self.parse_expression(self.map_incorrect(sub.right())?)?,
-            })),
-            Mul(mul) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
-                ctx: self.node_ctx(mul),
-                op_type: BinaryOperator::Mul,
-                left: self.parse_expression(self.map_incorrect(mul.left())?)?,
-                right: self.parse_expression(self.map_incorrect(mul.right())?)?,
-            })),
-            Div(div) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
-                ctx: self.node_ctx(div),
-                op_type: BinaryOperator::Div,
-                left: self.parse_expression(self.map_incorrect(div.left())?)?,
-                right: self.parse_expression(self.map_incorrect(div.right())?)?,
-            })),
-            Mod(modulus) => ExpressionContext::BinaryOperator(Box::new(BinaryOperatorContext {
-                ctx: self.node_ctx(modulus),
-                op_type: BinaryOperator::Mod,
-                left: self.parse_expression(self.map_incorrect(modulus.left())?)?,
-                right: self.parse_expression(self.map_incorrect(modulus.right())?)?,
-            })),
+            BinaryOperator(bin_op) => {
+                ExpressionContext::BinaryOperator(Box::new(self.parse_binary_op(bin_op)?))
+            }
             Anonstruct(anonstruct) => {
                 ExpressionContext::AnonStruct(Box::new(self.parse_anon_struct(anonstruct)?))
             }

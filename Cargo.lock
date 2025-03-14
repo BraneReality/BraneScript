@@ -110,7 +110,7 @@ dependencies = [
  "anyhow",
  "brane_script_runtime",
  "defer",
- "tree-sitter-branescript 0.1.0 (git+https://github.com/BraneReality/TreeSitterBraneScript.git?rev=1c8a78b)",
+ "tree-sitter-branescript 0.1.0 (git+https://github.com/BraneReality/TreeSitterBraneScript.git?rev=1b348c5)",
  "type-sitter",
  "type-sitter-gen",
 ]
@@ -676,7 +676,7 @@ dependencies = [
 [[package]]
 name = "tree-sitter-branescript"
 version = "0.1.0"
-source = "git+https://github.com/BraneReality/TreeSitterBraneScript.git?rev=1c8a78b#1c8a78bffbb43acbd23d21e7eb75c9ceb6afabc6"
+source = "git+https://github.com/BraneReality/TreeSitterBraneScript.git?rev=1b348c5#1b348c5801b8f52b47ab00d6bb35eca419334d3f"
 dependencies = [
  "cc",
  "tree-sitter-language",

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 brane_script_runtime = {path = "../brane_script_runtime"}
-tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", rev="1c8a78b" }
+tree-sitter-branescript.workspace = true
 
 anyhow.workspace = true
 type-sitter = { version = "0.7.0", default-features = false }
@@ -13,6 +13,6 @@ annotate-snippets = "0.11.5"
 defer = "0.2.1"
 
 [build-dependencies]
-tree-sitter-branescript = { git = "https://github.com/BraneReality/TreeSitterBraneScript.git", rev="1c8a78b" }
+tree-sitter-branescript.workspace = true
 type-sitter-gen = "0.7.2" 
 
