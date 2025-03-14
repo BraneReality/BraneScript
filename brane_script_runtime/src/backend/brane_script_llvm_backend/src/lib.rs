@@ -536,9 +536,39 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
             IROp::CmpNe { left, right } => todo!(),
             IROp::CmpGt { left, right } => todo!(),
             IROp::CmpGe { left, right } => todo!(),
-            IROp::And { left, right } => todo!(),
-            IROp::Or { left, right } => todo!(),
-            IROp::Xor { left, right } => todo!(),
+            IROp::And { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_and(left, right, "")?.into())
+                } else {
+                    bail!("And args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::Or { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_or(left, right, "")?.into())
+                } else {
+                    bail!("Or args were not both int values ({}, {})", left, right)
+                }
+            }
+            IROp::Xor { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_xor(left, right, "")?.into())
+                } else {
+                    bail!("Xor args were not both int values ({}, {})", left, right)
+                }
+            }
             IROp::Call {
                 func,
                 input,
@@ -577,6 +607,59 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     Some(self.builder.build_float_neg(arg, "")?.into())
                 } else {
                     bail!("FNeg arg was not an float value {}", arg)
+                }
+            }
+            IROp::ShiftL { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(self.builder.build_left_shift(left, right, "")?.into())
+                } else {
+                    bail!(
+                        "IShiftL args were not both int values ({}, {})",
+                        left,
+                        right
+                    )
+                }
+            }
+            IROp::IShiftR { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(
+                        self.builder
+                            .build_right_shift(left, right, true, "")?
+                            .into(),
+                    )
+                } else {
+                    bail!(
+                        "IShiftR args were not both int values ({}, {})",
+                        left,
+                        right
+                    )
+                }
+            }
+            IROp::UShiftR { left, right } => {
+                let left = self.get_value(*left)?;
+                let right = self.get_value(*right)?;
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
+                    (left, right)
+                {
+                    Some(
+                        self.builder
+                            .build_right_shift(left, right, false, "")?
+                            .into(),
+                    )
+                } else {
+                    bail!(
+                        "UShiftL args were not both int values ({}, {})",
+                        left,
+                        right
+                    )
                 }
             }
         };

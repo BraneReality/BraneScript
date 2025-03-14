@@ -205,6 +205,18 @@ pub enum IROp {
         left: IRValue,
         right: IRValue,
     },
+    ShiftL {
+        left: IRValue,
+        right: IRValue,
+    },
+    IShiftR {
+        left: IRValue,
+        right: IRValue,
+    },
+    UShiftR {
+        left: IRValue,
+        right: IRValue,
+    },
     Call {
         func: IDRef,
         input: IRValue,
@@ -374,6 +386,9 @@ impl fmt::Display for IROp {
             IROp::And { left, right } => write!(f, "(and {} {})", left, right),
             IROp::Or { left, right } => write!(f, "(or {} {})", left, right),
             IROp::Xor { left, right } => write!(f, "(xor {} {})", left, right),
+            IROp::ShiftL { left, right } => write!(f, "(shl {} {})", left, right),
+            IROp::IShiftR { left, right } => write!(f, "(i_shr {} {})", left, right),
+            IROp::UShiftR { left, right } => write!(f, "(u_shr {} {})", left, right),
             IROp::Call {
                 func,
                 input,

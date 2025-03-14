@@ -482,6 +482,141 @@ impl IRWriter {
         })
     }
 
+    fn and(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        if r#type == IRNativeType::F32 || r#type == IRNativeType::F64 {
+            bail!("no bit operations for float types")
+        }
+        Ok(self
+            .write(
+                IROp::And {
+                    left: left,
+                    right: right,
+                },
+                Some(IRValueCtx {
+                    r#type: IRType::Native(r#type),
+                    is_deref: true,
+                }),
+            )
+            .unwrap())
+    }
+
+    fn or(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        if r#type == IRNativeType::F32 || r#type == IRNativeType::F64 {
+            bail!("no bit operations for float types")
+        }
+        Ok(self
+            .write(
+                IROp::Or {
+                    left: left,
+                    right: right,
+                },
+                Some(IRValueCtx {
+                    r#type: IRType::Native(r#type),
+                    is_deref: true,
+                }),
+            )
+            .unwrap())
+    }
+
+    fn xor(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        if r#type == IRNativeType::F32 || r#type == IRNativeType::F64 {
+            bail!("no bit operations for float types")
+        }
+        Ok(self
+            .write(
+                IROp::Xor {
+                    left: left,
+                    right: right,
+                },
+                Some(IRValueCtx {
+                    r#type: IRType::Native(r#type),
+                    is_deref: true,
+                }),
+            )
+            .unwrap())
+    }
+
+    fn shift_left(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        Ok(match r#type {
+            IRNativeType::U8
+            | IRNativeType::U16
+            | IRNativeType::U32
+            | IRNativeType::U64
+            | IRNativeType::U128
+            | IRNativeType::I8
+            | IRNativeType::I16
+            | IRNativeType::I32
+            | IRNativeType::I64
+            | IRNativeType::I128 => self
+                .write(
+                    IROp::ShiftL { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .unwrap(),
+            IRNativeType::F32 | IRNativeType::F64 => bail!("no bit operations for float types"),
+        })
+    }
+
+    fn shift_right(
+        &mut self,
+        r#type: IRNativeType,
+        left: IRValue,
+        right: IRValue,
+    ) -> anyhow::Result<WriterIRValue> {
+        Ok(match r#type {
+            IRNativeType::U8
+            | IRNativeType::U16
+            | IRNativeType::U32
+            | IRNativeType::U64
+            | IRNativeType::U128 => self
+                .write(
+                    IROp::UShiftR { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .unwrap(),
+            IRNativeType::I8
+            | IRNativeType::I16
+            | IRNativeType::I32
+            | IRNativeType::I64
+            | IRNativeType::I128 => self
+                .write(
+                    IROp::IShiftR { left, right },
+                    Some(IRValueCtx {
+                        r#type: IRType::Native(r#type),
+                        is_deref: true,
+                    }),
+                )
+                .unwrap(),
+            IRNativeType::F32 | IRNativeType::F64 => bail!("no bit operations for float types"),
+        })
+    }
+
     fn load(&mut self, r#type: IRNativeType, ptr: IRValue) -> anyhow::Result<WriterIRValue> {
         Ok(self
             .write(
@@ -981,11 +1116,21 @@ impl<'ctx> GenerateIRPass<'ctx> {
                             BinaryOperator::LessEqual => todo!(),
                             BinaryOperator::LogicAnd => todo!(),
                             BinaryOperator::LogicOr => todo!(),
-                            BinaryOperator::BitwiseAnd => todo!(),
-                            BinaryOperator::BitwiseOr => todo!(),
-                            BinaryOperator::BitwiseXOr => todo!(),
-                            BinaryOperator::BitshiftLeft => todo!(),
-                            BinaryOperator::BitshiftRight => todo!(),
+                            BinaryOperator::BitwiseAnd => {
+                                writer.and(l_type, left.value, right.value)?
+                            }
+                            BinaryOperator::BitwiseOr => {
+                                writer.or(l_type, left.value, right.value)?
+                            }
+                            BinaryOperator::BitwiseXOr => {
+                                writer.xor(l_type, left.value, right.value)?
+                            }
+                            BinaryOperator::BitshiftLeft => {
+                                writer.shift_left(l_type, left.value, right.value)?
+                            }
+                            BinaryOperator::BitshiftRight => {
+                                writer.shift_right(l_type, left.value, right.value)?
+                            }
                         })
                     }
                 }
