@@ -77,13 +77,7 @@ pub struct WriterIRValue {
 impl IRWriter {
     pub fn new(arg_type: IDRef) -> IRWriter {
         IRWriter {
-            operations: vec![(
-                IROp::NoOp,
-                Some(IRValueCtx {
-                    r#type: IRType::Struct(arg_type),
-                    is_deref: true,
-                }),
-            )],
+            operations: Vec::new(),
             scopes: LinkedList::new(),
         }
     }
@@ -1191,7 +1185,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         module: &mut IRModule,
     ) -> Option<IRFunction> {
         let input = match self.compile_anon_struct_type(&call_sig.input, module) {
-            Some(i) => i,
+            Some(o) => o,
             None => return None,
         };
 
@@ -1200,25 +1194,61 @@ impl<'ctx> GenerateIRPass<'ctx> {
             None => return None,
         };
 
+        let input_def = module.get_struct(&input).unwrap();
+        let mut args: Vec<_> = input_def
+            .members
+            .iter()
+            .filter_map(|m| {
+                let r#type = match &m.r#type {
+                    IRType::Native(nt) => IRType::Native(*nt),
+                    IRType::Struct(_) => IRType::Native(IRNativeType::I32),
+                };
+                Some((m.id.clone(), r#type))
+            })
+            .collect();
+
+        let output_def = module.get_struct(&output).unwrap();
+        if output_def.members.len() > 1 {
+            // Returned struct pointer
+            args.insert(0, (None, IRType::Native(IRNativeType::I32)));
+        }
+
         let mut writer = IRWriter::new(input.clone());
         {
             writer.start_scope();
 
-            let input_ptr = IRValue { 0: 0 };
-            for i in 0..call_sig.input.members.len() {
-                let arg = &call_sig.input.members[i];
-                let label = match &arg.label {
-                    Some(l) => l.text.clone(),
-                    None => continue,
-                };
-                let value = match writer.get_struct_member_ptr(&input, input_ptr, i, module) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        self.record_err(err, arg.ctx.clone());
-                        continue;
-                    }
-                };
-                writer.set_labeled_value(label, value);
+            let mut skip_indicies = 0;
+            for (index, arg) in args.into_iter().enumerate() {
+                if let Some(id) = arg.0 {
+                    let value = writer
+                        .write(
+                            IROp::ArgValue {
+                                index: index as u32,
+                            },
+                            Some(IRValueCtx {
+                                r#type: input_def.members[index - skip_indicies].r#type.clone(),
+                                is_deref: match &input_def.members[index - skip_indicies].r#type {
+                                    IRType::Native(_) => true,
+                                    IRType::Struct(_) => false,
+                                },
+                            }),
+                        )
+                        .unwrap();
+                    writer.set_labeled_value(id, value);
+                } else {
+                    writer
+                        .write(
+                            IROp::ArgValue {
+                                index: index as u32,
+                            },
+                            Some(IRValueCtx {
+                                r#type: arg.1,
+                                is_deref: true,
+                            }),
+                        )
+                        .unwrap();
+                    skip_indicies += 1;
+                }
             }
 
             self.compile_block(body, &mut writer, module);

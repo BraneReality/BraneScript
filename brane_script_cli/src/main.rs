@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use brane_script_compiler::{compiler::Compiler, parsed_document::ParsedDocument};
-use brane_script_runtime::backend::llvm::LLVMJitBackend;
+use brane_script_runtime::{backend::llvm::LLVMJitBackend, JitFunctionHandle};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -55,11 +55,14 @@ fn main() -> anyhow::Result<()> {
         println!("{}", f.0)
     }
 
-    let s0 = functions.get("add_multiple::s0").expect("expected");
-    let s1 = functions.get("add_multiple::s1").expect("expected");
+    let s0: fn(*const *mut u8, i32, i32, i32, i32) =
+        unsafe { std::mem::transmute(*functions.get("add_multiple::s0").expect("expected")) };
+    let s1: fn(*const *mut u8, i32, i32, i32) =
+        unsafe { std::mem::transmute(*functions.get("add_multiple::s1").expect("expected")) };
 
-    let mut stack_page = [0u8; brane_script_common::BS_PAGE_SIZE as usize];
-    let bindings_page = [stack_page.as_mut_ptr(); brane_script_common::BS_PAGE_SIZE as usize];
+    let mut stack_page = [0u32; brane_script_common::BS_PAGE_SIZE as usize / 4];
+    let bindings_page =
+        [stack_page.as_mut_ptr() as *mut u8; brane_script_common::BS_PAGE_SIZE as usize];
 
     #[derive(Debug)]
     struct Args {
@@ -69,8 +72,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     let stack_ptr = 20i32;
-    let args = unsafe { (stack_page.as_mut_ptr().add(stack_ptr as usize)) as *mut Args };
-    unsafe { std::ptr::write_unaligned(args, Args { a: 5, b: 3, c: 6 }) }
+    let ret =
+        unsafe { ((stack_page.as_mut_ptr() as *mut u8).add(stack_ptr as usize)) as *mut Args };
 
     print!("stack before call: ");
     for c in 0..40 {
@@ -79,9 +82,16 @@ fn main() -> anyhow::Result<()> {
     println!("");
     println!("");
 
-    println!("running s0 with args {:?}", unsafe { &*args });
-    s0(bindings_page.as_ptr(), stack_ptr);
-    println!("s0 returned {:?}", unsafe { &*args });
+    let s0_args = Args { a: 5, b: 3, c: 6 };
+    println!("running s0 with args {:?}", s0_args);
+    s0(
+        bindings_page.as_ptr(),
+        stack_ptr,
+        s0_args.a,
+        s0_args.b,
+        s0_args.c,
+    );
+    println!("s0 returned {:?}", unsafe { &*ret });
 
     println!("");
     print!("stack after call: ");
@@ -91,9 +101,11 @@ fn main() -> anyhow::Result<()> {
     println!("\n");
     println!("");
 
-    println!("running s1 with args {:?}", unsafe { &*args });
-    s1(bindings_page.as_ptr(), stack_ptr);
-    println!("s1 returned {:?}", unsafe { &*args });
+    unsafe {
+        println!("running s1 with args a={}, b={}", (*ret).a, (*ret).b);
+        s1(bindings_page.as_ptr(), stack_ptr, (*ret).a, (*ret).b);
+    }
+    println!("s1 returned {:?}", unsafe { &*ret });
 
     println!("");
     print!("stack after call: ");

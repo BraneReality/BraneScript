@@ -103,7 +103,9 @@ pub struct IRValue(pub u32);
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum IROp {
-    NoOp,
+    ArgValue {
+        index: u32,
+    },
     ConstI32 {
         value: i32,
     },
@@ -221,6 +223,10 @@ pub enum IROp {
         func: IDRef,
         input: IRValue,
         output: IRValue,
+    },
+    Ret {
+        args_t: IDRef,
+        output: Option<IRValue>,
     },
     NextStage {
         args_t: IDRef,
@@ -359,7 +365,7 @@ impl fmt::Display for IRValue {
 impl fmt::Display for IROp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            IROp::NoOp => write!(f, "(nop)"),
+            IROp::ArgValue { index } => write!(f, "(arg {})", index),
             IROp::ConstI32 { value } => write!(f, "(const.i32 {})", value),
             IROp::ConstF32 { value } => write!(f, "(const.f32 {})", value),
             IROp::AllocA { r#type } => write!(f, "(alloc {})", r#type),
@@ -394,6 +400,13 @@ impl fmt::Display for IROp {
                 input,
                 output,
             } => write!(f, "(call {} {} {})", func, input, output),
+            IROp::Ret { args_t, output } => {
+                if let Some(out_val) = &output {
+                    write!(f, "(ret {} {})", args_t, out_val)
+                } else {
+                    write!(f, "(ret {})", args_t)
+                }
+            }
             IROp::NextStage { args_t, args } => {
                 write!(f, "(stage.next {} {})", args_t, args)
             }

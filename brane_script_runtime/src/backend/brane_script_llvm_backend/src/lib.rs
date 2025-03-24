@@ -1,11 +1,11 @@
-use anyhow::{anyhow, bail};
+use anyhow::{Context, anyhow, bail};
 use brane_script_common::ir::{IRFunction, IRModule, IROp, IRType, IRValue};
 use defer::defer;
 pub use inkwell::{
     builder::Builder as InkBuilder, context::Context as InkContext, module::Module as InkModule,
 };
 use inkwell::{
-    types::{BasicTypeEnum, FunctionType},
+    types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType},
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
 use llvm_sys::{
@@ -20,13 +20,11 @@ use std::{
     u64,
 };
 
-pub type JitFunctionHandle = fn(*const *mut u8, i32) -> ();
-
 pub struct LLVMJitBackend {
     lljit: LLVMOrcLLJITRef,
 
     staged_modules: Mutex<Vec<(IRModule, LLVMOrcThreadSafeModuleRef)>>,
-    pub functions: RwLock<HashMap<String, JitFunctionHandle>>,
+    pub functions: RwLock<HashMap<String, LLVMOrcExecutorAddress>>,
 }
 
 static LLVM_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -200,10 +198,7 @@ impl LLVMJitBackend {
                                     .to_string_lossy();
                                     println!("Found symbol: {}", &name);
 
-                                    functions.insert(
-                                        name.to_string(),
-                                        std::mem::transmute(symbol.Sym.Address),
-                                    );
+                                    functions.insert(name.to_string(), symbol.Sym.Address);
                                 }
 
                                 LLVMOrcReleaseSymbolStringPoolEntry(symbol);
@@ -266,7 +261,6 @@ pub struct LLVMModuleBuilder<'ctx> {
     module: InkModule<'ctx>,
     builder: InkBuilder<'ctx>,
 
-    function_type: FunctionType<'ctx>,
     functions: Vec<FunctionValue<'ctx>>,
 
     op_values: Vec<Option<BasicValueEnum<'ctx>>>,
@@ -284,10 +278,6 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         let builder = context.create_builder();
 
         let mut mb = LLVMModuleBuilder {
-            function_type: context.void_type().fn_type(
-                &[context.ptr_type(0.into()).into(), context.i32_type().into()],
-                false,
-            ),
             context,
             module,
             builder,
@@ -308,9 +298,59 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         self.functions.reserve(bs_module.functions.len());
 
         for f in bs_module.functions.iter() {
+            let output_t = match bs_module.get_struct(&f.output) {
+                Some(v) => v,
+                None => bail!("function output type {} could not be resolved", f.output),
+            };
+            let input_t = match bs_module.get_struct(&f.input) {
+                Some(v) => v,
+                None => bail!("function output type {} could not be resolved", f.output),
+            };
+
+            let (return_type, return_arg_t) = match output_t.members.len() {
+                0 => (AnyTypeEnum::VoidType(self.context.void_type()), None),
+                1 => {
+                    let m = &output_t.members[0];
+                    if let IRType::Native(_) = &m.r#type {
+                        (self.get_llvm_type(&m.r#type).as_any_type_enum(), None)
+                    } else {
+                        (
+                            AnyTypeEnum::VoidType(self.context.void_type()),
+                            Some(BasicMetadataTypeEnum::from(self.get_llvm_type(&m.r#type))),
+                        )
+                    }
+                }
+                _ => (
+                    AnyTypeEnum::VoidType(self.context.void_type()),
+                    Some(BasicMetadataTypeEnum::IntType(self.context.i32_type())),
+                ),
+            };
+
+            let mut input_args = vec![
+                self.context.ptr_type(0.into()).into(),
+                self.context.i32_type().into(),
+            ];
+
+            if let Some(return_arg_t) = return_arg_t {
+                input_args.insert(0, return_arg_t);
+            }
+
+            for m in input_t.members.iter() {
+                input_args.push(self.get_llvm_type(&m.r#type).into())
+            }
+
+            let function_type = if let AnyTypeEnum::VoidType(void_t) = return_type {
+                void_t.fn_type(input_args.as_slice(), false)
+            } else {
+                match BasicTypeEnum::try_from(return_type) {
+                    Ok(basic_type) => basic_type.fn_type(input_args.as_slice(), false),
+                    Err(_) => unreachable!(),
+                }
+            };
+
             self.functions.push(self.module.add_function(
                 &f.id,
-                self.function_type,
+                function_type,
                 Some(inkwell::module::Linkage::External),
             ));
         }
@@ -330,11 +370,10 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
 
             self.op_values.clear();
             self.op_values.reserve(ir_f.operations.len());
-            self.op_values
-                .push(Some(BasicValueEnum::IntValue(stack_ptr_int)));
 
-            for op in ir_f.operations.iter() {
-                self.build_op(op, ir_f, bs_module)?;
+            for (i, op) in ir_f.operations.iter().enumerate() {
+                self.build_op(op, ll_f, ir_f, bs_module)
+                    .context(format!("couldn't compile function {} op {}", ir_f.id, i))?;
             }
         }
 
@@ -349,9 +388,22 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         Ok(())
     }
 
-    fn build_op(&mut self, op: &IROp, func: &IRFunction, module: &IRModule) -> anyhow::Result<()> {
+    fn build_op(
+        &mut self,
+        op: &IROp,
+        llvm_func: FunctionValue<'ctx>,
+        ir_func: &IRFunction,
+        module: &IRModule,
+    ) -> anyhow::Result<()> {
         let new_value = match op {
-            IROp::NoOp => return Ok(()),
+            IROp::ArgValue { index } => {
+                let input_type = module
+                    .get_struct(&ir_func.input)
+                    .expect("We've already tested args");
+
+                let arg_offset = llvm_func.count_params() - input_type.members.len() as u32;
+                llvm_func.get_nth_param(arg_offset + *index)
+            }
             IROp::ConstI32 { value } => Some(
                 self.context
                     .i32_type()
@@ -662,6 +714,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     )
                 }
             }
+            IROp::Ret { args_t, output } => todo!(),
         };
         self.op_values.push(new_value);
         Ok(())
