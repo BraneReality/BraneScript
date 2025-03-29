@@ -8,6 +8,7 @@ pub enum IDRef {
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum IRNativeType {
+    Bool,
     U8,
     I8,
     U16,
@@ -20,51 +21,63 @@ pub enum IRNativeType {
     F64,
     U128,
     I128,
+    Ptr,
+    FnPtr,
 }
 
 impl IRNativeType {
     pub fn to_str(&self) -> &'static str {
+        use IRNativeType::*;
         match self {
-            IRNativeType::U8 => "u8",
-            IRNativeType::I8 => "i8",
-            IRNativeType::U16 => "u16",
-            IRNativeType::I16 => "i16",
-            IRNativeType::U32 => "u32",
-            IRNativeType::I32 => "i32",
-            IRNativeType::F32 => "f32",
-            IRNativeType::U64 => "u64",
-            IRNativeType::I64 => "i64",
-            IRNativeType::F64 => "f64",
-            IRNativeType::U128 => "u128",
-            IRNativeType::I128 => "i128",
+            Bool => "bool",
+            U8 => "u8",
+            I8 => "i8",
+            U16 => "u16",
+            I16 => "i16",
+            U32 => "u32",
+            I32 => "i32",
+            F32 => "f32",
+            U64 => "u64",
+            I64 => "i64",
+            F64 => "f64",
+            U128 => "u128",
+            I128 => "i128",
+            Ptr => "ptr",
+            FnPtr => "fnPtr",
         }
     }
 
     pub fn from_str(text: &str) -> Result<IRNativeType, ()> {
+        use IRNativeType::*;
         match text {
-            "u8" => Ok(IRNativeType::U8),
-            "i8" => Ok(IRNativeType::I8),
-            "u16" => Ok(IRNativeType::U16),
-            "i16" => Ok(IRNativeType::I16),
-            "u32" => Ok(IRNativeType::U32),
-            "i32" => Ok(IRNativeType::I32),
-            "f32" => Ok(IRNativeType::F32),
-            "u64" => Ok(IRNativeType::U64),
-            "i64" => Ok(IRNativeType::I64),
-            "f64" => Ok(IRNativeType::F64),
-            "u128" => Ok(IRNativeType::U128),
-            "i128" => Ok(IRNativeType::I128),
+            "bool" => Ok(Bool),
+            "u8" => Ok(U8),
+            "i8" => Ok(I8),
+            "u16" => Ok(U16),
+            "i16" => Ok(I16),
+            "u32" => Ok(U32),
+            "i32" => Ok(I32),
+            "f32" => Ok(F32),
+            "u64" => Ok(U64),
+            "i64" => Ok(I64),
+            "f64" => Ok(F64),
+            "u128" => Ok(U128),
+            "i128" => Ok(I128),
+            "ptr" => Ok(Ptr),
+            "fnPtr" => Ok(FnPtr),
             _ => Err(()),
         }
     }
 
     pub fn size(&self) -> usize {
+        use IRNativeType::*;
         match self {
-            IRNativeType::I8 | IRNativeType::U8 => 1,
-            IRNativeType::I16 | IRNativeType::U16 => 2,
-            IRNativeType::I32 | IRNativeType::U32 | IRNativeType::F32 => 4,
-            IRNativeType::I64 | IRNativeType::U64 | IRNativeType::F64 => 8,
-            IRNativeType::U128 | IRNativeType::I128 => 16,
+            Bool | I8 | U8 => 1,
+            I16 | U16 => 2,
+            I32 | U32 | F32 | Ptr => 4,
+            I64 | U64 | F64 => 8,
+            U128 | I128 => 16,
+            FnPtr => todo!("fn pointer not implemented"),
         }
     }
 

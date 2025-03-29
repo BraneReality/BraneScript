@@ -5,7 +5,7 @@ pub use inkwell::{
     builder::Builder as InkBuilder, context::Context as InkContext, module::Module as InkModule,
 };
 use inkwell::{
-    types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType},
+    types::{AnyType, AnyTypeEnum, BasicMetadataTypeEnum, BasicType, BasicTypeEnum},
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue},
 };
 use llvm_sys::{
@@ -761,13 +761,15 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         use brane_script_common::ir::IRNativeType::*;
         match bs_type {
             IRType::Native(native_type) => match native_type {
+                Bool => BasicTypeEnum::IntType(self.context.bool_type()),
                 U8 | I8 => BasicTypeEnum::IntType(self.context.i8_type()),
                 U16 | I16 => BasicTypeEnum::IntType(self.context.i16_type()),
-                U32 | I32 => BasicTypeEnum::IntType(self.context.i32_type()),
+                U32 | I32 | Ptr => BasicTypeEnum::IntType(self.context.i32_type()),
                 F32 => BasicTypeEnum::FloatType(self.context.f32_type()),
                 U64 | I64 => BasicTypeEnum::IntType(self.context.i64_type()),
                 F64 => BasicTypeEnum::FloatType(self.context.f64_type()),
                 U128 | I128 => BasicTypeEnum::IntType(self.context.i128_type()),
+                FnPtr => todo!("funciton pointers not implemented"),
             },
             IRType::Struct(_) => BasicTypeEnum::IntType(self.context.i32_type()), // Referred to as int ptrs
         }

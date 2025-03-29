@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use brane_script_compiler::{compiler::Compiler, parsed_document::ParsedDocument};
-use brane_script_runtime::{backend::llvm::LLVMJitBackend, JitFunctionHandle};
+use brane_script_runtime::backend::llvm::LLVMJitBackend;
 use clap::Parser;
 
 #[derive(Parser)]

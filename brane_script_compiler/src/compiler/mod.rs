@@ -53,7 +53,7 @@ struct IRWriterScope {
 }
 
 pub struct IRWriter {
-    /// (operation, Option<type operation returns, is i32 ptr to value>
+    /// (operation, Option<type operation returns, is ptr to value>
     pub operations: Vec<(IROp, Option<IRValueCtx>)>,
     pub scopes: LinkedList<IRWriterScope>,
 }
@@ -63,7 +63,7 @@ pub struct IROpCtx {}
 #[derive(Clone)]
 pub struct IRValueCtx {
     pub r#type: IRType,
-    // if true the value holds the (type|struct address), if fase we have an i32 representing pointer to one of those
+    // if true the value holds the (type|struct address), if fase we have a ptr representing pointer to one of those
     // types
     pub is_deref: bool,
 }
@@ -156,7 +156,7 @@ impl IRWriter {
         None
     }
 
-    // allocate stack memory of a type and get a i32 value representing a pointer back
+    // allocate stack memory of a type and get a ptr value representing a pointer back
     pub fn alloca(&mut self, r#type: IRType) -> WriterIRValue {
         self.write(
             IROp::AllocA {
@@ -233,7 +233,7 @@ impl IRWriter {
         Ok(if !value.ctx.is_deref {
             match value.ctx.r#type {
                 IRType::Native(nt) => self.load(nt, value.value)?,
-                IRType::Struct(_) => self.load(IRNativeType::I32, value.value)?,
+                IRType::Struct(_) => self.load(IRNativeType::Ptr, value.value)?,
             }
         } else {
             value.clone()
@@ -253,6 +253,7 @@ impl IRWriter {
             | IRNativeType::U64
             | IRNativeType::I32
             | IRNativeType::U32
+            | IRNativeType::Ptr
             | IRNativeType::I16
             | IRNativeType::U16
             | IRNativeType::U8
@@ -274,6 +275,8 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::Bool => bail!("Cannot add to bool type"),
+            IRNativeType::FnPtr => bail!("Cannot add to FnPtr type"),
         })
     }
 
@@ -290,6 +293,7 @@ impl IRWriter {
             | IRNativeType::U64
             | IRNativeType::I32
             | IRNativeType::U32
+            | IRNativeType::Ptr
             | IRNativeType::I16
             | IRNativeType::U16
             | IRNativeType::U8
@@ -311,6 +315,8 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::Bool => bail!("Cannot sub bool type"),
+            IRNativeType::FnPtr => bail!("Cannot sub FnPtr type"),
         })
     }
 
@@ -326,6 +332,7 @@ impl IRWriter {
             | IRNativeType::I32
             | IRNativeType::I16
             | IRNativeType::I8
+            | IRNativeType::Ptr
             | IRNativeType::U16
             | IRNativeType::U32
             | IRNativeType::U64
@@ -348,6 +355,8 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::Bool => bail!("Cannot mul bool type"),
+            IRNativeType::FnPtr => bail!("Cannot mul FnPtr type"),
         })
     }
 
@@ -375,6 +384,7 @@ impl IRWriter {
             | IRNativeType::U32
             | IRNativeType::U64
             | IRNativeType::U8
+            | IRNativeType::Ptr
             | IRNativeType::U128 => self
                 .write(
                     IROp::UDiv { left, right },
@@ -393,6 +403,8 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::Bool => bail!("Cannot div bool type"),
+            IRNativeType::FnPtr => bail!("Cannot div FnPtr type"),
         })
     }
 
@@ -420,6 +432,7 @@ impl IRWriter {
             | IRNativeType::U32
             | IRNativeType::U64
             | IRNativeType::U8
+            | IRNativeType::Ptr
             | IRNativeType::U128 => self
                 .write(
                     IROp::URem { left, right },
@@ -438,6 +451,8 @@ impl IRWriter {
                     }),
                 )
                 .expect("we should always get a value if we pass a ret type"),
+            IRNativeType::Bool => bail!("Cannot get remainder of bool type"),
+            IRNativeType::FnPtr => bail!("Cannot get remainder of FnPtr type"),
         })
     }
 
@@ -471,7 +486,10 @@ impl IRWriter {
                 | IRNativeType::U16
                 | IRNativeType::U32
                 | IRNativeType::U64
+                | IRNativeType::Ptr
                 | IRNativeType::U128 => bail!("cannot negate unsigned type"),
+                IRNativeType::Bool => bail!("Cannot negate bool type"),
+                IRNativeType::FnPtr => bail!("Cannot negate FnPtr type"),
             },
         })
     }
@@ -561,6 +579,7 @@ impl IRWriter {
             | IRNativeType::I16
             | IRNativeType::I32
             | IRNativeType::I64
+            | IRNativeType::Bool
             | IRNativeType::I128 => self
                 .write(
                     IROp::ShiftL { left, right },
@@ -571,6 +590,7 @@ impl IRWriter {
                 )
                 .unwrap(),
             IRNativeType::F32 | IRNativeType::F64 => bail!("no bit operations for float types"),
+            IRNativeType::Ptr | IRNativeType::FnPtr => bail!("no bit operations for ptr types"),
         })
     }
 
@@ -585,6 +605,7 @@ impl IRWriter {
             | IRNativeType::U16
             | IRNativeType::U32
             | IRNativeType::U64
+            | IRNativeType::Bool
             | IRNativeType::U128 => self
                 .write(
                     IROp::UShiftR { left, right },
@@ -608,6 +629,7 @@ impl IRWriter {
                 )
                 .unwrap(),
             IRNativeType::F32 | IRNativeType::F64 => bail!("no bit operations for float types"),
+            IRNativeType::Ptr | IRNativeType::FnPtr => bail!("no bit operations for ptr types"),
         })
     }
 
@@ -789,7 +811,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         for m in &ctx.modifiers {
             return match m {
                 TypeModifiers::MutRef | TypeModifiers::ConstRef => {
-                    Ok(IRType::Native(IRNativeType::I32))
+                    Ok(IRType::Native(IRNativeType::Ptr))
                 }
             };
         }
@@ -1201,17 +1223,11 @@ impl<'ctx> GenerateIRPass<'ctx> {
             .filter_map(|m| {
                 let r#type = match &m.r#type {
                     IRType::Native(nt) => IRType::Native(*nt),
-                    IRType::Struct(_) => IRType::Native(IRNativeType::I32),
+                    IRType::Struct(_) => IRType::Native(IRNativeType::Ptr),
                 };
                 Some((m.id.clone(), r#type))
             })
             .collect();
-
-        let output_def = module.get_struct(&output).unwrap();
-        if output_def.members.len() > 1 {
-            // Returned struct pointer
-            args.insert(0, (None, IRType::Native(IRNativeType::I32)));
-        }
 
         let mut writer = IRWriter::new(input.clone());
         {
