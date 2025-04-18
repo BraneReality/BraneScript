@@ -14,7 +14,6 @@ use crate::{
     MessageType, ToolchainMessage,
 };
 
-pub mod nodes;
 use nodes::*;
 
 pub struct DocumentParserResult {

@@ -2,8 +2,8 @@ use std::collections::{HashMap, LinkedList};
 
 use anyhow::{anyhow, bail};
 use brane_script_runtime::ir::{
-    IDRef, IRFunction, IRModule, IRNativeType, IROp, IRPipeline, IRStruct, IRStructMember, IRType,
-    IRValue,
+    IRFunction, IRIDRef, IRModule, IRNativeType, IROp, IRPipeline, IRStruct, IRStructMember,
+    IRType, IRValue,
 };
 
 use crate::{
@@ -60,6 +60,11 @@ pub struct IRWriter {
 
 pub struct IROpCtx {}
 
+pub enum IRCompilerValue {
+    Address(IRValue),
+    Value(IRValue),
+}
+
 #[derive(Clone)]
 pub struct IRValueCtx {
     pub r#type: IRType,
@@ -75,7 +80,7 @@ pub struct WriterIRValue {
 }
 
 impl IRWriter {
-    pub fn new(arg_type: IDRef) -> IRWriter {
+    pub fn new(arg_type: IRIDRef) -> IRWriter {
         IRWriter {
             operations: Vec::new(),
             scopes: LinkedList::new(),
@@ -172,7 +177,7 @@ impl IRWriter {
 
     pub fn get_struct_member_ptr(
         &mut self,
-        structure_type: &IDRef,
+        structure_type: &IRIDRef,
         ptr: IRValue,
         index: usize,
         module: &IRModule,
@@ -650,7 +655,7 @@ impl IRWriter {
         Ok(())
     }
 
-    fn call(&mut self, args: IRValue, ret: Option<IDRef>) -> anyhow::Result<Option<IRValue>> {
+    fn call(&mut self, args: IRValue, ret: Option<IRIDRef>) -> anyhow::Result<Option<IRValue>> {
         todo!();
     }
 
@@ -672,7 +677,7 @@ impl IRWriter {
 
     fn copy_struct(
         &mut self,
-        struct_type: &IDRef,
+        struct_type: &IRIDRef,
         src: IRValue,
         dest: IRValue,
         module: &IRModule,
@@ -833,7 +838,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
                     for i in 0..module.structs.len() {
                         if let Some(sid) = &module.structs[i].id {
                             if sid == &structure.identifier.text {
-                                return Ok(IRType::Struct(IDRef::Index(i as u32)));
+                                return Ok(IRType::Struct(IRIDRef(i as u32)));
                             }
                         }
                     }
@@ -864,8 +869,8 @@ impl<'ctx> GenerateIRPass<'ctx> {
         }
     }
 
-    fn compile_struct(&mut self, ctx: &StructContext, module: &mut IRModule) -> Option<IDRef> {
-        let struct_id = IDRef::Index(module.structs.len() as u32);
+    fn compile_struct(&mut self, ctx: &StructContext, module: &mut IRModule) -> Option<IRIDRef> {
+        let struct_id = IRIDRef(module.structs.len() as u32);
 
         let mut members = Vec::new();
         for m in ctx.members.iter() {
@@ -903,7 +908,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         &mut self,
         members: Vec<IRStructMember>,
         module: &mut IRModule,
-    ) -> Result<IDRef, ToolchainMessage> {
+    ) -> Result<IRIDRef, ToolchainMessage> {
         for i in 0..module.structs.len() {
             let s = &module.structs[i];
             if s.id.is_some() {
@@ -920,10 +925,10 @@ impl<'ctx> GenerateIRPass<'ctx> {
                 continue;
             }
 
-            return Ok(IDRef::Index(i as u32));
+            return Ok(IRIDRef(i as u32));
         }
 
-        let new_id = IDRef::Index(module.structs.len() as u32);
+        let new_id = IRIDRef(module.structs.len() as u32);
         module.structs.push(IRStruct {
             id: None,
             members,
@@ -936,7 +941,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
         &mut self,
         ctx: &AnonStructTypeContext,
         module: &mut IRModule,
-    ) -> Option<IDRef> {
+    ) -> Option<IRIDRef> {
         let mut members = Vec::new();
         for m in ctx.members.iter() {
             let r#type = m.r#type.as_ref().expect("type should have been resolved");
@@ -1315,7 +1320,7 @@ impl<'ctx> GenerateIRPass<'ctx> {
                 &stage.body,
                 module,
             ) {
-                let stage_ref = IDRef::Index(module.functions.len() as u32);
+                let stage_ref = IRIDRef(module.functions.len() as u32);
                 module.functions.push(stage);
                 stages.push(stage_ref);
             }
