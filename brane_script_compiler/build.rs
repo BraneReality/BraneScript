@@ -4,7 +4,7 @@ use type_sitter_gen::generate_nodes;
 
 fn main() {
     // Type sitter node generation
-    let out_dir = PathBuf::from("src/parser/");
+    let out_dir = PathBuf::from("src/ast/");
 
     // To generate nodes
     fs::write(

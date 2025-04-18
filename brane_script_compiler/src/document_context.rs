@@ -325,6 +325,7 @@ pub enum ExpressionContext {
     AnonStruct(Box<AnonStructContext>),
     Call(Box<CallContext>),
 }
+
 impl ExpressionContext {
     pub fn ctx(&self) -> TextContext {
         match self {

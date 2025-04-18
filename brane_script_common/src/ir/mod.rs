@@ -1,10 +1,7 @@
 use anyhow::anyhow;
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum IDRef {
-    Name(String),
-    Index(u32),
-}
+pub struct IRIDRef(pub u32);
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum IRNativeType {
@@ -89,10 +86,10 @@ impl IRNativeType {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum IRType {
     Native(IRNativeType),
-    Struct(IDRef),
+    Struct(IRIDRef),
 }
 
-impl IDRef {
+impl IRIDRef {
     pub fn size_layout(&self, module: &IRModule) -> anyhow::Result<(usize, usize)> {
         let layout = module
             .get_struct(self)
@@ -233,16 +230,16 @@ pub enum IROp {
         right: IRValue,
     },
     Call {
-        func: IDRef,
+        func: IRIDRef,
         input: IRValue,
         output: IRValue,
     },
     Ret {
-        args_t: IDRef,
+        args_t: IRIDRef,
         output: Option<IRValue>,
     },
     NextStage {
-        args_t: IDRef,
+        args_t: IRIDRef,
         args: IRValue,
     },
 }
@@ -310,16 +307,16 @@ impl IRStruct {
 
 pub struct IRFunction {
     pub id: String,
-    pub input: IDRef,
-    pub output: IDRef,
+    pub input: IRIDRef,
+    pub output: IRIDRef,
     pub operations: Vec<IROp>,
 }
 
 pub struct IRPipeline {
     pub id: String,
-    pub input: IDRef,
-    pub output: IDRef,
-    pub stages: Vec<IDRef>,
+    pub input: IRIDRef,
+    pub output: IRIDRef,
+    pub stages: Vec<IRIDRef>,
 }
 
 pub struct IRModule {
@@ -330,27 +327,15 @@ pub struct IRModule {
 }
 
 impl IRModule {
-    pub fn get_struct(&self, id: &IDRef) -> Option<&IRStruct> {
-        match id {
-            IDRef::Name(name) => self.structs.iter().find(|s| {
-                if let Some(id) = s.id.as_ref() {
-                    id == name
-                } else {
-                    false
-                }
-            }),
-            IDRef::Index(idx) => self.structs.get(*idx as usize),
-        }
+    pub fn get_struct(&self, id: &IRIDRef) -> Option<&IRStruct> {
+        self.structs.get(id.0 as usize)
     }
 }
 
 use std::fmt;
-impl fmt::Display for IDRef {
+impl fmt::Display for IRIDRef {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            IDRef::Name(name) => write!(f, "\"{}\"", name),
-            IDRef::Index(index) => write!(f, "#{}", index),
-        }
+        write!(f, "#{}", self.0)
     }
 }
 

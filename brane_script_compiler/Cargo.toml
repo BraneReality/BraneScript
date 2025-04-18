@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 brane_script_runtime = {path = "../brane_script_runtime"}
 tree-sitter-branescript.workspace = true
+rodeo = "0.2.1"
+anstream = "0.6.18"
+ouroboros = "0.18.5"
 
 anyhow.workspace = true
 type-sitter = { version = "0.7.0", default-features = false }
