@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4.5.31", features = ["derive"] }
+chumsky = "0.10.1"
+
 
 brane_script_compiler = {path = "../brane_script_compiler" }
 brane_script_common = {path = "../brane_script_common" }

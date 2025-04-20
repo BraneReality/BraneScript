@@ -1,13 +1,15 @@
+use brane_script_compiler_macro::arena_with_types;
 use ouroboros::self_referencing;
-use rodeo::bumpalo::Rodeo;
+use typed_arena::Arena;
 
 use crate::source::TextSource;
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 #[derive(PartialEq, Eq, Clone)]
-pub struct Identifier {
+pub struct Identifier<'hir> {
     pub source: TextSource,
     pub text: String,
+    pub _lifetime: PhantomData<&'hir Identifier<'hir>>,
 }
 
 #[derive(Clone)]
@@ -27,7 +29,7 @@ impl<'hir> Display for GenericArg<'hir> {
 
 #[derive(Clone)]
 pub enum PathSeg<'hir> {
-    Id(&'hir Identifier),
+    Id(&'hir Identifier<'hir>),
     Generics(Vec<GenericArg<'hir>>),
     TraitImpl {
         r#type: &'hir Path<'hir>,
@@ -42,7 +44,7 @@ pub struct Path<'hir> {
     pub scopes: Vec<PathSeg<'hir>>,
 }
 
-impl<'hir> Display for Identifier {
+impl<'hir> Display for Identifier<'hir> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", &self.text)
     }
@@ -97,7 +99,7 @@ pub struct Type<'hir> {
 #[derive(Clone)]
 pub struct Value<'hir> {
     pub source: &'hir TextSource,
-    pub label: Option<Identifier>,
+    pub label: Option<Identifier<'hir>>,
     pub r#type: Option<Type<'hir>>,
 }
 
@@ -124,7 +126,7 @@ pub struct CallSig<'hir> {
 #[derive(Clone)]
 pub struct PipelineStage<'hir> {
     pub source: TextSource,
-    pub identifier: Option<Identifier>,
+    pub identifier: Option<Identifier<'hir>>,
     pub call_sig: CallSig<'hir>,
     pub body: Block<'hir>,
 }
@@ -175,7 +177,7 @@ pub struct Field<'hir> {
 #[derive(Clone)]
 pub struct FieldDef<'hir> {
     pub source: TextSource,
-    pub id: &'hir Identifier,
+    pub id: &'hir Identifier<'hir>,
     pub expression: &'hir Expr<'hir>,
 }
 
@@ -197,7 +199,7 @@ pub struct Call<'hir> {
 #[derive(Clone)]
 pub struct StructDef<'hir> {
     pub source: TextSource,
-    pub identifier: Option<&'hir Identifier>,
+    pub identifier: Option<&'hir Identifier<'hir>>,
     pub members: Vec<&'hir Value<'hir>>,
     pub packed: bool,
 }
@@ -205,26 +207,26 @@ pub struct StructDef<'hir> {
 #[derive(Clone)]
 pub struct Function<'hir> {
     pub source: &'hir TextSource,
-    pub identifier: &'hir Identifier,
+    pub identifier: &'hir Identifier<'hir>,
     pub call_sig: &'hir CallSig<'hir>,
     pub body: &'hir Block<'hir>,
 }
 
 pub enum TraitMember<'hir> {
     Fn(&'hir CallSig<'hir>),
-    Type(&'hir Identifier),
-    Const(&'hir Identifier, &'hir Path<'hir>),
+    Type(&'hir Identifier<'hir>),
+    Const(&'hir Identifier<'hir>, &'hir Path<'hir>),
 }
 
 pub struct TraitDef<'hir> {
-    pub identifier: &'hir Identifier,
+    pub identifier: &'hir Identifier<'hir>,
     pub members: HashMap<String, &'hir TraitMember<'hir>>,
 }
 
 pub enum ImplMembers<'hir> {
     Fn(&'hir Function<'hir>),
-    Type(&'hir Identifier, &'hir Path<'hir>),
-    Const(&'hir Identifier, &'hir ConstValue),
+    Type(&'hir Identifier<'hir>, &'hir Path<'hir>),
+    Const(&'hir Identifier<'hir>, &'hir ConstValue),
 }
 
 pub struct Impl<'hir> {
@@ -236,34 +238,60 @@ pub struct Impl<'hir> {
 #[derive(Clone)]
 pub struct Pipeline<'hir> {
     pub source: &'hir TextSource,
-    pub identifier: &'hir Identifier,
+    pub identifier: &'hir Identifier<'hir>,
     pub call_sig: &'hir CallSig<'hir>,
     pub stages: Vec<&'hir PipelineStage<'hir>>,
 }
 
 pub struct Module<'hir> {
     pub source: TextSource,
-    pub identifier: &'hir mut Identifier,
+    pub identifier: &'hir mut Identifier<'hir>,
     pub links: Vec<&'hir mut Path<'hir>>,
     pub structs: HashMap<String, &'hir mut Struct<'hir>>,
     pub functions: HashMap<String, &'hir mut Function<'hir>>,
     pub pipelines: HashMap<String, &'hir mut Pipeline<'hir>>,
 }
 
-#[self_referencing]
-pub struct Hir {
-    pub arena: Rodeo,
-    #[borrows(mut arena)]
-    #[not_covariant]
-    pub modules: HashMap<String, &'this mut Module<'this>>,
+pub struct Hir<'hir> {
+    pub modules: HashMap<String, &'hir mut Module<'hir>>,
 }
 
+arena_with_types!(Hir, Identifier, Module);
+
+/*
+pub struct HirArena<'hir>(Arena<HirKind<'hir>>);
+
+pub enum HirKind<'hir> {
+    Identifier(Identifier),
+    Module(Module<'hir>),
+}
+
+impl<'hir> HirArena<'hir> {
+    pub fn alloc_identifier(&self, value: Identifier) -> &mut Identifier {
+        if let HirKind::Identifier(value) = &mut *self.0.alloc(HirKind::Identifier(value)) {
+            value
+        } else {
+            unreachable!("variant is known")
+        }
+    }
+
+    pub fn alloc_module(&self, value: Module<'hir>) -> &mut Module<'hir> {
+        if let HirKind::Module(value) = &mut *self.0.alloc(HirKind::Module(value)) {
+            value
+        } else {
+            unreachable!("variant is known")
+        }
+    }
+}
+*/
+
+/*
 impl Hir {
     pub fn build(
-        modules_builder: impl for<'hir> FnOnce(
-            &'hir mut Rodeo,
+        modules_builder: impl for<'this> FnOnce(
+            &'this mut Rodeo,
         ) -> anyhow::Result<
-            HashMap<String, &'hir mut Module<'hir>>,
+            HashMap<String, &'this mut Module<'this>>,
         >,
     ) -> anyhow::Result<Hir> {
         Hir::try_new(Rodeo::new(), modules_builder)
@@ -275,12 +303,13 @@ impl Default for Hir {
         Hir::new(Rodeo::new(), |_| HashMap::new())
     }
 }
+*/
 
 pub enum Expr<'hir> {
     Scope(&'hir mut Block<'hir>),
     Assignment(&'hir mut Assignment<'hir>),
     Let(&'hir mut Let<'hir>),
-    Identifier(&'hir mut Identifier),
+    Identifier(&'hir mut Identifier<'hir>),
     ConstValue(&'hir mut ConstValue),
     Path(&'hir mut Path<'hir>),
     Field(&'hir mut Field<'hir>),

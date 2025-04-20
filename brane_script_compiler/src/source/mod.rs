@@ -34,7 +34,8 @@ impl SourceManager {
         Ok(())
     }
 
-    pub fn load_from_file(&mut self, path: PathBuf) -> anyhow::Result<Uri> {
+    pub fn load_from_file(&mut self, path: impl Into<PathBuf>) -> anyhow::Result<Uri> {
+        let path = path.into();
         let text = std::fs::read_to_string(&path)?;
         let key = Uri::File(path);
 
