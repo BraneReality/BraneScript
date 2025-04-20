@@ -6,6 +6,7 @@ use annotate_snippets::{Level, Message};
 pub trait DiagnosticEmitter {
     fn emit(&self, diagnostic: Message);
 
+    #[must_use = "must call emit() to see diagnostic"]
     fn error<'e>(
         &'e self,
         title: impl ToString,
@@ -47,18 +48,22 @@ struct TextPos {
 }
 
 impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
+    #[must_use = "must call emit() to see diagnostic"]
     pub fn info_at(self, span: Range<usize>, text: impl ToString) -> Self {
         self.annotate(span, Level::Info, text)
     }
 
+    #[must_use = "must call emit() to see diagnostic"]
     pub fn warning_at(self, span: Range<usize>, text: impl ToString) -> Self {
         self.annotate(span, Level::Warning, text)
     }
 
+    #[must_use = "must call emit() to see diagnostic"]
     pub fn err_at(self, span: Range<usize>, text: impl ToString) -> Self {
         self.annotate(span, Level::Error, text)
     }
 
+    #[must_use = "must call emit() to see diagnostic"]
     pub fn annotate(mut self, span: Range<usize>, level: Level, text: impl ToString) -> Self {
         self.annotations.push(Annotation {
             text: text.to_string(),
@@ -69,6 +74,7 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
         self
     }
 
+    #[must_use = "must call emit() to see diagnostic"]
     pub fn change_origin(mut self, origin: impl ToString) -> Self {
         let origin = origin.to_string();
         if let Some(po) =
@@ -90,10 +96,10 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
         self
     }
 
-    fn line_of(r: Range<usize>, start: TextPos, source_text: &str) -> TextPos {
+    fn line_of(char_index: usize, start: TextPos, source_text: &str) -> TextPos {
         let mut current = start.clone();
         let mut index = current.buf_index;
-        for c in source_text[start.buf_index..r.start].chars() {
+        for c in source_text[start.buf_index..char_index].chars() {
             index += 1;
             if c == '\n' {
                 current.buf_index = index;
@@ -152,7 +158,7 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
                 }
             }
 
-            let cursor = Self::line_of(a.span.clone(), cursor, source_text);
+            let cursor = Self::line_of(a.span.start, cursor, source_text);
 
             if let Some(s) = current_snippet.as_ref() {
                 if cursor.line - s.end_line > self.max_line_gap {
@@ -168,7 +174,7 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
                     origin: a.origin,
                     span: Range {
                         start: cursor.buf_index,
-                        end: cursor.buf_index,
+                        end: 0,
                     },
                 })
             }
@@ -180,9 +186,8 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
                 end: span.end - s.span.start,
             };
             s.annotations.push(a);
-            s.end_line = cursor.line;
-            let next_line = Self::advance_lines(1, cursor, source_text);
-            s.span.end = next_line.buf_index - 1;
+            s.end_line = cursor.line; // TODO make end line account for mult-line annotations
+            s.span.end = span.end.max(s.span.end);
         }
 
         if let Some(s) = current_snippet {

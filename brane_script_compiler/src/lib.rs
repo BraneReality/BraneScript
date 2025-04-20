@@ -1,6 +1,7 @@
 pub mod ast;
-pub mod hir;
-
-pub mod compiler;
 pub mod errors;
+pub mod hir;
 pub mod source;
+pub mod tokens;
+
+//pub mod compiler;
