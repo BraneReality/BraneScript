@@ -68,7 +68,7 @@ pub fn lexer<'src>(
         just('%').to(TokenKind::Percent),
     )));
 
-    choice((literal, ident, sym, line_comment, block_comment, whitespace))
+    choice((line_comment, block_comment, literal, ident, sym, whitespace))
         .map_with(|tk, e| Token {
             span: e.span(),
             kind: tk,
