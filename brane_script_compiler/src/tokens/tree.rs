@@ -85,16 +85,25 @@ impl<'src> Group<'src> {
             Delimiter::Parenthesis => "(...)",
             Delimiter::Brace => "{...}",
             Delimiter::Bracket => "[...]",
-            Delimiter::None => "...",
+            Delimiter::None => "<...>",
         };
         writeln!(f, "{}{}", prefix, delim)?;
+
+        let has_trees = !self.trees.is_empty();
+        let has_anns = !self.annotations.is_empty();
+
+        for (i, ann) in self.annotations.iter().enumerate() {
+            let is_last = !has_trees && i == self.annotations.len() - 1;
+            ann.fmt(f, indent + 1, is_last)?;
+        }
+
         for (i, tree) in self.trees.iter().enumerate() {
-            let last_child = i == self.trees.len() - 1;
+            let is_last = i == self.trees.len() - 1;
             match &tree.kind {
-                TokenTreeKind::Group(group) => group.fmt(f, indent + 1, last_child)?,
-                TokenTreeKind::Ident(ident) => ident.fmt(f, indent + 1, last_child)?,
-                TokenTreeKind::Punct(punct) => punct.fmt(f, indent + 1, last_child)?,
-                TokenTreeKind::Literal(literal) => literal.fmt(f, indent + 1, last_child)?,
+                TokenTreeKind::Group(group) => group.fmt(f, indent + 1, is_last)?,
+                TokenTreeKind::Ident(ident) => ident.fmt(f, indent + 1, is_last)?,
+                TokenTreeKind::Punct(punct) => punct.fmt(f, indent + 1, is_last)?,
+                TokenTreeKind::Literal(literal) => literal.fmt(f, indent + 1, is_last)?,
             }
         }
         Ok(())
@@ -104,7 +113,12 @@ impl<'src> Group<'src> {
 impl<'src> Ident<'src> {
     fn fmt(&self, f: &mut Formatter<'_>, indent: usize, last: bool) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
-        writeln!(f, "{}{}", prefix, self.ident)
+        writeln!(f, "{}{}", prefix, self.ident)?;
+        for (i, ann) in self.annotations.iter().enumerate() {
+            let is_last = i == self.annotations.len() - 1;
+            ann.fmt(f, indent + 1, is_last)?;
+        }
+        Ok(())
     }
 }
 
@@ -119,6 +133,15 @@ impl<'src> Literal<'src> {
     fn fmt(&self, f: &mut Formatter<'_>, indent: usize, last: bool) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
         writeln!(f, "{}{:?}", prefix, self.kind)
+    }
+}
+
+impl<'src> Annotation<'src> {
+    fn fmt(&self, f: &mut Formatter<'_>, indent: usize, last: bool) -> fmt::Result {
+        let prefix = tree_prefix(indent, last);
+        match &self.kind {
+            AnnotationKind::Comment(s) => writeln!(f, "{}//{}", prefix, s),
+        }
     }
 }
 
