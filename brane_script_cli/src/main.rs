@@ -1,14 +1,16 @@
 use anyhow::anyhow;
+use ariadne::{Color, Config, Label, Report, ReportKind, Source};
 use brane_script_compiler::{
     ast::{self, ast::Ast},
-    errors::console_emiter::ConsoleEmiter,
+    errors::{console_emiter::ConsoleEmiter, DiagnosticEmitter},
     hir::HirArena,
     source::{SourceManager, Uri},
     tokens,
 };
 use brane_script_runtime::backend::llvm::LLVMJitBackend;
+use chumsky::{error::Rich, input::Input};
 use clap::Parser;
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -17,10 +19,49 @@ struct Cli {
     sources: Vec<String>,
 }
 
+pub fn report_rich_error<T: std::fmt::Display>(error: &Rich<T>, src: &str, filename: &str) {
+    let span = error.span().clone();
+
+    // Build the top-level message
+    let message = match error.reason() {
+        chumsky::error::RichReason::ExpectedFound { expected, found } => {
+            let expected: Vec<_> = expected.iter().map(|e| format!("'{}'", e)).collect();
+            let found = found
+                .as_ref()
+                .map(|c| format!("'{}'", c.deref()))
+                .unwrap_or("end of input".into());
+
+            if expected.is_empty() {
+                format!("Unexpected {found}")
+            } else {
+                format!("Expected {}, found {found}", expected.join(", "))
+            }
+        }
+        chumsky::error::RichReason::Custom(msg) => msg.clone(),
+    };
+
+    // Build the Ariadne report
+    let mut report = Report::build(ReportKind::Error, span.clone().into())
+        .with_note(format!("from source {}", filename))
+        .with_message(message)
+        .with_label(
+            Label::new(span.into_range())
+                .with_message("error occurred here")
+                .with_color(Color::Red),
+        );
+
+    // Optional: Add notes for each expected token (could be redundant with above)
+    if let chumsky::error::RichReason::ExpectedFound { expected, .. } = error.reason() {
+        for expected_token in expected {
+            report = report.with_note(format!("Expected: '{}'", expected_token));
+        }
+    }
+
+    report.finish().print(Source::from(src)).unwrap();
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-
-    let de = Arc::new(ConsoleEmiter::new());
 
     let mut sm = SourceManager::new();
     let sources: Vec<Uri> = cli
@@ -29,20 +70,44 @@ fn main() -> anyhow::Result<()> {
         .map(|source| sm.load_from_file(source))
         .collect::<Result<Vec<Uri>, _>>()?;
 
-    let lexer = tokens::lexer();
     for source in sources.iter() {
+        let lexer = tokens::lexer();
         let text = sm.get(source)?;
-        match chumsky::Parser::parse(&lexer, text).into_result() {
-            Ok(tokens) => {
-                println!("printing tokens");
-                for token in tokens {
-                    println!("{:?}", token);
-                }
+        let (tokens, errs) = chumsky::Parser::parse(&lexer, text).into_output_errors();
+        if tokens.is_none() {
+            println!("lexer errors:");
+            for e in errs {
+                report_rich_error(&e, text, &source.to_string());
             }
-            Err(err) => println!("Failed to parse {:?}", err),
+            return Ok(());
         }
+        let tokens = tokens.unwrap();
+        println!("parsed {} tokens", tokens.len());
+        for token in tokens.iter() {
+            println!("{:?}", token);
+        }
+
+        let tree_builder = tokens::tree::tree_builder();
+        let tree_input = tokens
+            .as_slice()
+            .map((text.len()..text.len()).into(), |t| (&t.kind, &t.span));
+        let (tree, errs) = chumsky::Parser::parse(&tree_builder, tree_input).into_output_errors();
+        if tree.is_none() {
+            println!("tree building errors:");
+            for e in errs {
+                report_rich_error(&e, text, &source.to_string());
+                println!("{:?}", e);
+            }
+            return Ok(());
+        }
+        let tree = tree.unwrap();
+        println!("built tree");
+        println!("{}", tree);
     }
 
+    Ok(())
+
+    /*
     let asts: Vec<_> = sources
         .into_iter()
         .map(|source| Ast::new(source, &sm))
@@ -64,8 +129,6 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
-    /*
 
     let mut compiler = Compiler::new();
     let compile_res = compiler.compile(ctx.as_slice());

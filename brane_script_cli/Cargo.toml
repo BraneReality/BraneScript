@@ -7,6 +7,7 @@ edition = "2021"
 anyhow.workspace = true
 clap = { version = "4.5.31", features = ["derive"] }
 chumsky = "0.10.1"
+ariadne = { version = "0.5.1", features = ["auto-color"] }
 
 
 brane_script_compiler = {path = "../brane_script_compiler" }

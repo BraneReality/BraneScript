@@ -7,6 +7,13 @@ pub fn lexer<'src>(
         .ignore_then(any().and_is(just('\n').not()).repeated().to_slice())
         .map(TokenKind::LineComment);
 
+    let block_comment = just("/*")
+        .ignore_then(any().and_is(just("*/").not()).repeated().to_slice())
+        .then_ignore(just("*/"))
+        .map(TokenKind::BlockComment);
+
+    let whitespace = text::whitespace().at_least(1).to(TokenKind::Whitespace);
+
     let ident = text::ascii::ident().map(|ident: &str| TokenKind::Ident(ident));
 
     let int = text::int(10)
@@ -61,15 +68,12 @@ pub fn lexer<'src>(
         just('%').to(TokenKind::Percent),
     )));
 
-    let token = choice((literal, ident, sym))
+    choice((literal, ident, sym, line_comment, block_comment, whitespace))
         .map_with(|tk, e| Token {
             span: e.span(),
             kind: tk,
         })
-        .padded_by(line_comment.repeated())
-        .padded()
         .recover_with(skip_then_retry_until(any().ignored(), end()))
         .repeated()
-        .collect();
-    token
+        .collect()
 }

@@ -1,11 +1,11 @@
 use crate::tokens::tokens::LiteralKind;
 
-pub type Span = SimpleSpan;
+pub type Span = chumsky::span::SimpleSpan;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ident<'src> {
     pub span: Span,
-    pub value: &'src str,
+    pub text: &'src str,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -344,7 +344,7 @@ pub struct Expr<'src> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block<'src> {
     pub span: Span,
-    pub expressions: Vec<Box<Expr<'src>>>,
+    pub stmts: Vec<Box<Stmt<'src>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -409,20 +409,21 @@ pub enum FnRetTy<'src> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CallSig<'src> {
-    pub id: Ident<'src>,
+    pub span: Span,
     pub inputs: Vec<Param<'src>>,
     pub output: FnRetTy<'src>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fn<'src> {
+    pub span: Span,
     pub ident: Ident<'src>,
     pub sig: CallSig<'src>,
     pub body: Option<Box<Block<'src>>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PipeSeg<'src> {
+pub struct PipeStage<'src> {
     pub ident: Option<Ident<'src>>,
     pub sig: Option<CallSig<'src>>,
     pub body: Box<Block<'src>>,
@@ -431,7 +432,7 @@ pub struct PipeSeg<'src> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pipe<'src> {
     pub sig: CallSig<'src>,
-    pub segs: Option<Vec<PipeSeg<'src>>>, //TODO contract: Option<Box<CallContract<'src>>>
+    pub stages: Vec<PipeStage<'src>>, //TODO contract: Option<Box<CallContract<'src>>>
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -442,13 +443,7 @@ pub struct Mod<'src> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Item<'src> {
-    pub span: Span,
-    pub kind: ItemKind<'src>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum ItemKind<'src> {
+pub enum Item<'src> {
     /// A use declaration item (`use`).
     ///
     /// E.g., `use foo;`, `use foo::bar;` or `use foo::bar as FooBar;`.
@@ -457,7 +452,7 @@ pub enum ItemKind<'src> {
     /// A static item (`static`).
     ///
     /// E.g., `static FOO: i32 = 42;` or `static FOO: &'static str = "bar";`.
-    // TODO Static(Box<StaticItem>),
+    // TODO Static(Box<StatcItem>),
 
     /// A constant item (`const`).
     ///
