@@ -1,32 +1,36 @@
 mod test {
     /// DOCUMENTATION (because I totally always remember to write that)
-    pipe add_multiple(start: i32, add1: i32, add2: i32) -> (count: i32) 
+    pipe add_multiple(start: i32, add1: i32, add2: (sub1: i32, sub2: f32)) -> (count: i32) 
     [
         (start: i32, add1: i32, add2: i32) {
             let value : i32 = start + -add1;
             
-            /* multiline annotation for function? */
-            next_stage(args: (value: value, add2: add2), deps: []);
+            /* multiline annotation for function? 
+            line 2
+            line 3*/
+            next_stage(args: (value: value, add2: add2));
         }
         (value: i32, add2: i32) {
+        // Comment 1
+        // Comment 2
+        /* multiline 
+        3rd */
             let value : i32 = value * add2;
             next_stage(args: (count: value));
         }
     ]
+
 }
 
 
 // Single line annotation for mod
-mod <test2 {
+mod test2 {
 
 }
 
 
-asdfasdf
 
 mod final_test {
 
-    asdfasdf
 }
 
-asdfasdf
