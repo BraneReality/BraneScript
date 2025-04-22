@@ -5,10 +5,10 @@ use brane_script_compiler::{
     errors::{console_emiter::ConsoleEmiter, DiagnosticEmitter},
     hir::HirArena,
     source::{SourceManager, Uri},
-    tokens,
+    tokens::{self, tree::TokenTree, Token, TokenInput},
 };
 use brane_script_runtime::backend::llvm::LLVMJitBackend;
-use chumsky::{error::Rich, input::Input};
+use chumsky::{error::Rich, input::Input, span::SimpleSpan};
 use clap::Parser;
 use std::{ops::Deref, sync::Arc};
 
@@ -19,17 +19,27 @@ struct Cli {
     sources: Vec<String>,
 }
 
-pub fn report_rich_error<T: std::fmt::Display>(error: &Rich<T>, src: &str, filename: &str) {
-    let span = error.span().clone();
+pub fn report_rich_error<T: std::fmt::Display>(
+    error: &Rich<T>,
+    src: &str,
+    filename: &str,
+    get_span: Option<fn(&T) -> SimpleSpan>,
+) {
+    let mut span = error.span().clone();
 
     // Build the top-level message
     let message = match error.reason() {
         chumsky::error::RichReason::ExpectedFound { expected, found } => {
             let expected: Vec<_> = expected.iter().map(|e| format!("'{}'", e)).collect();
-            let found = found
-                .as_ref()
-                .map(|c| format!("'{}'", c.deref()))
-                .unwrap_or("end of input".into());
+            let found = match found.as_ref() {
+                Some(found) => {
+                    if let Some(get_span) = get_span {
+                        span = get_span(found);
+                    }
+                    format!("'{}'", found.deref())
+                }
+                None => "nothing".into(),
+            };
 
             if expected.is_empty() {
                 format!("Unexpected {found}")
@@ -51,7 +61,7 @@ pub fn report_rich_error<T: std::fmt::Display>(error: &Rich<T>, src: &str, filen
         );
 
     // Optional: Add notes for each expected token (could be redundant with above)
-    if let chumsky::error::RichReason::ExpectedFound { expected, .. } = error.reason() {
+    if let chumsky::error::RichReason::ExpectedFound { expected, found } = error.reason() {
         for expected_token in expected {
             report = report.with_note(format!("Expected: '{}'", expected_token));
         }
@@ -77,32 +87,55 @@ fn main() -> anyhow::Result<()> {
         if tokens.is_none() {
             println!("lexer errors:");
             for e in errs {
-                report_rich_error(&e, text, &source.to_string());
+                report_rich_error(&e, text, &source.to_string(), None);
             }
             return Ok(());
         }
         let tokens = tokens.unwrap();
         println!("parsed {} tokens", tokens.len());
         for token in tokens.iter() {
-            println!("{:?}", token);
+            println!("{:<10} {}", token.span.to_string(), token);
         }
 
+        let token_input = TokenInput(tokens);
         let tree_builder = tokens::tree::tree_builder();
-        let tree_input = tokens
-            .as_slice()
-            .map((text.len()..text.len()).into(), |t| (&t.kind, &t.span));
-        let (tree, errs) = chumsky::Parser::parse(&tree_builder, tree_input).into_output_errors();
+        let (tree, errs) = chumsky::Parser::parse(&tree_builder, &token_input).into_output_errors();
         if tree.is_none() {
             println!("tree building errors:");
             for e in errs {
-                report_rich_error(&e, text, &source.to_string());
+                report_rich_error(&e, text, &source.to_string(), Some(|t| t.span));
                 println!("{:?}", e);
             }
             return Ok(());
         }
         let tree = tree.unwrap();
         println!("built tree");
-        println!("{}", tree);
+        println!("{}", tree.write_debug_tree());
+
+        let tree = if let TokenTree::Group(group) = tree {
+            group
+        } else {
+            unreachable!();
+        };
+
+        let ast_parser = ast::parser::ast_builder();
+        let (ast, errs) = chumsky::Parser::parse(&ast_parser, &tree).into_output_errors();
+        if ast.is_none() {
+            println!("ast building errors:");
+            for e in errs {
+                report_rich_error(
+                    &e,
+                    text,
+                    &source.to_string(),
+                    Some(|tree| tree.span().clone()),
+                );
+                println!("{:?}", e);
+            }
+            return Ok(());
+        }
+        let ast = ast.unwrap();
+        println!("built ast");
+        println!("{:?}", ast);
     }
 
     Ok(())

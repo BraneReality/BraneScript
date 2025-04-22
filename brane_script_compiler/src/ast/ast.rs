@@ -5,7 +5,7 @@ pub type Span = chumsky::span::SimpleSpan;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ident<'src> {
     pub span: Span,
-    pub text: &'src str,
+    pub ident: &'src str,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,12 +37,12 @@ pub enum TyKind<'src> {
     // TODO Array(P<Ty>, AnonConst),
 
     /// A raw pointer (`*const T` or `*mut T`).
-    Ptr(Box<MutTy<'src>>),
+    Ptr(MutTy<'src>),
     /// A reference (`&'a T` or `&'a mut T`).
-    Ref(Box<MutTy<'src>>),
+    Ref(MutTy<'src>),
 
     /// An anonymous struct
-    Struct(Vec<Ty<'src>>),
+    Struct(Vec<Param<'src>>),
 
     /// A path (`module::module::...::Type`)
     Path(Path<'src>),
@@ -78,7 +78,7 @@ pub enum Mutability {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MutTy<'src> {
-    pub ty: Ty<'src>,
+    pub ty: Box<Ty<'src>>,
     pub mutability: Mutability,
 }
 
@@ -178,7 +178,7 @@ pub enum ExprKind<'src> {
     /// and the second field is the list of arguments.
     /// This also represents calling the constructor of
     /// tuple-like ADTs such as tuple structs and enum variants.
-    Call(Box<Expr<'src>>, Vec<Box<Expr<'src>>>),
+    Call(Box<Expr<'src>>, Vec<FieldExpr<'src>>),
 
     /// A method call (e.g., `x.foo::<Bar, Baz>(a, b, c)`).
     MethodCall(Box<MethodCall<'src>>),
@@ -350,6 +350,7 @@ pub struct Block<'src> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Local<'src> {
     pub span: Span,
+    pub ident: Ident<'src>,
     pub ty: Box<Ty<'src>>,
     pub kind: LocalKind<'src>,
 }
@@ -424,6 +425,7 @@ pub struct Fn<'src> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PipeStage<'src> {
+    pub span: Span,
     pub ident: Option<Ident<'src>>,
     pub sig: Option<CallSig<'src>>,
     pub body: Box<Block<'src>>,
@@ -431,6 +433,8 @@ pub struct PipeStage<'src> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pipe<'src> {
+    pub span: Span,
+    pub ident: Ident<'src>,
     pub sig: CallSig<'src>,
     pub stages: Vec<PipeStage<'src>>, //TODO contract: Option<Box<CallContract<'src>>>
 }
