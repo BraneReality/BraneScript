@@ -388,6 +388,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn build_op(
         &mut self,
         op: &IROp,

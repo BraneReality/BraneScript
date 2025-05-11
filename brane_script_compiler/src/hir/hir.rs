@@ -1,5 +1,4 @@
 use brane_script_compiler_macro::arena_with_types;
-use ouroboros::self_referencing;
 use typed_arena::Arena;
 
 use crate::source::Span;
@@ -321,7 +320,6 @@ impl<'hir> Expr<'hir> {
     pub fn source(&self) -> &Span {
         use Expr::*;
         match self {
-            Expr::Scope(c) => &c.source,
             Assignment(c) => &c.source,
             Let(c) => &c.source,
             ConstValue(c) => &c.source,
