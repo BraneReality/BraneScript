@@ -2,12 +2,12 @@ use brane_script_compiler_macro::arena_with_types;
 use ouroboros::self_referencing;
 use typed_arena::Arena;
 
-use crate::source::TextSource;
+use crate::source::Span;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 #[derive(PartialEq, Eq, Clone)]
 pub struct Identifier<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub text: String,
     pub _lifetime: PhantomData<&'hir Identifier<'hir>>,
 }
@@ -39,7 +39,7 @@ pub enum PathSeg<'hir> {
 
 #[derive(Clone)]
 pub struct Path<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub parent: Option<&'hir Path<'hir>>,
     pub scopes: Vec<PathSeg<'hir>>,
 }
@@ -91,41 +91,41 @@ pub enum TypeModifiers {
 
 #[derive(Clone)]
 pub struct Type<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub base_type: &'hir Path<'hir>,
     pub modifiers: Vec<TypeModifiers>,
 }
 
 #[derive(Clone)]
 pub struct Value<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub label: Option<Identifier<'hir>>,
     pub r#type: Option<Type<'hir>>,
 }
 
 #[derive(Clone)]
 pub struct Let<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub defined_value: &'hir Value<'hir>,
 }
 
 #[derive(Clone)]
 pub struct Block<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub local_variables: Vec<Value<'hir>>,
     pub expressions: Vec<&'hir Expr<'hir>>,
 }
 
 #[derive(Clone)]
 pub struct CallSig<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub input: &'hir StructDef<'hir>,
     pub output: &'hir StructDef<'hir>,
 }
 
 #[derive(Clone)]
 pub struct PipelineStage<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub identifier: Option<Identifier<'hir>>,
     pub call_sig: CallSig<'hir>,
     pub body: Block<'hir>,
@@ -133,7 +133,7 @@ pub struct PipelineStage<'hir> {
 
 #[derive(Clone)]
 pub struct Assignment<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub dest: &'hir Expr<'hir>,
     pub src: &'hir Expr<'hir>,
 }
@@ -150,7 +150,7 @@ pub enum ConstValueData {
 
 #[derive(Clone)]
 pub struct ConstValue {
-    source: TextSource,
+    source: Span,
     data: ConstValueData,
 }
 
@@ -169,21 +169,21 @@ impl<'hir> Display for ConstValue {
 
 #[derive(Clone)]
 pub struct Field<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub base_expression: &'hir Expr<'hir>,
     pub member: usize,
 }
 
 #[derive(Clone)]
 pub struct FieldDef<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub id: &'hir Identifier<'hir>,
     pub expression: &'hir Expr<'hir>,
 }
 
 #[derive(Clone)]
 pub struct Struct<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     /// If type is non, this is an anon struct
     pub r#type: Option<&'hir Path<'hir>>,
     pub members: Vec<&'hir FieldDef<'hir>>,
@@ -191,14 +191,14 @@ pub struct Struct<'hir> {
 
 #[derive(Clone)]
 pub struct Call<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub callable: &'hir Expr<'hir>,
     pub args: &'hir StructDef<'hir>,
 }
 
 #[derive(Clone)]
 pub struct StructDef<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub identifier: Option<&'hir Identifier<'hir>>,
     pub members: Vec<&'hir Value<'hir>>,
     pub packed: bool,
@@ -206,7 +206,7 @@ pub struct StructDef<'hir> {
 
 #[derive(Clone)]
 pub struct Function<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub identifier: &'hir Identifier<'hir>,
     pub call_sig: &'hir CallSig<'hir>,
     pub body: &'hir Block<'hir>,
@@ -237,14 +237,14 @@ pub struct Impl<'hir> {
 
 #[derive(Clone)]
 pub struct Pipeline<'hir> {
-    pub source: &'hir TextSource,
+    pub source: &'hir Span,
     pub identifier: &'hir Identifier<'hir>,
     pub call_sig: &'hir CallSig<'hir>,
     pub stages: Vec<&'hir PipelineStage<'hir>>,
 }
 
 pub struct Module<'hir> {
-    pub source: TextSource,
+    pub source: Span,
     pub identifier: &'hir mut Identifier<'hir>,
     pub links: Vec<&'hir mut Path<'hir>>,
     pub structs: HashMap<String, &'hir mut Struct<'hir>>,
@@ -318,7 +318,7 @@ pub enum Expr<'hir> {
 }
 
 impl<'hir> Expr<'hir> {
-    pub fn source(&self) -> &TextSource {
+    pub fn source(&self) -> &Span {
         use Expr::*;
         match self {
             Expr::Scope(c) => &c.source,

@@ -1,6 +1,6 @@
 use crate::tokens::tokens::LiteralKind;
 
-pub type Span = chumsky::span::SimpleSpan;
+use crate::source::Span;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ident<'src> {

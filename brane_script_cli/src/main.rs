@@ -4,15 +4,14 @@ use brane_script_compiler::{
     ast::{self, ast::Ast},
     errors::{console_emiter::ConsoleEmiter, DiagnosticEmitter},
     hir::HirArena,
-    source::{SourceManager, Uri},
+    source::{SourceManager, Span, Uri},
     tokens::{self, tree::TokenTree, Token, TokenInput},
 };
 use brane_script_runtime::backend::llvm::LLVMJitBackend;
-use chumsky::{error::Rich, input::Input, span::SimpleSpan};
-use clap::Parser;
+use chumsky::{error::Rich, input::Input, span::SimpleSpan, ConfigParser, Parser};
 use std::{ops::Deref, sync::Arc};
 
-#[derive(Parser)]
+#[derive(clap::Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Documents to parse
@@ -20,10 +19,10 @@ struct Cli {
 }
 
 pub fn report_rich_error<T: std::fmt::Display>(
-    error: &Rich<T>,
+    error: &Rich<T, Span>,
     src: &str,
     filename: &str,
-    get_span: Option<fn(&T) -> SimpleSpan>,
+    get_span: Option<fn(&T) -> Span>,
 ) {
     let mut span = error.span().clone();
 
@@ -51,11 +50,11 @@ pub fn report_rich_error<T: std::fmt::Display>(
     };
 
     // Build the Ariadne report
-    let mut report = Report::build(ReportKind::Error, span.clone().into())
+    let mut report = Report::build(ReportKind::Error, span.range.clone())
         .with_note(format!("from source {}", filename))
         .with_message(message)
         .with_label(
-            Label::new(span.into_range())
+            Label::new(span.range)
                 .with_message("error occurred here")
                 .with_color(Color::Red),
         );
@@ -71,7 +70,7 @@ pub fn report_rich_error<T: std::fmt::Display>(
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let cli = <Cli as clap::Parser>::parse();
 
     let mut sm = SourceManager::new();
     let sources: Vec<Uri> = cli
@@ -81,20 +80,27 @@ fn main() -> anyhow::Result<()> {
         .collect::<Result<Vec<Uri>, _>>()?;
 
     for source in sources.iter() {
-        let lexer = tokens::lexer();
         let text = sm.get(source)?;
-        let (tokens, errs) = chumsky::Parser::parse(&lexer, text).into_output_errors();
+        let lexer = tokens::lexer();
+
+        let char_soruce = Arc::new(source.clone());
+        let input = text.map_span(move |span| Span {
+            source: char_soruce.clone(),
+            range: span.start..span.end,
+        });
+        let res = lexer.parse(input);
+        let (tokens, errs) = &res.into_output_errors();
         if tokens.is_none() {
             println!("lexer errors:");
             for e in errs {
-                report_rich_error(&e, text, &source.to_string(), None);
+                println!("lexer error: {:?}", e);
             }
             return Ok(());
         }
-        let tokens = tokens.unwrap();
+        let tokens = tokens.as_ref().unwrap();
         println!("parsed {} tokens", tokens.len());
         for token in tokens.iter() {
-            println!("{:<10} {}", token.span.to_string(), token);
+            println!("{:<10} {}", token.span.range.start, token);
         }
 
         let token_input = TokenInput(tokens);
@@ -103,7 +109,7 @@ fn main() -> anyhow::Result<()> {
         if tree.is_none() {
             println!("tree building errors:");
             for e in errs {
-                report_rich_error(&e, text, &source.to_string(), Some(|t| t.span));
+                report_rich_error(&e, text, &source.to_string(), Some(|t| t.span.clone()));
                 println!("{:?}", e);
             }
             return Ok(());
@@ -123,7 +129,7 @@ fn main() -> anyhow::Result<()> {
         if ast.is_none() {
             println!("ast building errors:");
             for e in errs {
-                report_rich_error(
+                report_rich_error::<TokenTree>(
                     &e,
                     text,
                     &source.to_string(),

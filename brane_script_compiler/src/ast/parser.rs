@@ -1,15 +1,7 @@
 use super::ast::*;
-use crate::tokens::tree::{self, Delimiter, Group, Punct, TokenTree};
-use chumsky::{
-    error::RichPattern,
-    extra::Full,
-    input::{BorrowInput, ValueInput},
-    label::LabelError,
-    prelude::*,
-    text::{Char, TextExpected},
-    util::Maybe,
-    DefaultExpected,
-};
+use crate::source::Span;
+use crate::tokens::tree::{self, Delimiter, Group, TokenTree};
+use chumsky::{input::BorrowInput, label::LabelError, prelude::*, util::Maybe};
 
 pub fn tree_group<'src>(
     delim: Option<Delimiter>,
@@ -18,7 +10,7 @@ pub fn tree_group<'src>(
     'src,
     &'src Group<'src>,
     &'src Group<'src>,
-    extra::Err<Rich<'src, TokenTree<'src>, SimpleSpan>>,
+    extra::Err<Rich<'src, TokenTree<'src>, Span>>,
 > {
     let label = match &delim {
         Some(delim) => delim.as_str(),
@@ -47,9 +39,9 @@ pub fn tree_group<'src>(
 /// identifiers that match that string
 pub fn ident<'src, T>(
     ident_text: Option<&'static str>,
-) -> impl Clone + Parser<'src, T, Ident<'src>, extra::Err<Rich<'src, TokenTree<'src>, SimpleSpan>>>
+) -> impl Clone + Parser<'src, T, Ident<'src>, extra::Err<Rich<'src, TokenTree<'src>, Span>>>
 where
-    T: BorrowInput<'src, Token = TokenTree<'src>, Span = SimpleSpan>,
+    T: BorrowInput<'src, Token = TokenTree<'src>, Span = Span>,
 {
     let label = match &ident_text {
         Some(label) => label,
@@ -71,16 +63,16 @@ where
             ))
         })
         .map(|ident| Ident {
-            span: ident.span,
+            span: ident.span.clone(),
             ident: ident.ident,
         })
 }
 
 pub fn punct<'src, T>(
     ch: char,
-) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree<'src>, SimpleSpan>>>
+) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree<'src>, Span>>>
 where
-    T: BorrowInput<'src, Token = TokenTree<'src>, Span = SimpleSpan>,
+    T: BorrowInput<'src, Token = TokenTree<'src>, Span = Span>,
 {
     any_ref()
         .try_map(move |tree: &TokenTree<'src>, span| {
@@ -100,9 +92,9 @@ where
 
 pub fn punct2<'src, T>(
     ops: &'static str,
-) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree<'src>, SimpleSpan>>>
+) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree<'src>, Span>>>
 where
-    T: BorrowInput<'src, Token = TokenTree<'src>, Span = SimpleSpan>,
+    T: BorrowInput<'src, Token = TokenTree<'src>, Span = Span>,
 {
     let chars = ops.chars();
 
@@ -162,12 +154,9 @@ where
         .labelled(ops)
 }
 
-pub fn ast_builder<'src>() -> impl Parser<
-    'src,
-    &'src tree::Group<'src>,
-    Ast<'src>,
-    extra::Err<Rich<'src, TokenTree<'src>, SimpleSpan>>,
-> {
+pub fn ast_builder<'src>(
+) -> impl Parser<'src, &'src tree::Group<'src>, Ast<'src>, extra::Err<Rich<'src, TokenTree<'src>, Span>>>
+{
     let mut ty = Recursive::declare();
     let mut block = Recursive::declare();
 
@@ -234,6 +223,19 @@ pub fn ast_builder<'src>() -> impl Parser<
         }),
     );
 
+    let lit_expr = any_ref()
+        .labelled("literal")
+        .try_map(move |tree: &TokenTree<'src>, span| {
+            if let TokenTree::Literal(lit) = tree {
+                return Ok(lit);
+            }
+            Err(LabelError::<'src, &'src Group<'src>, _>::expected_found(
+                ["literal"],
+                Some(Maybe::Ref(tree)),
+                span,
+            ))
+        });
+
     let field_expr = ident(None)
         .then_ignore(punct(':'))
         .then(expr.clone())
@@ -261,6 +263,7 @@ pub fn ast_builder<'src>() -> impl Parser<
             });
 
     let atom = choice((
+        lit_expr.clone().map(|literal| ExprKind::Lit(literal.kind)),
         path.clone().map(|path| ExprKind::Path(None, path)),
         block.clone().map(|block| ExprKind::Block(block)),
         struct_expr.map(|expr| ExprKind::Struct(expr)),
@@ -275,13 +278,6 @@ pub fn ast_builder<'src>() -> impl Parser<
         })
     });
 
-    let op = choice((
-        punct('-').to(UnOpKind::Neg),
-        punct('*').to(UnOpKind::Deref),
-        punct('!').to(UnOpKind::Not),
-    ))
-    .map_with(|op, e| (e.span(), op));
-
     // Method calls
     // fields
 
@@ -294,6 +290,13 @@ pub fn ast_builder<'src>() -> impl Parser<
 
     // array indexing
     // ?
+    let op = choice((
+        punct('-').to(UnOpKind::Neg),
+        punct('*').to(UnOpKind::Deref),
+        punct('!').to(UnOpKind::Not),
+    ))
+    .map_with(|op, e| (e.span(), op));
+
     let un_op = op.repeated().foldr_with(call.clone(), |op, expr, e| {
         Box::new(Expr {
             kind: ExprKind::Unary(op, expr),
@@ -309,15 +312,18 @@ pub fn ast_builder<'src>() -> impl Parser<
     ))
     .map_with(|op, e| (e.span(), op));
 
-    let product = un_op.clone().foldl_with(
-        ops.then(un_op.clone()).repeated(),
-        |left, (op, right), e| {
-            Box::new(Expr {
-                span: e.span(),
-                kind: ExprKind::Binary(op, left, right),
-            })
-        },
-    );
+    let product = un_op
+        .clone()
+        .foldl_with(
+            ops.then(un_op.clone()).repeated(),
+            |left, (op, right), e| {
+                Box::new(Expr {
+                    span: e.span(),
+                    kind: ExprKind::Binary(op, left, right),
+                })
+            },
+        )
+        .boxed();
 
     let ops = choice((punct('+').to(BinOpKind::Add), punct('-').to(BinOpKind::Sub)))
         .map_with(|op, e| (e.span(), op));
@@ -332,7 +338,118 @@ pub fn ast_builder<'src>() -> impl Parser<
         },
     );
 
-    expr.define(sum.labelled("expression"));
+    let ops = choice((
+        punct2("<<").to(BinOpKind::Shl),
+        punct2(">>").to(BinOpKind::Shl),
+    ))
+    .map_with(|op, e| (e.span(), op));
+
+    let shift = sum
+        .clone()
+        .foldl_with(ops.then(sum.clone()).repeated(), |left, (op, right), e| {
+            Box::new(Expr {
+                span: e.span(),
+                kind: ExprKind::Binary(op, left, right),
+            })
+        });
+
+    let bit_and = shift
+        .clone()
+        .foldl_with(
+            punct('&')
+                .to(BinOpKind::BitAnd)
+                .map_with(|op, e| (e.span(), op))
+                .then(shift.clone())
+                .repeated(),
+            |left, (op, right), e| {
+                Box::new(Expr {
+                    span: e.span(),
+                    kind: ExprKind::Binary(op, left, right),
+                })
+            },
+        )
+        .boxed();
+
+    let bit_xor = bit_and.clone().foldl_with(
+        punct('^')
+            .to(BinOpKind::BitXor)
+            .map_with(|op, e| (e.span(), op))
+            .then(bit_and.clone())
+            .repeated(),
+        |left, (op, right), e| {
+            Box::new(Expr {
+                span: e.span(),
+                kind: ExprKind::Binary(op, left, right),
+            })
+        },
+    );
+
+    let bit_or = bit_xor.clone().foldl_with(
+        punct('|')
+            .to(BinOpKind::BitOr)
+            .map_with(|op, e| (e.span(), op))
+            .then(bit_and.clone())
+            .repeated(),
+        |left, (op, right), e| {
+            Box::new(Expr {
+                span: e.span(),
+                kind: ExprKind::Binary(op, left, right),
+            })
+        },
+    );
+
+    let ops = choice((
+        punct2("==").to(BinOpKind::Eq),
+        punct2("!=").to(BinOpKind::Ne),
+        punct('<').to(BinOpKind::Lt),
+        punct('>').to(BinOpKind::Gt),
+        punct2("<=").to(BinOpKind::Gt),
+        punct2(">=").to(BinOpKind::Gt),
+    ))
+    .map_with(|op, e| (e.span(), op));
+
+    let cmp = bit_or
+        .clone()
+        .foldl_with(
+            ops.then(bit_or.clone()).repeated(),
+            |left, (op, right), e| {
+                Box::new(Expr {
+                    span: e.span(),
+                    kind: ExprKind::Binary(op, left, right),
+                })
+            },
+        )
+        .boxed();
+
+    let logic_and = cmp.clone().foldl_with(
+        punct('|')
+            .to(BinOpKind::And)
+            .map_with(|op, e| (e.span(), op))
+            .then(cmp.clone())
+            .repeated(),
+        |left, (op, right), e| {
+            Box::new(Expr {
+                span: e.span(),
+                kind: ExprKind::Binary(op, left, right),
+            })
+        },
+    );
+
+    let logic_or = logic_and.clone().foldl_with(
+        punct('|')
+            .to(BinOpKind::Or)
+            .map_with(|op, e| (e.span(), op))
+            .then(logic_and.clone())
+            .repeated(),
+        |left, (op, right), e| {
+            Box::new(Expr {
+                span: e.span(),
+                kind: ExprKind::Binary(op, left, right),
+            })
+        },
+    );
+
+    expr.define(logic_or.boxed().labelled("expression"));
 
     let local = ident(Some("let"))
         .ignore_then(ident(None))
@@ -430,13 +547,10 @@ pub fn ast_builder<'src>() -> impl Parser<
         })
         .labelled("pipeline");
 
-    item_parser.define(
-        choice((
-            mod_parser.clone().map(|m| Item::Mod(m)),
-            pipe.map(|pipe| Item::Pipe(pipe)),
-        ))
-        .labelled("module item"),
-    );
+    item_parser.define(choice((
+        mod_parser.clone().map(|m| Item::Mod(m)),
+        pipe.map(|pipe| Item::Pipe(pipe)),
+    )));
 
     mod_parser.define(
         ident(Some("mod"))

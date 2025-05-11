@@ -1,14 +1,22 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use std::{collections::HashMap, fmt::Display, ops::Range, path::PathBuf, sync::Arc};
 
-#[derive(Clone, Eq, PartialEq, PartialOrd, Hash)]
+#[derive(Clone, Eq, PartialEq, PartialOrd, Hash, Debug)]
 pub enum Uri {
+    Unknown,
     File(PathBuf),
+}
+
+impl Default for Uri {
+    fn default() -> Self {
+        Uri::Unknown
+    }
 }
 
 impl Display for Uri {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Uri::Unknown => write!(f, "unknown"),
             Uri::File(path_buf) => write!(f, "file://{}", path_buf.to_string_lossy()),
         }
     }
@@ -27,6 +35,9 @@ impl SourceManager {
 
     pub fn refresh(&mut self, key: Uri) -> anyhow::Result<()> {
         match key {
+            Uri::Unknown => {
+                bail!("cannot refresh unknown uri");
+            }
             Uri::File(path_buf) => {
                 self.load_from_file(path_buf)?;
             }
@@ -50,8 +61,32 @@ impl SourceManager {
     }
 }
 
-#[derive(PartialEq, Eq, Clone)]
-pub struct TextSource {
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Span {
+    pub range: Range<usize>,
     pub source: Arc<Uri>,
-    pub span: Range<usize>,
+}
+
+impl chumsky::span::Span for Span {
+    type Context = Arc<Uri>;
+    type Offset = usize;
+
+    fn new(context: Self::Context, range: Range<Self::Offset>) -> Self {
+        Span {
+            source: context,
+            range,
+        }
+    }
+
+    fn context(&self) -> Self::Context {
+        self.source.clone()
+    }
+
+    fn start(&self) -> Self::Offset {
+        self.range.start
+    }
+
+    fn end(&self) -> Self::Offset {
+        self.range.end
+    }
 }

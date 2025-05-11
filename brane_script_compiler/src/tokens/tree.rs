@@ -1,8 +1,7 @@
 pub use super::tokens::LiteralKind;
 use super::{tokens::TokenKind, Token};
+use crate::source::{Span, Uri};
 use chumsky::{input::BorrowInput, label::LabelError, prelude::*, util::Maybe};
-
-type Span = SimpleSpan;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum TokenTree<'src> {
@@ -139,6 +138,7 @@ impl<'src> Display for Literal<'src> {
 use std::{
     fmt::{self, Display, Formatter},
     ops::Range,
+    sync::Arc,
 };
 
 impl<'src> Group<'src> {
@@ -150,7 +150,7 @@ impl<'src> Group<'src> {
             Delimiter::Bracket => ("[", "]"),
             Delimiter::None => ("...", "..."),
         };
-        writeln!(f, "{:<10}{}{}", self.span.to_string(), prefix, delim.0)?;
+        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, delim.0)?;
 
         let has_trees = !self.trees.is_empty();
         let has_anns = !self.annotations.is_empty();
@@ -169,7 +169,7 @@ impl<'src> Group<'src> {
                 TokenTree::Literal(literal) => literal.fmt(f, indent + 1, is_last)?,
             }
         }
-        writeln!(f, "{:<10}{}{}", self.span.to_string(), prefix, delim.1)?;
+        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, delim.1)?;
         Ok(())
     }
 }
@@ -177,7 +177,7 @@ impl<'src> Group<'src> {
 impl<'src> Ident<'src> {
     fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
-        writeln!(f, "{:<10}{}{}", self.span.to_string(), prefix, self.ident)?;
+        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, self.ident)?;
         for (i, ann) in self.annotations.iter().enumerate() {
             let is_last = i == self.annotations.len() - 1;
             ann.fmt(f, indent + 1, is_last)?;
@@ -189,14 +189,14 @@ impl<'src> Ident<'src> {
 impl Punct {
     fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
-        writeln!(f, "{:<10}{}{}", self.span.to_string(), prefix, self.ch)
+        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, self.ch)
     }
 }
 
 impl<'src> Literal<'src> {
     fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
-        writeln!(f, "{:<10}{}{}", self.span.to_string(), prefix, self.kind)
+        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, self.kind)
     }
 }
 
@@ -206,7 +206,7 @@ impl<'src> Annotation<'src> {
         match &self.kind {
             AnnotationKind::Comment(s) => {
                 for line in s.split('\n') {
-                    writeln!(f, "{:<10}{}//{}", self.span.to_string(), prefix, line)?;
+                    writeln!(f, "{:<10}{}//{}", self.span.start(), prefix, line)?;
                 }
                 Ok(())
             }
@@ -228,7 +228,7 @@ fn tree_prefix(indent: usize, last: bool) -> String {
 
 pub fn token_kind<'src, T>(
     kind: TokenKind<'src>,
-) -> impl Clone + Parser<'src, T, Token<'src>, extra::Err<Rich<'src, Token<'src>, SimpleSpan>>>
+) -> impl Clone + Parser<'src, T, Token<'src>, extra::Err<Rich<'src, Token<'src>, Span>>>
 where
     T: BorrowInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -247,16 +247,15 @@ where
         .labelled(kind.to_string())
 }
 
-fn join_spans(a: &SimpleSpan, b: &SimpleSpan) -> SimpleSpan {
-    return SimpleSpan {
-        start: a.start.min(b.start),
-        end: a.end.max(b.end),
-        context: a.context,
+fn join_spans(a: &Span, b: &Span) -> Span {
+    return Span {
+        range: a.start().min(b.start())..a.end().max(b.end()),
+        source: a.source.clone(),
     };
 }
 
 pub fn tree_builder<'src, T>(
-) -> impl Parser<'src, T, TokenTree<'src>, extra::Err<Rich<'src, Token<'src>, SimpleSpan>>>
+) -> impl Parser<'src, T, TokenTree<'src>, extra::Err<Rich<'src, Token<'src>, Span>>>
 where
     T: BorrowInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -268,7 +267,10 @@ where
 
     let annotations = spacing
         .map(|a| match a {
-            Some((kind, span)) => Some(Annotation { span: *span, kind }),
+            Some((kind, span)) => Some(Annotation {
+                span: span.clone(),
+                kind,
+            }),
             None => None,
         })
         .repeated()
@@ -323,7 +325,7 @@ where
             annotations,
         });
     fn fun_name<'src>(
-        (annotations, (ident, span)): (Vec<Annotation<'src>>, (&&'src str, SimpleSpan)),
+        (annotations, (ident, span)): (Vec<Annotation<'src>>, (&&'src str, Span)),
     ) -> Ident<'src> {
         Ident {
             span,
@@ -333,7 +335,7 @@ where
     }
 
     let ident = annotations
-        .then(select_ref! { Token {kind: TokenKind::Ident(ident), span } => (ident, *span) })
+        .then(select_ref! { Token {kind: TokenKind::Ident(ident), span } => (ident, span.clone()) })
         .map(fun_name)
         .labelled("identifier token");
 
@@ -369,9 +371,10 @@ where
         })
         .labelled("punct token");
 
-    let literal = select_ref! { Token {kind: TokenKind::Literal(kind), span } => (*kind, *span) }
-        .map(|(kind, span)| Literal { span, kind })
-        .labelled("literal token");
+    let literal =
+        select_ref! { Token {kind: TokenKind::Literal(kind), span } => (*kind, span.clone()) }
+            .map(|(kind, span)| Literal { span, kind })
+            .labelled("literal token");
 
     tree.define(choice((
         group.map(|group| TokenTree::Group(group)),
@@ -383,7 +386,7 @@ where
         .collect()
         .map(|trees: Vec<TokenTree<'src>>| {
             let span = if trees.is_empty() {
-                Span::new((), 0..0)
+                Span::new(Arc::new(Uri::Unknown), 0..0)
             } else {
                 join_spans(trees[0].span(), trees[trees.len() - 1].span())
             };
@@ -425,8 +428,8 @@ where
     unsafe fn span(cache: &mut Self::Cache, range: Range<&Self::Cursor>) -> Self::Span {
         let get_span = |cursor: &Self::Cursor| {
             if *cursor >= cache.trees.len() {
-                let eof = cache.span.end;
-                Self::Span::new((), eof..eof)
+                let eof = cache.span.end();
+                Self::Span::new(cache.span.context(), eof..eof)
             } else {
                 cache.trees.get_unchecked(*cursor).span().clone()
             }
