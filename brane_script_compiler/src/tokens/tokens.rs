@@ -1,9 +1,11 @@
 use chumsky::{input::BorrowInput, prelude::*};
 use std::fmt;
 
+use crate::source::Span;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Token<'src> {
-    pub span: SimpleSpan,
+    pub span: Span,
     pub kind: TokenKind<'src>,
 }
 
@@ -141,14 +143,14 @@ impl<'src> fmt::Display for TokenKind<'src> {
     }
 }
 
-pub struct TokenInput<'src>(pub Vec<Token<'src>>);
+pub struct TokenInput<'src, 't>(pub &'t Vec<Token<'src>>);
 
-impl<'src, 'tree> Input<'tree> for &'tree TokenInput<'src>
+impl<'src, 't, 'tree> Input<'tree> for &'tree TokenInput<'src, 't>
 where
     'src: 'tree,
 {
     type Cursor = usize;
-    type Span = SimpleSpan;
+    type Span = Span;
     type Token = Token<'src>;
     type MaybeToken = &'tree Token<'src>;
     type Cache = Self;
@@ -171,8 +173,8 @@ where
     unsafe fn span(cache: &mut Self::Cache, range: std::ops::Range<&usize>) -> Self::Span {
         let get_span = |cursor: &Self::Cursor| {
             if *cursor >= cache.0.len() {
-                let eof = cache.0[cache.0.len() - 1].span.end;
-                Self::Span::new((), eof..eof)
+                let eof = cache.0[cache.0.len() - 1].span.end();
+                Self::Span::new(cache.0[0].span.context(), eof..eof)
             } else {
                 cache.0.get_unchecked(*cursor).span.clone()
             }
@@ -182,15 +184,11 @@ where
     }
 }
 
-fn join_spans(a: &SimpleSpan, b: &SimpleSpan) -> SimpleSpan {
-    return SimpleSpan {
-        start: a.start.min(b.start),
-        end: a.end.max(b.end),
-        context: a.context,
-    };
+fn join_spans<T: chumsky::span::Span<Offset = usize>>(a: &T, b: &T) -> T {
+    T::new(a.context(), a.start().min(b.start())..a.end().max(b.end()))
 }
 
-impl<'src, 'tree> BorrowInput<'tree> for &'tree TokenInput<'src>
+impl<'src, 't, 'tree> BorrowInput<'tree> for &'tree TokenInput<'src, 't>
 where
     'src: 'tree,
 {

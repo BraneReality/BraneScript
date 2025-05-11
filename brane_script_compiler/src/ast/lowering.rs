@@ -1,7 +1,5 @@
-use super::nodes;
 use anyhow::anyhow;
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
-use type_sitter::Node;
 
 use crate::{
     errors::DiagnosticEmitter,
@@ -10,7 +8,7 @@ use crate::{
         hir::{Hir, HirArena},
         HirKind,
     },
-    source::{SourceManager, TextSource, Uri},
+    source::{SourceManager, Span, Uri},
 };
 
 use super::ast::Ast;
@@ -19,76 +17,18 @@ use super::ast::Ast;
 
 pub struct LoweringContext<'ctx, Emitter: DiagnosticEmitter> {
     pub diag_emitter: Arc<Emitter>,
-    pub sources: &'ctx SourceManager,
-    pub current_origin: Option<Arc<Uri>>,
+    pub origin: Arc<Uri>,
 }
+
+enum ErrorKind<'ast, 'src> {}
+
+type Error<'ast, 'src, T> = Result<T, ErrorKind<'ast, 'src>>;
 
 fn lower_err() -> anyhow::Error {
     anyhow!("Failed to lower AST to HIR")
 }
 
 impl<'ctx, E: DiagnosticEmitter> LoweringContext<'ctx, E> {
-    fn source_text(&self) -> anyhow::Result<&String> {
-        self.sources.get(self.current_origin.as_ref().unwrap())
-    }
-
-    fn node_source<'tree>(&self, node: impl Node<'tree>) -> TextSource {
-        TextSource {
-            source: self.current_origin.clone().unwrap(),
-            span: node.byte_range(),
-        }
-    }
-
-    fn node_text<'tree>(&self, node: impl type_sitter::Node<'tree>) -> anyhow::Result<&str> {
-        let range = node.byte_range();
-        Ok(&self.source_text()?[range.start..range.end])
-    }
-
-    fn expect_node<'tree, T>(
-        &mut self,
-        result: type_sitter::NodeResult<'tree, T>,
-    ) -> anyhow::Result<T> {
-        match result {
-            Ok(node) => Ok(node),
-            Err(err) => {
-                println!("Was expecting node, but *error*");
-                self.diag_emitter
-                    .error(
-                        format!(
-                            "Was expecting {} but found \"{}\" with content: {}",
-                            err.kind,
-                            err.node.kind(),
-                            self.node_text(err.node)?
-                        ),
-                        self.current_origin.as_ref().unwrap().to_string(),
-                    )
-                    .err_at(err.node.byte_range(), format!("expected {}", err.kind))
-                    .emit(self.source_text()?);
-                Err(lower_err())
-            }
-        }
-    }
-
-    fn not_expected<'tree>(&mut self, node: impl Node<'tree>) {
-        self.diag_emitter
-            .error(
-                format!("{} not expected", node.kind()),
-                self.current_origin.as_ref().unwrap().to_string(),
-            )
-            .err_at(node.byte_range(), "unexpected")
-            .emit(self.source_text().expect("origin must be set to parse ast"));
-    }
-
-    fn not_implemented<'tree>(&mut self, node: impl Node<'tree>) {
-        self.diag_emitter
-            .error(
-                format!("{} has not been implemented yet", node.kind()),
-                self.current_origin.as_ref().unwrap().to_string(),
-            )
-            .err_at(node.byte_range(), "not implemented")
-            .emit(self.source_text().expect("origin must be set to parse ast"));
-    }
-
     fn lower_identifier<'tree, 'hir>(
         &mut self,
         node: nodes::Identifier<'tree>,
@@ -174,7 +114,6 @@ impl<'ctx, E: DiagnosticEmitter> LoweringContext<'ctx, E> {
         modules: &mut HashMap<String, &'hir mut hir::Module<'hir>>,
         arena: &'hir HirArena<'hir>,
     ) -> anyhow::Result<()> {
-        let root = self.expect_node(ast.tree().root_node())?;
         let mut cursor = root.walk();
 
         if root.has_error() {
@@ -202,16 +141,16 @@ impl<'ctx, E: DiagnosticEmitter> LoweringContext<'ctx, E> {
         Ok(())
     }
 
-    pub fn lower_asts<'hir, 'ast>(
+    pub fn lower_ast<'hir, 'ast>(
         &mut self,
-        asts: impl IntoIterator<Item = &'ast Ast>,
+        ast: &'ast Ast<'ast>,
         arena: &'hir HirArena<'hir>,
     ) -> anyhow::Result<Hir<'hir>> {
         let mut modules = HashMap::new();
-        for ast in asts.into_iter() {
-            self.current_origin = Some(Arc::new(ast.source().clone()));
-            let _ = self.lower_ast(ast, &mut modules, arena);
-        }
+
+        self.current_origin = Some(Arc::new(ast.source().clone()));
+
+        let _ = self.lower_ast(ast, &mut modules, arena);
 
         Ok(Hir { modules })
     }

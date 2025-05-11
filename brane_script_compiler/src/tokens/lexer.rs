@@ -1,8 +1,20 @@
-use super::tokens::*;
-use chumsky::prelude::*;
+use crate::source::Span;
 
-pub fn lexer<'src>(
-) -> impl Parser<'src, &'src str, Vec<Token<'src>>, extra::Err<Rich<'src, char, SimpleSpan>>> {
+use super::tokens::*;
+use chumsky::{
+    input::{MappedSpan, WithContext},
+    prelude::*,
+};
+
+pub fn lexer<'src, M>() -> impl Parser<
+    'src,
+    MappedSpan<Span, &'src str, M>,
+    Vec<Token<'src>>,
+    extra::Full<Rich<'src, char, Span>, (), ()>,
+>
+where
+    M: 'static + Fn(SimpleSpan) -> Span,
+{
     let line_comment = just("//")
         .ignore_then(any().and_is(just('\n').not()).repeated().to_slice())
         .map(TokenKind::LineComment);
@@ -69,9 +81,11 @@ pub fn lexer<'src>(
     )));
 
     choice((line_comment, block_comment, literal, ident, sym, whitespace))
-        .map_with(|tk, e| Token {
-            span: e.span(),
-            kind: tk,
+        .map_with(|tk, e| -> Token {
+            Token {
+                span: e.span(),
+                kind: tk,
+            }
         })
         .recover_with(skip_then_retry_until(any().ignored(), end()))
         .repeated()

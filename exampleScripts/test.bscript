@@ -15,7 +15,7 @@ mod test {
         // Comment 2
         /* multiline 
         3rd */
-            let value : i32 = value * add2;
+            let value : i32 = value * add2 ^ 0;
             next_stage(args: (count: value));
         }
     ]
@@ -25,7 +25,6 @@ mod test {
 
 // Single line annotation for mod
 mod test2 {
-
 }
 
 
