@@ -1,14 +1,11 @@
-use anyhow::anyhow;
-use ariadne::{Color, Config, Label, Report, ReportKind, Source};
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use brane_script_compiler::{
-    ast::{self, ast::Ast},
-    errors::{console_emiter::ConsoleEmiter, DiagnosticEmitter},
-    hir::HirArena,
+    ast::{self},
     source::{SourceManager, Span, Uri},
-    tokens::{self, tree::TokenTree, Token, TokenInput},
+    tokens::{self, tree::TokenTree, TokenInput},
 };
-use brane_script_runtime::backend::llvm::LLVMJitBackend;
-use chumsky::{error::Rich, input::Input, span::SimpleSpan, ConfigParser, Parser};
+//use brane_script_runtime::backend::llvm::LLVMJitBackend;
+use chumsky::{error::Rich, input::Input, Parser};
 use std::{ops::Deref, sync::Arc};
 
 #[derive(clap::Parser)]
@@ -60,7 +57,7 @@ pub fn report_rich_error<T: std::fmt::Display>(
         );
 
     // Optional: Add notes for each expected token (could be redundant with above)
-    if let chumsky::error::RichReason::ExpectedFound { expected, found } = error.reason() {
+    if let chumsky::error::RichReason::ExpectedFound { expected, found: _ } = error.reason() {
         for expected_token in expected {
             report = report.with_note(format!("Expected: '{}'", expected_token));
         }

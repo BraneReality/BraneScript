@@ -109,6 +109,7 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
         current
     }
 
+    /*
     fn advance_lines(mut lines: usize, start: TextPos, source_text: &str) -> TextPos {
         let mut current = start;
         let mut index = current.buf_index;
@@ -124,7 +125,7 @@ impl<'e, E: DiagnosticEmitter> DiagnosticBuilder<'e, E> {
             }
         }
         current
-    }
+    }*/
 
     pub fn emit(mut self, source_text: &str) {
         let message = self.level.title(self.title.as_str());

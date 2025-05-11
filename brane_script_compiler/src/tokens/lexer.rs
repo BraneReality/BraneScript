@@ -1,10 +1,7 @@
 use crate::source::Span;
 
 use super::tokens::*;
-use chumsky::{
-    input::{MappedSpan, WithContext},
-    prelude::*,
-};
+use chumsky::{input::MappedSpan, prelude::*};
 
 pub fn lexer<'src, M>() -> impl Parser<
     'src,

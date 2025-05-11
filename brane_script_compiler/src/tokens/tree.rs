@@ -153,7 +153,6 @@ impl<'src> Group<'src> {
         writeln!(f, "{:<10}{}{}", self.span.start(), prefix, delim.0)?;
 
         let has_trees = !self.trees.is_empty();
-        let has_anns = !self.annotations.is_empty();
 
         for (i, ann) in self.annotations.iter().enumerate() {
             let is_last = !has_trees && i == self.annotations.len() - 1;
