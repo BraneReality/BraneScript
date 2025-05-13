@@ -1,0 +1,18 @@
+[package]
+name = "branec_cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.5.31", features = ["derive"] }
+chumsky = "0.10.1"
+ariadne = { version = "0.5.1", features = ["auto-color"] }
+
+
+branec = {path = "../compiler/branec" }
+brane_core = {path = "../runtime/brane_core" }
+branec_source = {path = "../compiler/branec_source" }
+branec_ast = {path = "../compiler/branec_ast" }
+branec_tokens = {path = "../compiler/branec_tokens" }
+branec_parser = {path = "../compiler/branec_parser" }

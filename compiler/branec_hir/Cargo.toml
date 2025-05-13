@@ -1,0 +1,7 @@
+[package]
+name = "branec_hir"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+branec_source = { path = "../branec_source/" }

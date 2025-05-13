@@ -3,16 +3,23 @@
 resolver = "2"
 
 members = [
-    "brane_script_cli", 
-    "brane_script_common",
-    "brane_script_compiler", 
-    "brane_script_compiler_macro",
-    "brane_script_runtime",
-    "brane_script_runtime/src/backend/brane_script_llvm_backend"
+    "cli", 
+    "runtime/brane_core",
+    "runtime/brane_backend",
+    "runtime/brane_backend_llvm", 
+    "compiler/branec_source", 
+    "compiler/branec_symbols", 
+    "compiler/branec_tokens", 
+    "compiler/branec_parser", 
+    "compiler/branec_ast", 
+    "compiler/branec_ast_lowering",
+    "compiler/branec_hir", 
+    "compiler/branec_emitter", 
 ]
 
 [workspace.dependencies]
 anyhow = "1"
+chumsky = "0.10.1"
 serde = { version = "1.0.218", features = ["derive"] }
 defer = "0.2.1"
 

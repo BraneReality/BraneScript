@@ -1,0 +1,9 @@
+[package]
+name = "branec_ast"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+branec_tokens = { path = "../branec_tokens" }
+branec_source = { path = "../branec_source/" }
+branec_symbols = { path = "../branec_symbols/" }

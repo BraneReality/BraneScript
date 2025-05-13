@@ -1,0 +1,6 @@
+[package]
+name = "branec_symbols"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
