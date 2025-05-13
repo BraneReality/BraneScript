@@ -1,4 +1,4 @@
-use crate::source::Span;
+use crate::{source::Span, symbols::Symbol};
 
 use super::tokens::*;
 use chumsky::{input::MappedSpan, prelude::*};
@@ -6,7 +6,7 @@ use chumsky::{input::MappedSpan, prelude::*};
 pub fn lexer<'src, M>() -> impl Parser<
     'src,
     MappedSpan<Span, &'src str, M>,
-    Vec<Token<'src>>,
+    Vec<Token>,
     extra::Full<Rich<'src, char, Span>, (), ()>,
 >
 where
@@ -14,16 +14,16 @@ where
 {
     let line_comment = just("//")
         .ignore_then(any().and_is(just('\n').not()).repeated().to_slice())
-        .map(TokenKind::LineComment);
+        .to(TokenKind::LineComment);
 
     let block_comment = just("/*")
         .ignore_then(any().and_is(just("*/").not()).repeated().to_slice())
         .then_ignore(just("*/"))
-        .map(TokenKind::BlockComment);
+        .to(TokenKind::BlockComment);
 
     let whitespace = text::whitespace().at_least(1).to(TokenKind::Whitespace);
 
-    let ident = text::ascii::ident().map(|ident: &str| TokenKind::Ident(ident));
+    let ident = text::ascii::ident().map(|str| TokenKind::Ident(Symbol::intern(str)));
 
     let int = text::int(10)
         .to_slice()
@@ -41,7 +41,7 @@ where
     let string = just('"')
         .ignore_then(none_of('"').repeated().to_slice())
         .then_ignore(just('"'))
-        .map(LiteralKind::String);
+        .map(|str| LiteralKind::String(Symbol::intern(str)));
 
     let literal = choice((int, float, string)).map(TokenKind::Literal);
 

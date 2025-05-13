@@ -1,17 +1,17 @@
 use chumsky::{input::BorrowInput, prelude::*};
 use std::fmt;
 
-use crate::source::Span;
+use crate::{source::Span, symbols::Symbol};
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Token<'src> {
+pub struct Token {
     pub span: Span,
-    pub kind: TokenKind<'src>,
+    pub kind: TokenKind,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum LiteralKind<'src> {
-    String(&'src str),
+pub enum LiteralKind {
+    String(Symbol),
     Int(i64),
     Float(f64),
     True,
@@ -19,17 +19,17 @@ pub enum LiteralKind<'src> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum TokenKind<'src> {
+pub enum TokenKind {
     /// single line comment
-    LineComment(&'src str),
+    LineComment,
     /// multi-line comment
-    BlockComment(&'src str),
+    BlockComment,
     /// spaces and newlines
     Whitespace,
     /// text-based identifiers
-    Ident(&'src str),
+    Ident(Symbol),
     /// Literal constants
-    Literal(LiteralKind<'src>),
+    Literal(LiteralKind),
     /// `(`
     OpenParen,
     /// `)`
@@ -86,73 +86,13 @@ pub enum TokenKind<'src> {
     Percent,
 }
 
-impl<'src> fmt::Display for Token<'src> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
+pub struct TokenInput<'t>(pub &'t Vec<Token>);
 
-impl<'src> fmt::Display for LiteralKind<'src> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LiteralKind::String(s) => write!(f, "\"{}\"", s),
-            LiteralKind::Int(i) => write!(f, "{}", i),
-            LiteralKind::Float(fl) => write!(f, "{}", fl),
-            LiteralKind::True => write!(f, "true"),
-            LiteralKind::False => write!(f, "false"),
-        }
-    }
-}
-
-impl<'src> fmt::Display for TokenKind<'src> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TokenKind::LineComment(text) => write!(f, "//{}", text),
-            TokenKind::BlockComment(text) => write!(f, "/*{}*/", text),
-            TokenKind::Whitespace => write!(f, " "),
-            TokenKind::Ident(name) => write!(f, "{}", name),
-            TokenKind::Literal(lit) => write!(f, "{}", lit),
-            TokenKind::OpenParen => write!(f, "("),
-            TokenKind::CloseParen => write!(f, ")"),
-            TokenKind::OpenBrace => write!(f, "{{"),
-            TokenKind::CloseBrace => write!(f, "}}"),
-            TokenKind::OpenBracket => write!(f, "["),
-            TokenKind::CloseBracket => write!(f, "]"),
-            TokenKind::Semi => write!(f, ";"),
-            TokenKind::Comma => write!(f, ","),
-            TokenKind::Dot => write!(f, "."),
-            TokenKind::At => write!(f, "@"),
-            TokenKind::Pound => write!(f, "#"),
-            TokenKind::Tilde => write!(f, "~"),
-            TokenKind::Question => write!(f, "?"),
-            TokenKind::Colon => write!(f, ":"),
-            TokenKind::Dollar => write!(f, "$"),
-            TokenKind::Eq => write!(f, "="),
-            TokenKind::Bang => write!(f, "!"),
-            TokenKind::Lt => write!(f, "<"),
-            TokenKind::Gt => write!(f, ">"),
-            TokenKind::Minus => write!(f, "-"),
-            TokenKind::And => write!(f, "&"),
-            TokenKind::Or => write!(f, "|"),
-            TokenKind::Plus => write!(f, "+"),
-            TokenKind::Star => write!(f, "*"),
-            TokenKind::Slash => write!(f, "/"),
-            TokenKind::Caret => write!(f, "^"),
-            TokenKind::Percent => write!(f, "%"),
-        }
-    }
-}
-
-pub struct TokenInput<'src, 't>(pub &'t Vec<Token<'src>>);
-
-impl<'src, 't, 'tree> Input<'tree> for &'tree TokenInput<'src, 't>
-where
-    'src: 'tree,
-{
+impl<'t, 'tree> Input<'tree> for &'tree TokenInput<'t> {
     type Cursor = usize;
     type Span = Span;
-    type Token = Token<'src>;
-    type MaybeToken = &'tree Token<'src>;
+    type Token = Token;
+    type MaybeToken = &'tree Token;
     type Cache = Self;
 
     fn begin(self) -> (Self::Cursor, Self::Cache) {
@@ -188,10 +128,7 @@ fn join_spans<T: chumsky::span::Span<Offset = usize>>(a: &T, b: &T) -> T {
     T::new(a.context(), a.start().min(b.start())..a.end().max(b.end()))
 }
 
-impl<'src, 't, 'tree> BorrowInput<'tree> for &'tree TokenInput<'src, 't>
-where
-    'src: 'tree,
-{
+impl<'t, 'tree> BorrowInput<'tree> for &'tree TokenInput<'t> {
     unsafe fn next_ref(
         cache: &mut Self::Cache,
         cursor: &mut Self::Cursor,
@@ -203,6 +140,63 @@ where
             Some(token)
         } else {
             None
+        }
+    }
+}
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl fmt::Display for LiteralKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LiteralKind::String(sym) => write!(f, "\"{}\"", sym.as_str()),
+            LiteralKind::Int(i) => write!(f, "{}", i),
+            LiteralKind::Float(fl) => write!(f, "{}", fl),
+            LiteralKind::True => write!(f, "true"),
+            LiteralKind::False => write!(f, "false"),
+        }
+    }
+}
+
+impl fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TokenKind::LineComment => write!(f, "//comment"),
+            TokenKind::BlockComment => write!(f, "/*comment*/"),
+            TokenKind::Whitespace => write!(f, " "),
+            TokenKind::Ident(sym) => write!(f, "{}", sym.as_str()),
+            TokenKind::Literal(lit) => write!(f, "{}", lit),
+            TokenKind::OpenParen => write!(f, "("),
+            TokenKind::CloseParen => write!(f, ")"),
+            TokenKind::OpenBrace => write!(f, "{{"),
+            TokenKind::CloseBrace => write!(f, "}}"),
+            TokenKind::OpenBracket => write!(f, "["),
+            TokenKind::CloseBracket => write!(f, "]"),
+            TokenKind::Semi => write!(f, ";"),
+            TokenKind::Comma => write!(f, ","),
+            TokenKind::Dot => write!(f, "."),
+            TokenKind::At => write!(f, "@"),
+            TokenKind::Pound => write!(f, "#"),
+            TokenKind::Tilde => write!(f, "~"),
+            TokenKind::Question => write!(f, "?"),
+            TokenKind::Colon => write!(f, ":"),
+            TokenKind::Dollar => write!(f, "$"),
+            TokenKind::Eq => write!(f, "="),
+            TokenKind::Bang => write!(f, "!"),
+            TokenKind::Lt => write!(f, "<"),
+            TokenKind::Gt => write!(f, ">"),
+            TokenKind::Minus => write!(f, "-"),
+            TokenKind::And => write!(f, "&"),
+            TokenKind::Or => write!(f, "|"),
+            TokenKind::Plus => write!(f, "+"),
+            TokenKind::Star => write!(f, "*"),
+            TokenKind::Slash => write!(f, "/"),
+            TokenKind::Caret => write!(f, "^"),
+            TokenKind::Percent => write!(f, "%"),
         }
     }
 }
