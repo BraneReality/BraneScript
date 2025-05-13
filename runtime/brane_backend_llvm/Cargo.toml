@@ -1,0 +1,13 @@
+[package]
+name = "brane_backend_llvm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+brane_core = { path="../brane_core/" }
+
+inkwell = { version = "0.5.0", features = ["llvm18-0"] }
+llvm-sys = "180.0.0"
+anyhow.workspace = true
+defer.workspace = true
+

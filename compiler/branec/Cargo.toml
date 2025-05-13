@@ -1,0 +1,14 @@
+[package]
+name = "branec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+brane_core = {path = "../../runtime/brane_core"}
+typed-arena = "2.0.2"
+anstream = "0.6.18"
+ouroboros = "0.18.5"
+
+anyhow.workspace = true
+scopeguard = "1.2.0"
+

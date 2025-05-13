@@ -107,68 +107,115 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
-name = "brane_script_cli"
+name = "brane_backend"
+version = "0.1.0"
+
+[[package]]
+name = "brane_backend_llvm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ariadne",
- "brane_script_common",
- "brane_script_compiler",
- "brane_script_runtime",
- "chumsky",
- "clap",
-]
-
-[[package]]
-name = "brane_script_common"
-version = "0.1.0"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
-name = "brane_script_compiler"
-version = "0.1.0"
-dependencies = [
- "annotate-snippets",
- "anstream",
- "anyhow",
- "brane_script_compiler_macro",
- "brane_script_runtime",
- "chumsky",
- "ouroboros",
- "scopeguard",
- "typed-arena",
-]
-
-[[package]]
-name = "brane_script_compiler_macro"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "brane_script_llvm_backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "brane_script_common",
+ "brane_core",
  "defer",
  "inkwell",
  "llvm-sys",
 ]
 
 [[package]]
-name = "brane_script_runtime"
+name = "brane_core"
 version = "0.1.0"
 dependencies = [
- "brane_script_common",
- "brane_script_llvm_backend",
+ "anyhow",
  "defer",
  "serde",
+]
+
+[[package]]
+name = "branec"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "brane_core",
+ "ouroboros",
+ "scopeguard",
+ "typed-arena",
+]
+
+[[package]]
+name = "branec_ast"
+version = "0.1.0"
+dependencies = [
+ "branec_source",
+ "branec_symbols",
+ "branec_tokens",
+]
+
+[[package]]
+name = "branec_ast_lowering"
+version = "0.1.0"
+
+[[package]]
+name = "branec_cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ariadne",
+ "brane_core",
+ "branec",
+ "branec_ast",
+ "branec_parser",
+ "branec_source",
+ "branec_tokens",
+ "chumsky",
+ "clap",
+]
+
+[[package]]
+name = "branec_emitter"
+version = "0.1.0"
+dependencies = [
+ "annotate-snippets",
+ "anstream",
+]
+
+[[package]]
+name = "branec_hir"
+version = "0.1.0"
+dependencies = [
+ "branec_source",
+]
+
+[[package]]
+name = "branec_parser"
+version = "0.1.0"
+dependencies = [
+ "branec_ast",
+ "branec_source",
+ "branec_symbols",
+ "branec_tokens",
+ "chumsky",
+]
+
+[[package]]
+name = "branec_source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chumsky",
+]
+
+[[package]]
+name = "branec_symbols"
+version = "0.1.0"
+
+[[package]]
+name = "branec_tokens"
+version = "0.1.0"
+dependencies = [
+ "branec_source",
+ "branec_symbols",
+ "chumsky",
 ]
 
 [[package]]
