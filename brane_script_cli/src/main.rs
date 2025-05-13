@@ -76,6 +76,8 @@ fn main() -> anyhow::Result<()> {
         .map(|source| sm.load_from_file(source))
         .collect::<Result<Vec<Uri>, _>>()?;
 
+    //let emitter = Arc::new(ConsoleEmiter::new());
+
     for source in sources.iter() {
         let text = sm.get(source)?;
         let lexer = tokens::lexer();
@@ -90,7 +92,7 @@ fn main() -> anyhow::Result<()> {
         if tokens.is_none() {
             println!("lexer errors:");
             for e in errs {
-                println!("lexer error: {:?}", e);
+                println!("lexer error: {:#?}", e);
             }
             return Ok(());
         }
@@ -107,13 +109,13 @@ fn main() -> anyhow::Result<()> {
             println!("tree building errors:");
             for e in errs {
                 report_rich_error(&e, text, &source.to_string(), Some(|t| t.span.clone()));
-                println!("{:?}", e);
+                println!("{:#?}", e);
             }
             return Ok(());
         }
         let tree = tree.unwrap();
         println!("built tree");
-        println!("{}", tree.write_debug_tree());
+        println!("{}", tree.write_debug_tree(text));
 
         let tree = if let TokenTree::Group(group) = tree {
             group
@@ -126,19 +128,18 @@ fn main() -> anyhow::Result<()> {
         if ast.is_none() {
             println!("ast building errors:");
             for e in errs {
-                report_rich_error::<TokenTree>(
-                    &e,
-                    text,
-                    &source.to_string(),
-                    Some(|tree| tree.span().clone()),
-                );
-                println!("{:?}", e);
+                println!("{:#?}", e);
             }
             return Ok(());
         }
         let ast = ast.unwrap();
         println!("built ast");
-        println!("{:?}", ast);
+        println!("{:#?}", ast);
+
+        //let hir_arena = HirArena::new();
+        //let hir = ast::lowering::LoweringContext::lower(&ast, &hir_arena, emitter.clone())?;
+        //println!("lowered ast to hir:");
+        //println!("{}", hir);
     }
 
     Ok(())

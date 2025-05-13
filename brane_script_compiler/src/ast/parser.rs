@@ -1,17 +1,12 @@
 use super::ast::*;
 use crate::source::Span;
+use crate::symbols::Symbol;
 use crate::tokens::tree::{self, Delimiter, Group, TokenTree};
 use chumsky::{input::BorrowInput, label::LabelError, prelude::*, util::Maybe};
 
 pub fn tree_group<'src>(
     delim: Option<Delimiter>,
-) -> impl Clone
-       + Parser<
-    'src,
-    &'src Group<'src>,
-    &'src Group<'src>,
-    extra::Err<Rich<'src, TokenTree<'src>, Span>>,
-> {
+) -> impl Clone + Parser<'src, &'src Group, &'src Group, extra::Err<Rich<'src, TokenTree, Span>>> {
     let label = match &delim {
         Some(delim) => delim.as_str(),
         None => "group",
@@ -19,13 +14,13 @@ pub fn tree_group<'src>(
 
     any_ref()
         .labelled(label)
-        .try_map(move |tree: &TokenTree<'src>, span| {
+        .try_map(move |tree: &TokenTree, span| {
             if let TokenTree::Group(group) = tree {
                 if group.delim == *delim.as_ref().unwrap_or(&group.delim) {
                     return Ok(group);
                 }
             }
-            Err(LabelError::<'src, &'src Group<'src>, _>::expected_found(
+            Err(LabelError::<'src, &'src Group, _>::expected_found(
                 [label],
                 Some(Maybe::Ref(tree)),
                 span,
@@ -38,50 +33,46 @@ pub fn tree_group<'src>(
 /// If ident is None then this will parse all identifiers, if it's None, then we only parse
 /// identifiers that match that string
 pub fn ident<'src, T>(
-    ident_text: Option<&'static str>,
-) -> impl Clone + Parser<'src, T, Ident<'src>, extra::Err<Rich<'src, TokenTree<'src>, Span>>>
+    symbol: Option<Symbol>,
+) -> impl Clone + Parser<'src, T, Ident, extra::Err<Rich<'src, TokenTree, Span>>>
 where
-    T: BorrowInput<'src, Token = TokenTree<'src>, Span = Span>,
+    T: BorrowInput<'src, Token = TokenTree, Span = Span>,
 {
-    let label = match &ident_text {
-        Some(label) => label,
+    let label = match &symbol {
+        Some(label) => label.as_str(),
         None => "identifier",
     };
 
     any_ref()
         .labelled(label)
-        .try_map(move |tree: &TokenTree<'src>, span| {
+        .try_map(move |tree: &TokenTree, span| {
             if let TokenTree::Ident(ident) = tree {
-                if ident.ident == *ident_text.as_ref().unwrap_or(&ident.ident) {
-                    return Ok(ident);
+                if ident.sym == *symbol.as_ref().unwrap_or(&ident.sym) {
+                    return Ok(ident.clone());
                 }
             }
-            Err(LabelError::<'src, &'src Group<'src>, _>::expected_found(
+            Err(LabelError::<'src, &'src Group, _>::expected_found(
                 [label],
                 Some(Maybe::Ref(tree)),
                 span,
             ))
         })
-        .map(|ident| Ident {
-            span: ident.span.clone(),
-            ident: ident.ident,
-        })
 }
 
 pub fn punct<'src, T>(
     ch: char,
-) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree<'src>, Span>>>
+) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree, Span>>>
 where
-    T: BorrowInput<'src, Token = TokenTree<'src>, Span = Span>,
+    T: BorrowInput<'src, Token = TokenTree, Span = Span>,
 {
     any_ref()
-        .try_map(move |tree: &TokenTree<'src>, span| {
+        .try_map(move |tree: &TokenTree, span| {
             if let TokenTree::Punct(punct) = tree {
                 if punct.ch == ch {
                     return Ok(());
                 }
             }
-            Err(LabelError::<'src, &'src Group<'src>, _>::expected_found(
+            Err(LabelError::<'src, &'src Group, _>::expected_found(
                 [ch.to_string()],
                 Some(Maybe::Ref(tree)),
                 span,
@@ -92,9 +83,9 @@ where
 
 pub fn punct2<'src, T>(
     ops: &'static str,
-) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree<'src>, Span>>>
+) -> impl Clone + Parser<'src, T, (), extra::Err<Rich<'src, TokenTree, Span>>>
 where
-    T: BorrowInput<'src, Token = TokenTree<'src>, Span = Span>,
+    T: BorrowInput<'src, Token = TokenTree, Span = Span>,
 {
     let chars = ops.chars();
 
@@ -102,7 +93,7 @@ where
         .enumerate()
         .fold(
             None,
-            move |parser: Option<Boxed<'src, '_, T, Result<(), &'src TokenTree<'src>>, _>>,
+            move |parser: Option<Boxed<'src, '_, T, Result<(), &'src TokenTree>, _>>,
                   (index, ch)| {
                 let must_join = index != ops.len() - 1;
                 if let Some(parser) = parser {
@@ -142,7 +133,7 @@ where
     parser
         .try_map(move |result, span| {
             if let Err(tree) = result {
-                Err(LabelError::<'src, &'src Group<'src>, _>::expected_found(
+                Err(LabelError::<'src, &'src Group, _>::expected_found(
                     [ops],
                     Some(Maybe::Ref(tree)),
                     span,
@@ -155,8 +146,7 @@ where
 }
 
 pub fn ast_builder<'src>(
-) -> impl Parser<'src, &'src tree::Group<'src>, Ast<'src>, extra::Err<Rich<'src, TokenTree<'src>, Span>>>
-{
+) -> impl Parser<'src, &'src tree::Group, Ast, extra::Err<Rich<'src, TokenTree, Span>>> {
     let mut ty = Recursive::declare();
     let mut block = Recursive::declare();
 
@@ -172,17 +162,24 @@ pub fn ast_builder<'src>(
             span: e.span(),
         });
 
-    let mut_ty = choice((ident(Some("mut")), ident(Some("const"))))
+    let mut_sym = Symbol::intern("mut");
+    let const_sym = Symbol::intern("const");
+
+    let mut_ty = choice((ident(Some(mut_sym)), ident(Some(const_sym))))
         .or_not()
         .then(ty.clone())
-        .map(|(mutability, ty)| MutTy {
+        .map(move |(mutability, ty)| MutTy {
             ty,
             mutability: match mutability {
-                Some(ident) => match ident.ident {
-                    "mut" => Mutability::Mut,
-                    "const" => Mutability::Not,
-                    _ => unreachable!(),
-                },
+                Some(ident) => {
+                    if ident.sym == mut_sym {
+                        Mutability::Mut
+                    } else if ident.sym == const_sym {
+                        Mutability::Not
+                    } else {
+                        unreachable!()
+                    }
+                }
                 None => Mutability::Not,
             },
         });
@@ -201,10 +198,11 @@ pub fn ast_builder<'src>(
         .clone()
         .nested_in(tree_group(Some(Delimiter::Parenthesis)));
 
+    let self_t_sym = Symbol::intern("Self");
     ty.define(
         choice((
             struct_ty.map(|params| TyKind::Struct(params)),
-            ident(Some("Self")).to(TyKind::ImplicitSelf),
+            ident(Some(self_t_sym)).to(TyKind::ImplicitSelf),
             path.clone().map(|path| TyKind::Path(path)),
             punct('&')
                 .ignore_then(mut_ty.clone())
@@ -225,11 +223,11 @@ pub fn ast_builder<'src>(
 
     let lit_expr = any_ref()
         .labelled("literal")
-        .try_map(move |tree: &TokenTree<'src>, span| {
+        .try_map(move |tree: &TokenTree, span| {
             if let TokenTree::Literal(lit) = tree {
                 return Ok(lit);
             }
-            Err(LabelError::<'src, &'src Group<'src>, _>::expected_found(
+            Err(LabelError::<'src, &'src Group, _>::expected_found(
                 ["literal"],
                 Some(Maybe::Ref(tree)),
                 span,
@@ -451,7 +449,8 @@ pub fn ast_builder<'src>(
 
     expr.define(logic_or.boxed().labelled("expression"));
 
-    let local = ident(Some("let"))
+    let let_sym = Symbol::intern("let");
+    let local = ident(Some(let_sym))
         .ignore_then(ident(None))
         .then_ignore(punct(':'))
         .then(ty.clone())
@@ -516,7 +515,7 @@ pub fn ast_builder<'src>(
         })
         .labelled("call signature");
 
-    let pipe_stage = ident(Some("pipe"))
+    let pipe_stage = ident(None)
         .or_not()
         .then(call_sig.clone().or_not())
         .then(block)
@@ -528,7 +527,8 @@ pub fn ast_builder<'src>(
         })
         .labelled("pipeline stage");
 
-    let pipe = ident(Some("pipe"))
+    let pipe_sym = Symbol::intern("pipe");
+    let pipe = ident(Some(pipe_sym))
         .ignore_then(ident(None))
         .then(call_sig)
         .then(
@@ -552,8 +552,10 @@ pub fn ast_builder<'src>(
         pipe.map(|pipe| Item::Pipe(pipe)),
     )));
 
+    let mod_sym = Symbol::intern("mod");
+
     mod_parser.define(
-        ident(Some("mod"))
+        ident(Some(mod_sym))
             .ignore_then(ident(None))
             .then(
                 item_parser
@@ -561,12 +563,23 @@ pub fn ast_builder<'src>(
                     .collect()
                     .nested_in(tree_group(Some(Delimiter::Brace))),
             )
-            .map_with(|(ident, items), e| Mod {
-                span: e.span(),
-                ident,
-                items,
+            .map_with(|(ident, items), e| {
+                Box::new(Mod {
+                    span: e.span(),
+                    ident,
+                    items,
+                })
             })
             .labelled("module"),
     );
-    Parser::boxed(mod_parser.repeated().collect::<Ast>().labelled("ast"))
+    Parser::boxed(
+        mod_parser
+            .repeated()
+            .collect()
+            .map_with(|modules, e| Ast {
+                span: e.span(),
+                modules,
+            })
+            .labelled("ast"),
+    )
 }

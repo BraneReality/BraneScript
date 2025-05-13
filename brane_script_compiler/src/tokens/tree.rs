@@ -1,17 +1,20 @@
 pub use super::tokens::LiteralKind;
 use super::{tokens::TokenKind, Token};
-use crate::source::{Span, Uri};
+use crate::{
+    source::{Span, Uri},
+    symbols::Symbol,
+};
 use chumsky::{input::BorrowInput, label::LabelError, prelude::*, util::Maybe};
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum TokenTree<'src> {
-    Group(Group<'src>),
-    Ident(Ident<'src>),
+pub enum TokenTree {
+    Group(Group),
+    Ident(Ident),
     Punct(Punct),
-    Literal(Literal<'src>),
+    Literal(Literal),
 }
 
-impl<'src> TokenTree<'src> {
+impl TokenTree {
     pub fn span(&self) -> &Span {
         match &self {
             TokenTree::Group(group) => &group.span,
@@ -21,26 +24,15 @@ impl<'src> TokenTree<'src> {
         }
     }
 
-    pub fn write_debug_tree(&self) -> String {
+    pub fn write_debug_tree(&self, source: &str) -> String {
         let mut f = String::new();
         match &self {
-            TokenTree::Group(group) => group.fmt(&mut f, 0, true).unwrap(),
-            TokenTree::Ident(ident) => ident.fmt(&mut f, 0, true).unwrap(),
+            TokenTree::Group(group) => group.fmt(&mut f, 0, true, source).unwrap(),
+            TokenTree::Ident(ident) => ident.fmt(&mut f, 0, true, source).unwrap(),
             TokenTree::Punct(punct) => punct.fmt(&mut f, 0, true).unwrap(),
-            TokenTree::Literal(literal) => literal.fmt(&mut f, 0, true).unwrap(),
+            TokenTree::Literal(literal) => literal.fmt(&mut f, 0, true, source).unwrap(),
         };
         f
-    }
-}
-
-impl<'src> Display for TokenTree<'src> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            TokenTree::Group(group) => write!(f, "{}", group),
-            TokenTree::Ident(ident) => write!(f, "{}", ident),
-            TokenTree::Punct(punct) => write!(f, "{}", punct),
-            TokenTree::Literal(literal) => write!(f, "{}", literal),
-        }
     }
 }
 
@@ -66,48 +58,30 @@ impl Delimiter {
     }
 }
 
-impl Display for Delimiter {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
 #[derive(Clone, PartialEq, Debug)]
-pub struct Group<'src> {
+pub struct Group {
     pub span: Span,
     pub delim: Delimiter,
-    pub trees: Vec<TokenTree<'src>>,
-    pub annotations: Vec<Annotation<'src>>,
-}
-
-impl<'src> Display for Group<'src> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.delim)
-    }
+    pub trees: Vec<TokenTree>,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum AnnotationKind<'src> {
-    Comment(&'src str),
+pub enum AnnotationKind {
+    Comment,
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct Annotation<'src> {
+pub struct Annotation {
     pub span: Span,
-    pub kind: AnnotationKind<'src>,
+    pub kind: AnnotationKind,
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub struct Ident<'src> {
+pub struct Ident {
     pub span: Span,
-    pub ident: &'src str,
-    pub annotations: Vec<Annotation<'src>>,
-}
-
-impl<'src> Display for Ident<'src> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.ident)
-    }
+    pub sym: Symbol,
+    pub annotations: Vec<Annotation>,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -117,32 +91,20 @@ pub struct Punct {
     pub joined: bool,
 }
 
-impl<'src> Display for Punct {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.ch)
-    }
-}
-
 #[derive(Clone, PartialEq, Debug)]
-pub struct Literal<'src> {
+pub struct Literal {
     pub span: Span,
-    pub kind: LiteralKind<'src>,
-}
-
-impl<'src> Display for Literal<'src> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.kind)
-    }
+    pub kind: LiteralKind,
 }
 
 use std::{
-    fmt::{self, Display, Formatter},
+    fmt::{self},
     ops::Range,
     sync::Arc,
 };
 
-impl<'src> Group<'src> {
-    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
+impl Group {
+    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool, source: &str) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
         let delim = match self.delim {
             Delimiter::Parenthesis => ("(", ")"),
@@ -156,16 +118,16 @@ impl<'src> Group<'src> {
 
         for (i, ann) in self.annotations.iter().enumerate() {
             let is_last = !has_trees && i == self.annotations.len() - 1;
-            ann.fmt(f, indent + 1, is_last)?;
+            ann.fmt(f, indent + 1, is_last, source)?;
         }
 
         for (i, tree) in self.trees.iter().enumerate() {
             let is_last = i == self.trees.len() - 1;
             match &tree {
-                TokenTree::Group(group) => group.fmt(f, indent + 1, is_last)?,
-                TokenTree::Ident(ident) => ident.fmt(f, indent + 1, is_last)?,
+                TokenTree::Group(group) => group.fmt(f, indent + 1, is_last, source)?,
+                TokenTree::Ident(ident) => ident.fmt(f, indent + 1, is_last, source)?,
                 TokenTree::Punct(punct) => punct.fmt(f, indent + 1, is_last)?,
-                TokenTree::Literal(literal) => literal.fmt(f, indent + 1, is_last)?,
+                TokenTree::Literal(literal) => literal.fmt(f, indent + 1, is_last, source)?,
             }
         }
         writeln!(f, "{:<10}{}{}", self.span.start(), prefix, delim.1)?;
@@ -173,13 +135,19 @@ impl<'src> Group<'src> {
     }
 }
 
-impl<'src> Ident<'src> {
-    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
+impl Ident {
+    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool, source: &str) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
-        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, self.ident)?;
+        writeln!(
+            f,
+            "{:<10}{}{}",
+            self.span.start(),
+            prefix,
+            &source[self.span.range.clone()]
+        )?;
         for (i, ann) in self.annotations.iter().enumerate() {
             let is_last = i == self.annotations.len() - 1;
-            ann.fmt(f, indent + 1, is_last)?;
+            ann.fmt(f, indent + 1, is_last, source)?;
         }
         Ok(())
     }
@@ -192,19 +160,26 @@ impl Punct {
     }
 }
 
-impl<'src> Literal<'src> {
-    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
+impl Literal {
+    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool, source: &str) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
-        writeln!(f, "{:<10}{}{}", self.span.start(), prefix, self.kind)
+        writeln!(
+            f,
+            "{:<10}{}{} type={:?}",
+            self.span.start(),
+            prefix,
+            &source[self.span.range.clone()],
+            self.kind
+        )
     }
 }
 
-impl<'src> Annotation<'src> {
-    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool) -> fmt::Result {
+impl Annotation {
+    fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool, source: &str) -> fmt::Result {
         let prefix = tree_prefix(indent, last);
         match &self.kind {
-            AnnotationKind::Comment(s) => {
-                for line in s.split('\n') {
+            AnnotationKind::Comment => {
+                for line in source[self.span.range.clone()].split('\n') {
                     writeln!(f, "{:<10}{}//{}", self.span.start(), prefix, line)?;
                 }
                 Ok(())
@@ -226,13 +201,13 @@ fn tree_prefix(indent: usize, last: bool) -> String {
 }
 
 pub fn token_kind<'src, T>(
-    kind: TokenKind<'src>,
-) -> impl Clone + Parser<'src, T, Token<'src>, extra::Err<Rich<'src, Token<'src>, Span>>>
+    kind: TokenKind,
+) -> impl Clone + Parser<'src, T, Token, extra::Err<Rich<'src, Token, Span>>>
 where
-    T: BorrowInput<'src, Token = Token<'src>, Span = Span>,
+    T: BorrowInput<'src, Token = Token, Span = Span>,
 {
     any_ref()
-        .try_map(move |token: &Token<'src>, span| {
+        .try_map(move |token: &Token, span| {
             if token.kind == kind {
                 Ok(token.clone())
             } else {
@@ -254,15 +229,16 @@ fn join_spans(a: &Span, b: &Span) -> Span {
 }
 
 pub fn tree_builder<'src, T>(
-) -> impl Parser<'src, T, TokenTree<'src>, extra::Err<Rich<'src, Token<'src>, Span>>>
+) -> impl Parser<'src, T, TokenTree, extra::Err<Rich<'src, Token, Span>>>
 where
-    T: BorrowInput<'src, Token = Token<'src>, Span = Span>,
+    T: BorrowInput<'src, Token = Token, Span = Span>,
 {
     let spacing = select_ref! {
         Token { kind: TokenKind::Whitespace, span:_ } => None,
-        Token { kind: TokenKind::LineComment(c), span } => Some((AnnotationKind::Comment(c), span)),
-        Token { kind: TokenKind::BlockComment(c), span } => Some((AnnotationKind::Comment(c), span)),
-    }.labelled("spacing token");
+        Token { kind: TokenKind::LineComment, span } => Some((AnnotationKind::Comment, span)),
+        Token { kind: TokenKind::BlockComment, span } => Some((AnnotationKind::Comment, span)),
+    }
+    .labelled("spacing token");
 
     let annotations = spacing
         .map(|a| match a {
@@ -323,19 +299,14 @@ where
             trees,
             annotations,
         });
-    fn fun_name<'src>(
-        (annotations, (ident, span)): (Vec<Annotation<'src>>, (&&'src str, Span)),
-    ) -> Ident<'src> {
-        Ident {
-            span,
-            ident,
-            annotations,
-        }
-    }
 
     let ident = annotations
-        .then(select_ref! { Token {kind: TokenKind::Ident(ident), span } => (ident, span.clone()) })
-        .map(fun_name)
+        .then(select_ref! { Token {kind: TokenKind::Ident(sym), span } => (*sym, span.clone()) })
+        .map(|(annotations, (sym, span))| Ident {
+            span,
+            sym,
+            annotations,
+        })
         .labelled("identifier token");
 
     let punct = annotations
@@ -383,7 +354,7 @@ where
     )));
     tree.repeated()
         .collect()
-        .map(|trees: Vec<TokenTree<'src>>| {
+        .map(|trees: Vec<TokenTree>| {
             let span = if trees.is_empty() {
                 Span::new(Arc::new(Uri::Unknown), 0..0)
             } else {
@@ -399,14 +370,11 @@ where
         .then_ignore(spacing.repeated())
 }
 
-impl<'src, 'tree> Input<'tree> for &'tree Group<'src>
-where
-    'src: 'tree,
-{
+impl<'tree> Input<'tree> for &'tree Group {
     type Cursor = usize;
     type Span = Span;
-    type Token = TokenTree<'src>;
-    type MaybeToken = &'tree TokenTree<'src>;
+    type Token = TokenTree;
+    type MaybeToken = &'tree TokenTree;
     type Cache = Self;
 
     fn begin(self) -> (Self::Cursor, Self::Cache) {
@@ -438,10 +406,7 @@ where
     }
 }
 
-impl<'src, 'tree> BorrowInput<'tree> for &'tree Group<'src>
-where
-    'src: 'tree,
-{
+impl<'tree> BorrowInput<'tree> for &'tree Group {
     unsafe fn next_ref(
         cache: &mut Self::Cache,
         cursor: &mut Self::Cursor,

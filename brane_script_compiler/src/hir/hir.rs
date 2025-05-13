@@ -1,143 +1,161 @@
-use brane_script_compiler_macro::arena_with_types;
-use typed_arena::Arena;
-
 use crate::source::Span;
-use std::{collections::HashMap, fmt::Display, marker::PhantomData};
+use std::{collections::HashMap, fmt::Display, rc::Rc};
 
-#[derive(PartialEq, Eq, Clone)]
-pub struct Identifier<'hir> {
-    pub source: Span,
-    pub text: String,
-    pub _lifetime: PhantomData<&'hir Identifier<'hir>>,
+type HirId = u64;
+
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct Ident {
+    pub span: Span,
+    pub id: HirId,
 }
 
-#[derive(Clone)]
-pub enum GenericArg<'hir> {
-    Path(&'hir Path<'hir>),
-    Const(&'hir ConstValue),
+#[derive(Clone, Debug)]
+pub enum GenericArg {
+    Path(Rc<Path>),
+    Const(Rc<ConstValue>),
 }
 
-impl<'hir> Display for GenericArg<'hir> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            GenericArg::Path(path) => write!(f, "{}", path),
-            GenericArg::Const(const_value) => write!(f, "{}", const_value),
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct PathSegment {
+    pub ident: Ident,
+    pub args: Option<Vec<GenericArg>>,
+    pub infer_args: bool,
 }
 
-#[derive(Clone)]
-pub enum PathSeg<'hir> {
-    Id(&'hir Identifier<'hir>),
-    Generics(Vec<GenericArg<'hir>>),
-    TraitImpl {
-        r#type: &'hir Path<'hir>,
-        r#trait: Path<'hir>,
-    },
+#[derive(Clone, Debug)]
+pub struct Path {
+    pub span: Span,
+    pub segments: Vec<Box<PathSegment>>,
 }
 
-#[derive(Clone)]
-pub struct Path<'hir> {
-    pub source: &'hir Span,
-    pub parent: Option<&'hir Path<'hir>>,
-    pub scopes: Vec<PathSeg<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Ty {
+    pub kind: TyKind,
+    pub span: Span,
 }
 
-impl<'hir> Display for Identifier<'hir> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", &self.text)
-    }
+#[derive(Clone, Debug, PartialEq)]
+pub enum BorrowKind {
+    /// A normal borrow, `&$expr` or `&mut $expr`.
+    /// The resulting type is either `&'a T` or `&'a mut T`
+    /// where `T = typeof($expr)` and `'a` is some lifetime.
+    Ref,
+    /// A raw borrow, `&raw const $expr` or `&raw mut $expr`.
+    /// The resulting type is either `*const T` or `*mut T`
+    /// where `T = typeof($expr)`.
+    Raw,
 }
 
-impl<'hir> Display for PathSeg<'hir> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PathSeg::Id(identifier) => write!(f, "{}", identifier),
-            PathSeg::Generics(generics) => {
-                write!(
-                    f,
-                    "<{}>",
-                    generics
-                        .iter()
-                        .map(|g| format!("{}", g))
-                        .reduce(|a, b| format!("{}, {}", a, b))
-                        .unwrap_or_default()
-                )
-            }
-            PathSeg::TraitImpl { r#type, r#trait } => write!(f, "<{} as {}>", r#type, r#trait),
-        }
-    }
+#[derive(Clone, Debug)]
+pub enum Mutability {
+    // N.B. Order is deliberate, so that Not < Mut
+    Not,
+    Mut,
 }
 
-impl<'hir> Display for Path<'hir> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.scopes.len() < 1 {
-            return Ok(());
-        }
-        write!(f, "{}", self.scopes[0])?;
-        for scope in self.scopes[1..self.scopes.len()].iter() {
-            write!(f, "::{}", scope)?;
-        }
-        Ok(())
-    }
+#[derive(Clone, Debug)]
+pub struct MutTy {
+    pub ty: Box<Ty>,
+    pub mutability: Mutability,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+pub enum TyKind {
+    /// A variable-length slice (`[T]`).
+    // TODO Slice(P<Ty>),
+
+    /// A fixed length array (`[T; n]`).
+    // TODO Array(P<Ty>, AnonConst),
+
+    /// A raw pointer (`*const T` or `*mut T`).
+    Ptr(MutTy),
+    /// A reference (`&'a T` or `&'a mut T`).
+    Ref(MutTy),
+
+    /// An anonymous struct
+    Struct(Vec<Param>),
+
+    /// A path (`module::module::...::Type`)
+    Path(Path),
+
+    /// Inferred type of a `self` or `&self` argument in a method.
+    ImplicitSelf,
+}
+
+#[derive(Clone, Debug)]
 pub enum TypeModifiers {
     MutRef,
     ConstRef,
 }
 
-#[derive(Clone)]
-pub struct Type<'hir> {
-    pub source: &'hir Span,
-    pub base_type: &'hir Path<'hir>,
+#[derive(Clone, Debug)]
+pub struct Type {
+    pub span: Span,
+    pub base_type: Box<Path>,
     pub modifiers: Vec<TypeModifiers>,
 }
 
-#[derive(Clone)]
-pub struct Value<'hir> {
-    pub source: &'hir Span,
-    pub label: Option<Identifier<'hir>>,
-    pub r#type: Option<Type<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Value {
+    pub span: Span,
+    pub label: Option<Ident>,
+    pub r#type: Option<Type>,
 }
 
-#[derive(Clone)]
-pub struct Let<'hir> {
-    pub source: &'hir Span,
-    pub defined_value: &'hir Value<'hir>,
+#[derive(Clone, Debug)]
+pub struct Let {
+    pub span: Span,
+    pub defined_value: Rc<Value>,
 }
 
-#[derive(Clone)]
-pub struct Block<'hir> {
-    pub source: &'hir Span,
-    pub local_variables: Vec<Value<'hir>>,
-    pub expressions: Vec<&'hir Expr<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub span: Span,
+    pub expressions: Vec<Rc<Expr>>,
 }
 
-#[derive(Clone)]
-pub struct CallSig<'hir> {
-    pub source: Span,
-    pub input: &'hir StructDef<'hir>,
-    pub output: &'hir StructDef<'hir>,
+#[derive(Clone, Debug)]
+pub struct Param {
+    pub ident: Rc<Ident>, // TODO upgrade to pattern
+    pub ty: Rc<Ty>,
+    pub span: Span,
 }
 
-#[derive(Clone)]
-pub struct PipelineStage<'hir> {
-    pub source: Span,
-    pub identifier: Option<Identifier<'hir>>,
-    pub call_sig: CallSig<'hir>,
-    pub body: Block<'hir>,
+#[derive(Clone, Debug)]
+pub enum FnRetTy {
+    /// Returns type is not specified.
+    ///
+    /// Functions default to `()` and pipeline stages/closures
+    /// default to inference.
+    /// Span points to where return type would be inserted.
+    Default(Span),
+    /// Everything else.
+    Ty(Rc<Ty>),
 }
 
-#[derive(Clone)]
-pub struct Assignment<'hir> {
-    pub source: Span,
-    pub dest: &'hir Expr<'hir>,
-    pub src: &'hir Expr<'hir>,
+#[derive(Clone, Debug)]
+pub struct CallSig {
+    pub span: Span,
+    pub inputs: Vec<Param>,
+    pub output: FnRetTy,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+pub struct PipelineStage {
+    pub span: Span,
+    pub ident: Option<Ident>,
+    pub call_sig: CallSig,
+    pub body: Block,
+}
+
+#[derive(Clone, Debug)]
+pub struct Assignment {
+    pub span: Span,
+    pub dest: Rc<Expr>,
+    pub hir: Rc<Expr>,
+}
+
+#[derive(Clone, Debug)]
 pub enum ConstValueData {
     Bool(bool),
     Char(char),
@@ -147,13 +165,13 @@ pub enum ConstValueData {
     Str(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConstValue {
-    source: Span,
+    span: Span,
     data: ConstValueData,
 }
 
-impl<'hir> Display for ConstValue {
+impl Display for ConstValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.data {
             ConstValueData::Bool(value) => write!(f, "{}", value),
@@ -166,199 +184,141 @@ impl<'hir> Display for ConstValue {
     }
 }
 
-#[derive(Clone)]
-pub struct Field<'hir> {
-    pub source: Span,
-    pub base_expression: &'hir Expr<'hir>,
+#[derive(Clone, Debug)]
+pub struct Field {
+    pub span: Span,
+    pub base_expression: Rc<Expr>,
     pub member: usize,
 }
 
-#[derive(Clone)]
-pub struct FieldDef<'hir> {
-    pub source: Span,
-    pub id: &'hir Identifier<'hir>,
-    pub expression: &'hir Expr<'hir>,
+#[derive(Clone, Debug)]
+pub struct FieldDef {
+    pub span: Span,
+    pub ident: Rc<Ident>,
+    pub expression: Rc<Expr>,
 }
 
-#[derive(Clone)]
-pub struct Struct<'hir> {
-    pub source: Span,
+#[derive(Clone, Debug)]
+pub struct Struct {
+    pub span: Span,
     /// If type is non, this is an anon struct
-    pub r#type: Option<&'hir Path<'hir>>,
-    pub members: Vec<&'hir FieldDef<'hir>>,
+    pub r#type: Option<Rc<Path>>,
+    pub members: Vec<Rc<FieldDef>>,
 }
 
-#[derive(Clone)]
-pub struct Call<'hir> {
-    pub source: Span,
-    pub callable: &'hir Expr<'hir>,
-    pub args: &'hir StructDef<'hir>,
+#[derive(Clone, Debug)]
+pub struct Call {
+    pub span: Span,
+    pub callable: Rc<Expr>,
+    pub args: Rc<StructDef>,
 }
 
-#[derive(Clone)]
-pub struct StructDef<'hir> {
-    pub source: Span,
-    pub identifier: Option<&'hir Identifier<'hir>>,
-    pub members: Vec<&'hir Value<'hir>>,
+#[derive(Clone, Debug)]
+pub struct StructDef {
+    pub span: Span,
+    pub ident: Option<Rc<Ident>>,
+    pub members: Vec<Rc<Value>>,
     pub packed: bool,
 }
 
-#[derive(Clone)]
-pub struct Function<'hir> {
-    pub source: &'hir Span,
-    pub identifier: &'hir Identifier<'hir>,
-    pub call_sig: &'hir CallSig<'hir>,
-    pub body: &'hir Block<'hir>,
+#[derive(Clone, Debug)]
+pub struct Function {
+    pub span: Rc<Span>,
+    pub ident: Rc<Ident>,
+    pub call_sig: Rc<CallSig>,
+    pub body: Rc<Block>,
 }
 
-pub enum TraitMember<'hir> {
-    Fn(&'hir CallSig<'hir>),
-    Type(&'hir Identifier<'hir>),
-    Const(&'hir Identifier<'hir>, &'hir Path<'hir>),
+#[derive(Clone, Debug)]
+pub enum TraitMember {
+    Fn(Rc<CallSig>),
+    Type(Rc<Ident>),
+    Const(Rc<Ident>, Rc<Path>),
 }
 
-pub struct TraitDef<'hir> {
-    pub identifier: &'hir Identifier<'hir>,
-    pub members: HashMap<String, &'hir TraitMember<'hir>>,
+#[derive(Clone, Debug)]
+pub struct TraitDef {
+    pub ident: Rc<Ident>,
+    pub members: HashMap<String, Rc<TraitMember>>,
 }
 
-pub enum ImplMembers<'hir> {
-    Fn(&'hir Function<'hir>),
-    Type(&'hir Identifier<'hir>, &'hir Path<'hir>),
-    Const(&'hir Identifier<'hir>, &'hir ConstValue),
+#[derive(Clone, Debug)]
+pub enum ImplMembers {
+    Fn(Rc<Function>),
+    Type(Rc<Ident>, Rc<Path>),
+    Const(Rc<Ident>, Rc<ConstValue>),
 }
 
-pub struct Impl<'hir> {
-    pub r#trait: Option<&'hir Path<'hir>>,
-    pub r#type: &'hir Path<'hir>,
-    pub members: HashMap<String, ImplMembers<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Impl {
+    pub r#trait: Option<Rc<Path>>,
+    pub r#type: Rc<Path>,
+    pub members: HashMap<String, ImplMembers>,
 }
 
-#[derive(Clone)]
-pub struct Pipeline<'hir> {
-    pub source: &'hir Span,
-    pub identifier: &'hir Identifier<'hir>,
-    pub call_sig: &'hir CallSig<'hir>,
-    pub stages: Vec<&'hir PipelineStage<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Pipeline {
+    pub span: Rc<Span>,
+    pub ident: Rc<Ident>,
+    pub call_sig: Rc<CallSig>,
+    pub stages: Vec<Rc<PipelineStage>>,
 }
 
-pub struct Module<'hir> {
-    pub source: Span,
-    pub identifier: &'hir mut Identifier<'hir>,
-    pub links: Vec<&'hir mut Path<'hir>>,
-    pub structs: HashMap<String, &'hir mut Struct<'hir>>,
-    pub functions: HashMap<String, &'hir mut Function<'hir>>,
-    pub pipelines: HashMap<String, &'hir mut Pipeline<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Module {
+    pub span: Span,
+    pub ident: Rc<Ident>,
+    pub links: Vec<Rc<Path>>,
+    pub structs: HashMap<String, Rc<Struct>>,
+    pub functions: HashMap<String, Rc<Function>>,
+    pub pipelines: HashMap<String, Rc<Pipeline>>,
 }
 
-pub struct Hir<'hir> {
-    pub modules: HashMap<String, &'hir mut Module<'hir>>,
+#[derive(Clone, Debug)]
+pub struct Hir {
+    pub modules: HashMap<String, Rc<Module>>,
 }
 
-arena_with_types!(Hir, Identifier, Module);
-
-/*
-pub struct HirArena<'hir>(Arena<HirKind<'hir>>);
-
-pub enum HirKind<'hir> {
-    Identifier(Identifier),
-    Module(Module<'hir>),
+#[derive(Clone, Debug)]
+pub enum Expr {
+    Scope(Rc<Block>),
+    Assignment(Rc<Assignment>),
+    Let(Rc<Let>),
+    Identifier(Rc<Ident>),
+    ConstValue(Rc<ConstValue>),
+    Path(Rc<Path>),
+    Field(Rc<Field>),
+    Struct(Rc<Struct>),
+    Call(Rc<Call>),
 }
 
-impl<'hir> HirArena<'hir> {
-    pub fn alloc_identifier(&self, value: Identifier) -> &mut Identifier {
-        if let HirKind::Identifier(value) = &mut *self.0.alloc(HirKind::Identifier(value)) {
-            value
-        } else {
-            unreachable!("variant is known")
-        }
-    }
-
-    pub fn alloc_module(&self, value: Module<'hir>) -> &mut Module<'hir> {
-        if let HirKind::Module(value) = &mut *self.0.alloc(HirKind::Module(value)) {
-            value
-        } else {
-            unreachable!("variant is known")
-        }
-    }
-}
-*/
-
-/*
-impl Hir {
-    pub fn build(
-        modules_builder: impl for<'this> FnOnce(
-            &'this mut Rodeo,
-        ) -> anyhow::Result<
-            HashMap<String, &'this mut Module<'this>>,
-        >,
-    ) -> anyhow::Result<Hir> {
-        Hir::try_new(Rodeo::new(), modules_builder)
-    }
-}
-
-impl Default for Hir {
-    fn default() -> Self {
-        Hir::new(Rodeo::new(), |_| HashMap::new())
-    }
-}
-*/
-
-pub enum Expr<'hir> {
-    Scope(&'hir mut Block<'hir>),
-    Assignment(&'hir mut Assignment<'hir>),
-    Let(&'hir mut Let<'hir>),
-    Identifier(&'hir mut Identifier<'hir>),
-    ConstValue(&'hir mut ConstValue),
-    Path(&'hir mut Path<'hir>),
-    Field(&'hir mut Field<'hir>),
-    Struct(&'hir mut Struct<'hir>),
-    Call(&'hir mut Call<'hir>),
-}
-
-impl<'hir> Expr<'hir> {
-    pub fn source(&self) -> &Span {
+impl Expr {
+    pub fn span(&self) -> &Span {
         use Expr::*;
         match self {
-            Assignment(c) => &c.source,
-            Let(c) => &c.source,
-            ConstValue(c) => &c.source,
-            Path(c) => &c.source,
-            Field(c) => &c.source,
-            Struct(c) => &c.source,
-            Call(c) => &c.source,
-            Scope(block) => &block.source,
-            Identifier(identifier) => &identifier.source,
+            Assignment(c) => &c.span,
+            Let(c) => &c.span,
+            ConstValue(c) => &c.span,
+            Path(c) => &c.span,
+            Field(c) => &c.span,
+            Struct(c) => &c.span,
+            Call(c) => &c.span,
+            Scope(block) => &block.span,
+            Identifier(ident) => &ident.span,
         }
     }
 }
 
-pub enum Node<'hir> {
-    Value(&'hir mut Value<'hir>),
-    Type(&'hir mut Type<'hir>),
-    CallSig(&'hir mut CallSig<'hir>),
-    Expr(&'hir mut Expr<'hir>),
-    PipelineStage(&'hir mut PipelineStage<'hir>),
-    FieldDef(&'hir mut FieldDef<'hir>),
-    Function(&'hir mut Function<'hir>),
-    Pipeline(&'hir mut Pipeline<'hir>),
-    StructDef(&'hir mut StructDef<'hir>),
-    Module(&'hir mut Module<'hir>),
-}
-
-impl<'hir> Node<'hir> {
-    pub fn label(&self) -> Option<&Identifier> {
-        match self {
-            Node::Value(source) => source.label.as_ref(),
-            Node::Expr(_) => None,
-            Node::Type(_) => None,
-            Node::CallSig(_) => None,
-            Node::FieldDef(_) => None,
-            Node::PipelineStage(source) => source.identifier.as_ref(),
-            Node::Function(source) => Some(&source.identifier),
-            Node::Pipeline(source) => Some(&source.identifier),
-            Node::StructDef(source) => source.identifier,
-            Node::Module(source) => Some(&source.identifier),
-        }
-    }
+#[derive(Clone, Debug)]
+pub enum Node {
+    Value(Rc<Value>),
+    Type(Rc<Type>),
+    CallSig(Rc<CallSig>),
+    Expr(Rc<Expr>),
+    PipelineStage(Rc<PipelineStage>),
+    FieldDef(Rc<FieldDef>),
+    Function(Rc<Function>),
+    Pipeline(Rc<Pipeline>),
+    StructDef(Rc<StructDef>),
+    Module(Rc<Module>),
 }

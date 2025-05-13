@@ -1,35 +1,30 @@
 use crate::tokens::tokens::LiteralKind;
+pub use crate::tokens::tree::Ident;
 
 use crate::source::Span;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Ident<'src> {
-    pub span: Span,
-    pub ident: &'src str,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Path<'src> {
+pub struct Path {
     pub span: Span,
     /// The segments in the path: the things separated by `::`.
-    pub segments: Vec<PathSegment<'src>>,
+    pub segments: Vec<PathSegment>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PathSegment<'src> {
+pub struct PathSegment {
     /// The identifier portion of this path segment.
-    pub ident: Ident<'src>,
+    pub ident: Ident,
     //pub args: Option<Box<GenericArgs>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct QSelf<'src> {
-    pub ty: Box<Ty<'src>>,
-    pub as_trait: Option<Path<'src>>,
+pub struct QSelf {
+    pub ty: Box<Ty>,
+    pub as_trait: Option<Path>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum TyKind<'src> {
+pub enum TyKind {
     /// A variable-length slice (`[T]`).
     // TODO Slice(P<Ty>),
 
@@ -37,23 +32,23 @@ pub enum TyKind<'src> {
     // TODO Array(P<Ty>, AnonConst),
 
     /// A raw pointer (`*const T` or `*mut T`).
-    Ptr(MutTy<'src>),
+    Ptr(MutTy),
     /// A reference (`&'a T` or `&'a mut T`).
-    Ref(MutTy<'src>),
+    Ref(MutTy),
 
     /// An anonymous struct
-    Struct(Vec<Param<'src>>),
+    Struct(Vec<Param>),
 
     /// A path (`module::module::...::Type`)
-    Path(Path<'src>),
+    Path(Path),
 
     /// Inferred type of a `self` or `&self` argument in a method.
     ImplicitSelf,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Ty<'src> {
-    pub kind: TyKind<'src>,
+pub struct Ty {
+    pub kind: TyKind,
     pub span: Span,
 }
 
@@ -77,8 +72,8 @@ pub enum Mutability {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct MutTy<'src> {
-    pub ty: Box<Ty<'src>>,
+pub struct MutTy {
+    pub ty: Box<Ty>,
     pub mutability: Mutability,
 }
 
@@ -166,9 +161,9 @@ pub enum AssignOpKind {
 pub type AssignOp = (Span, AssignOpKind);
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ExprKind<'src> {
+pub enum ExprKind {
     /// An array (e.g, `[a, b, c, d]`).
-    // TODO Array(Vec<Box<Expr<'src>>>),
+    // TODO Array(Vec<Box<Expr>>),
     /// Allow anonymous constants from an inline `const` block.
     // TODO ConstBlock(AnonConst),
 
@@ -178,37 +173,37 @@ pub enum ExprKind<'src> {
     /// and the second field is the list of arguments.
     /// This also represents calling the constructor of
     /// tuple-like ADTs such as tuple structs and enum variants.
-    Call(Box<Expr<'src>>, Vec<FieldExpr<'src>>),
+    Call(Box<Expr>, Vec<FieldExpr>),
 
     /// A method call (e.g., `x.foo::<Bar, Baz>(a, b, c)`).
-    MethodCall(Box<MethodCall<'src>>),
+    MethodCall(Box<MethodCall>),
 
     /// A binary operation (e.g., `a + b`, `a * b`).
-    Binary(BinOp, Box<Expr<'src>>, Box<Expr<'src>>),
+    Binary(BinOp, Box<Expr>, Box<Expr>),
 
     /// A unary operation (e.g., `!x`, `*x`).
-    Unary(UnOp, Box<Expr<'src>>),
+    Unary(UnOp, Box<Expr>),
 
     /// A literal (e.g., `1`, `"foo"`).
-    Lit(LiteralKind<'src>),
+    Lit(LiteralKind),
 
     /// A cast (e.g., `foo as f64`).
-    Cast(Box<Expr<'src>>, Box<Ty<'src>>),
+    Cast(Box<Expr>, Box<Ty>),
 
     /// a let statement
     ///
     /// `Span` represents the whole `let pat = expr` statement.
-    Let(Box<Ident<'src>>, Box<Expr<'src>>, Span),
+    Let(Box<Ident>, Box<Expr>, Span),
 
     /// An `if` block, with an optional `else` block.
     ///
     /// `if expr { block } else { expr }`
-    If(Box<Expr<'src>>, Box<Block<'src>>, Option<Box<Expr<'src>>>),
+    If(Box<Expr>, Box<Block>, Option<Box<Expr>>),
 
     /// A while loop.
     ///
     /// `'while expr { block }`
-    While(Box<Expr<'src>>, Box<Block<'src>>),
+    While(Box<Expr>, Box<Block>),
 
     /// A `for` loop, with an optional label.
     ///
@@ -236,29 +231,29 @@ pub enum ExprKind<'src> {
 
     /// A block (`{ ... }`).
     ///
-    Block(Box<Block<'src>>),
+    Block(Box<Block>),
 
     /// A use expression (`x.use`). Span is of use keyword.
-    Use(Box<Expr<'src>>, Span),
+    Use(Box<Expr>, Span),
 
     /// An assignment (`a = foo()`).
     /// The `Span` argument is the span of the `=` token.
-    Assign(Box<Expr<'src>>, Box<Expr<'src>>, Span),
+    Assign(Box<Expr>, Box<Expr>, Span),
 
     /// An assignment with an operator.
     ///
     /// E.g., `a += 1`.
-    AssignOp(AssignOp, Box<Expr<'src>>, Box<Expr<'src>>),
+    AssignOp(AssignOp, Box<Expr>, Box<Expr>),
 
     /// Access of a named (e.g., `obj.foo`) or unnamed (e.g., `obj.0`) struct field.
-    Field(Box<Expr<'src>>, Ident<'src>),
+    Field(Box<Expr>, Ident),
 
     /// An indexing operation (e.g., `foo[2]`).
     /// The span represents the span of the `[2]`, including brackets.
-    // TODO Index(Box<Expr<'src>>, Box<Expr<'src>>, Span),
+    // TODO Index(Box<Expr>, Box<Expr>, Span),
 
     /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`; and `..` in destructuring assignment).
-    // TODO Range(Option<Box<Expr<'src>>>, Option<Box<Expr<'src>>, RangeLimits),
+    // TODO Range(Option<Box<Expr>>, Option<Box<Expr>, RangeLimits),
 
     /// An underscore, used in destructuring assignment to ignore a value.
     // TODO Underscore,
@@ -267,10 +262,10 @@ pub enum ExprKind<'src> {
     /// parameters (e.g., `foo::bar::<baz>`).
     ///
     /// Optionally "qualified" (e.g., `<Vec<T> as SomeTrait>::SomeType`).
-    Path(Option<Box<QSelf<'src>>>, Path<'src>),
+    Path(Option<Box<QSelf>>, Path),
 
     /// A referencing operation (`&a`, `&mut a`, `&raw const a` or `&raw mut a`).
-    AddrOf(BorrowKind, Mutability, Box<Expr<'src>>),
+    AddrOf(BorrowKind, Mutability, Box<Expr>),
 
     /// A `break`, with an optional label to break, and an optional expression.
     // TODO Break(Option<Label>, Option<P<Expr>>),
@@ -279,7 +274,7 @@ pub enum ExprKind<'src> {
     // TODO Continue(Option<Label>),
 
     /// A `return`, with an optional value to be returned.
-    Ret(Option<Box<Expr<'src>>>),
+    Ret(Option<Box<Expr>>),
 
     /// Output of the `asm!()` macro. Keeping this here as a "would be really cool"
     // TODO? InlineAsm(P<InlineAsm>),
@@ -288,7 +283,7 @@ pub enum ExprKind<'src> {
     ///
     /// Usually not written directly in user code but
     /// indirectly via the macro `core::mem::offset_of!(...)`.
-    // TODO OffsetOf(Box<Ty<'src>>, Ident<'src>),
+    // TODO OffsetOf(Box<Ty>, Ident),
 
     /// A macro invocation; pre-expansion.
     // TODO MacCall(P<MacCall>),
@@ -296,7 +291,7 @@ pub enum ExprKind<'src> {
     /// A struct literal expression.
     ///
     /// E.g., `Foo {x: 1, y: 2}`, or `Foo {x: 1}`.
-    Struct(Box<StructExpr<'src>>),
+    Struct(Box<StructExpr>),
 
     /// An array literal constructed from one repeated element.
     ///
@@ -305,78 +300,78 @@ pub enum ExprKind<'src> {
     // TODO Repeat(P<Expr>, AnonConst),
 
     /// No-op: used solely so we can pretty-print faithfully.
-    Paren(Box<Expr<'src>>),
+    Paren(Box<Expr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FieldExpr<'src> {
+pub struct FieldExpr {
     pub span: Span,
-    pub ident: Ident<'src>,
-    pub expr: Box<Expr<'src>>,
+    pub ident: Ident,
+    pub expr: Box<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StructExpr<'src> {
+pub struct StructExpr {
     pub span: Span,
-    pub path: Option<Path<'src>>,
-    pub fields: Vec<FieldExpr<'src>>, // TODO pub rest: Box<Expr<'src>>
+    pub path: Option<Path>,
+    pub fields: Vec<FieldExpr>, // TODO pub rest: Box<Expr>
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct MethodCall<'src> {
+pub struct MethodCall {
     /// The method name and its generic arguments, e.g. `foo::<Bar, Baz>`.
-    pub seg: PathSegment<'src>,
+    pub seg: PathSegment,
     /// The receiver, e.g. `x`.
-    pub receiver: Box<Expr<'src>>,
+    pub receiver: Box<Expr>,
     /// The arguments, e.g. `a, b, c`.
-    pub args: Vec<Box<Expr<'src>>>,
+    pub args: Vec<Box<Expr>>,
     /// The span of the function, without the dot and receiver e.g. `foo::<Bar,
     /// Baz>(a, b, c)`.
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Expr<'src> {
+pub struct Expr {
     pub span: Span,
-    pub kind: ExprKind<'src>,
+    pub kind: ExprKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Block<'src> {
+pub struct Block {
     pub span: Span,
-    pub stmts: Vec<Box<Stmt<'src>>>,
+    pub stmts: Vec<Box<Stmt>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Local<'src> {
+pub struct Local {
     pub span: Span,
-    pub ident: Ident<'src>,
-    pub ty: Box<Ty<'src>>,
-    pub kind: LocalKind<'src>,
+    pub ident: Ident,
+    pub ty: Box<Ty>,
+    pub kind: LocalKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum LocalKind<'src> {
+pub enum LocalKind {
     /// Local declaration.
     /// Example: `let x;`
     //TODO Decl,
 
     /// Local declaration with an initializer.
     /// Example: `let x = y;`
-    Init(Box<Expr<'src>>),
+    Init(Box<Expr>),
     // Local declaration with an initializer and an `else` clause.
     // `let Some(x) = y else { return };`
     //TODO InitElse(P<Expr>, P<Block>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum StmtKind<'src> {
+pub enum StmtKind {
     /// A local (let) binding.
-    Let(Box<Local<'src>>),
+    Let(Box<Local>),
     /// Expr without trailing semi-colon.
-    Final(Box<Expr<'src>>),
+    Final(Box<Expr>),
     /// Expr with a trailing semi-colon.
-    Expr(Box<Expr<'src>>),
+    Expr(Box<Expr>),
     /// Just a trailing semi-colon.
     Empty,
     // Macro.
@@ -384,20 +379,20 @@ pub enum StmtKind<'src> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Stmt<'src> {
+pub struct Stmt {
     pub span: Span,
-    pub kind: StmtKind<'src>,
+    pub kind: StmtKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Param<'src> {
-    pub ident: Ident<'src>, // TODO upgrade to pattern
-    pub ty: Box<Ty<'src>>,
+pub struct Param {
+    pub ident: Ident, // TODO upgrade to pattern
+    pub ty: Box<Ty>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum FnRetTy<'src> {
+pub enum FnRetTy {
     /// Returns type is not specified.
     ///
     /// Functions default to `()` and pipeline stages/closures
@@ -405,53 +400,53 @@ pub enum FnRetTy<'src> {
     /// Span points to where return type would be inserted.
     Default(Span),
     /// Everything else.
-    Ty(Box<Ty<'src>>),
+    Ty(Box<Ty>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct CallSig<'src> {
+pub struct CallSig {
     pub span: Span,
-    pub inputs: Vec<Param<'src>>,
-    pub output: FnRetTy<'src>,
+    pub inputs: Vec<Param>,
+    pub output: FnRetTy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Fn<'src> {
+pub struct Fn {
     pub span: Span,
-    pub ident: Ident<'src>,
-    pub sig: CallSig<'src>,
-    pub body: Option<Box<Block<'src>>>,
+    pub ident: Ident,
+    pub sig: CallSig,
+    pub body: Option<Box<Block>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct PipeStage<'src> {
+pub struct PipeStage {
     pub span: Span,
-    pub ident: Option<Ident<'src>>,
-    pub sig: Option<CallSig<'src>>,
-    pub body: Box<Block<'src>>,
+    pub ident: Option<Ident>,
+    pub sig: Option<CallSig>,
+    pub body: Box<Block>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Pipe<'src> {
+pub struct Pipe {
     pub span: Span,
-    pub ident: Ident<'src>,
-    pub sig: CallSig<'src>,
-    pub stages: Vec<PipeStage<'src>>, //TODO contract: Option<Box<CallContract<'src>>>
+    pub ident: Ident,
+    pub sig: CallSig,
+    pub stages: Vec<PipeStage>, //TODO contract: Option<Box<CallContract>>
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Mod<'src> {
+pub struct Mod {
     pub span: Span,
-    pub ident: Ident<'src>,
-    pub items: Vec<Item<'src>>,
+    pub ident: Ident,
+    pub items: Vec<Item>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum Item<'src> {
+pub enum Item {
     /// A use declaration item (`use`).
     ///
     /// E.g., `use foo;`, `use foo::bar;` or `use foo::bar as FooBar;`.
-    //TODO Use(UseTree<'src>),
+    //TODO Use(UseTree),
 
     /// A static item (`static`).
     ///
@@ -471,7 +466,7 @@ pub enum Item<'src> {
     /// A pipeline declaration (`pipe`).
     ///
     /// E.g., `pipe foo(bar: usize) -> (res: usize) [ .. ]`.
-    Pipe(Box<Pipe<'src>>),
+    Pipe(Box<Pipe>),
 
     /// A type alias (`type`).
     ///
@@ -511,7 +506,11 @@ pub enum Item<'src> {
     /// A module declaration (`mod`).
     ///
     /// E.g. `mod foo { .. }`.
-    Mod(Mod<'src>),
+    Mod(Box<Mod>),
 }
 
-pub type Ast<'src> = Vec<Mod<'src>>;
+#[derive(Clone, Debug)]
+pub struct Ast {
+    pub span: Span,
+    pub modules: Vec<Box<Mod>>,
+}
