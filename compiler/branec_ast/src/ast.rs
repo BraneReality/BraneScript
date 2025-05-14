@@ -435,7 +435,7 @@ pub struct Pipe {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Mod {
+pub struct Group {
     pub span: Span,
     pub ident: Ident,
     pub items: Vec<Item>,
@@ -503,14 +503,14 @@ pub enum Item {
     /// E.g., `impl<A> Foo<A> { .. }` or `impl<A> Trait for Foo<A> { .. }`.
     //TODO Impl(Box<Impl>),
 
-    /// A module declaration (`mod`).
+    /// A namespace declaration (`group`).
     ///
-    /// E.g. `mod foo { .. }`.
-    Mod(Box<Mod>),
+    /// E.g. `group foo { .. }`.
+    Group(Box<Group>),
 }
 
 #[derive(Clone, Debug)]
 pub struct Ast {
     pub span: Span,
-    pub modules: Vec<Box<Mod>>,
+    pub items: Vec<Item>,
 }
