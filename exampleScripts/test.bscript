@@ -1,4 +1,4 @@
-mod test {
+group test {
     /// DOCUMENTATION (because I totally always remember to write that)
     pipe add_multiple(start: i32, add1: i32, add2: (sub1: i32, sub2: f32)) -> (count: i32) 
     [
@@ -24,12 +24,12 @@ mod test {
 
 
 // Single line annotation for mod
-mod test2 {
+group test2 {
 }
 
 
 
-mod final_test {
+group final_test {
 
 }
 

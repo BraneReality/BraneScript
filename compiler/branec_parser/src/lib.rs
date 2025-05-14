@@ -495,7 +495,7 @@ pub fn ast_builder<'src>()
     );
 
     let mut item_parser = Recursive::declare();
-    let mut mod_parser = Recursive::declare();
+    let mut group_parser = Recursive::declare();
 
     let call_sig = params
         .nested_in(tree_group(Some(Delimiter::Parenthesis)))
@@ -548,37 +548,38 @@ pub fn ast_builder<'src>()
         .labelled("pipeline");
 
     item_parser.define(choice((
-        mod_parser.clone().map(|m| Item::Mod(m)),
+        group_parser.clone().map(|g| Item::Group(g)),
         pipe.map(|pipe| Item::Pipe(pipe)),
     )));
 
-    let mod_sym = Symbol::intern("mod");
+    let group_sym = Symbol::intern("group");
 
-    mod_parser.define(
-        ident(Some(mod_sym))
+    group_parser.define(
+        ident(Some(group_sym))
             .ignore_then(ident(None))
             .then(
                 item_parser
+                    .clone()
                     .repeated()
                     .collect()
                     .nested_in(tree_group(Some(Delimiter::Brace))),
             )
             .map_with(|(ident, items), e| {
-                Box::new(Mod {
+                Box::new(ast::Group {
                     span: e.span(),
                     ident,
                     items,
                 })
             })
-            .labelled("module"),
+            .labelled("group"),
     );
     Parser::boxed(
-        mod_parser
+        item_parser
             .repeated()
             .collect()
-            .map_with(|modules, e| Ast {
+            .map_with(|items, e| Ast {
                 span: e.span(),
-                modules,
+                items,
             })
             .labelled("ast"),
     )

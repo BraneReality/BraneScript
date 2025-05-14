@@ -1,4 +1,4 @@
-mod test {
+group test {
     pipe add_parallel(add1: i32, add2: i32) -> (count: f32) // All functions / pipelines must return structs with named values, this is so visual scripting implementations may have labels for output values. Eventually this could be abstracted so that a single type return could be automatically expanded to (value: T)
     [
         // Every pipeline stage has the format of  [<name>] [<Function signature>] [<repeat conditions>] { <body> }
@@ -34,6 +34,6 @@ mod test {
     ]
 }
 
-mod test2 {
+group test2 {
     
 }
