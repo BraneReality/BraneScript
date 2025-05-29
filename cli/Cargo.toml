@@ -16,3 +16,4 @@ branec_source = {path = "../compiler/branec_source" }
 branec_ast = {path = "../compiler/branec_ast" }
 branec_tokens = {path = "../compiler/branec_tokens" }
 branec_parser = {path = "../compiler/branec_parser" }
+branec_emitter = {path = "../compiler/branec_emitter" }

@@ -5,15 +5,15 @@ group test {
         {
             let value = Shared::new(0i32); 
             if add1 == 0 && add2 == 0 {
-                continue(stage: end, args: (value: value)); // Go to next pipeline stage right away
+                continue(stage: end, args: {value: value}); // Go to next pipeline stage right away
                 // or
-                skip_to(stage: end, args: (value: value)); // like a goto, but can only go forward in the pipeline. Useful for async control flow.
+                skip_to(stage: end, args: {value: value}); // like a goto, but can only go forward in the pipeline. Useful for async control flow.
             }
 
-            let t1 = start(pipe: add, args: (value: value, count: add1)); // create a start command for both add pipelines. These don't get executed right away, as a hard rule no communication happens inside of segments, they're pure functions
-            let t2 = start(pipe: add, args: (value: value, count: add2));
+            let t1 = start(pipe: add, args: {value: value, count: add1}); // create a start command for both add pipelines. These don't get executed right away, as a hard rule no communication happens inside of segments, they're pure functions
+            let t2 = start(pipe: add, args: {value: value, count: add2});
 
-            continue(args: (value: value), deps: [t1, t2]); // Go to the next pipeline stage after deps have been completed, if t1 or t2 returned a value we could pass them as args and the next stage would be able to access their return values, deps is only required to say "we don't care about the returns, so don't make them args".
+            continue(args: {value: value}, deps: [t1, t2]); // Go to the next pipeline stage after deps have been completed, if t1 or t2 returned a value we could pass them as args and the next stage would be able to access their return values, deps is only required to say "we don't care about the returns, so don't make them args".
         }
         end { // "end" is the stage label
             break(value: count);

@@ -1,4 +1,4 @@
-pub use super::tokens::LiteralKind;
+pub use super::tokens::Lit;
 use super::{Token, tokens::TokenKind};
 use branec_source::{Span, Uri};
 use branec_symbols::Symbol;
@@ -93,14 +93,31 @@ pub struct Punct {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Literal {
     pub span: Span,
-    pub kind: LiteralKind,
+    pub lit: Lit,
 }
 
 use std::{
-    fmt::{self},
+    fmt::{self, Display},
     ops::Range,
     sync::Arc,
 };
+
+impl Display for TokenTree {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            TokenTree::Group(group) => write!(f, "{}", group.delim.as_str()),
+            TokenTree::Ident(ident) => write!(f, "{}", ident.sym.as_str()),
+            TokenTree::Punct(punct) => write!(f, "{}", punct.ch),
+            TokenTree::Literal(literal) => write!(f, "{}", literal),
+        }
+    }
+}
+
+impl Display for Literal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.lit)
+    }
+}
 
 impl Group {
     fn fmt(&self, f: &mut impl fmt::Write, indent: usize, last: bool, source: &str) -> fmt::Result {
@@ -168,7 +185,7 @@ impl Literal {
             self.span.start(),
             prefix,
             &source[self.span.range.clone()],
-            self.kind
+            self.lit
         )
     }
 }
@@ -340,10 +357,9 @@ where
         })
         .labelled("punct token");
 
-    let literal =
-        select_ref! { Token {kind: TokenKind::Literal(kind), span } => (*kind, span.clone()) }
-            .map(|(kind, span)| Literal { span, kind })
-            .labelled("literal token");
+    let literal = select_ref! { Token {kind: TokenKind::Lit(lit), span } => (*lit, span.clone()) }
+        .map(|(lit, span)| Literal { span, lit })
+        .labelled("literal token");
 
     tree.define(choice((
         group.map(|group| TokenTree::Group(group)),

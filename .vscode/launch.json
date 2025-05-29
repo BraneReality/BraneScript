@@ -6,27 +6,27 @@
             "request": "launch",
             "name": "Cli-Debug",
             "preLaunchTask": "cargo-build-debug",
-            "program": "${workspaceFolder}/target/debug/brane_script_cli",
+            "program": "${workspaceFolder}/target/debug/branec_cli",
             "sourceLanguages": [
                 "rust"
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}/brane_script_cli",
+            "cwd": "${workspaceFolder}/cli",
             "args": [
                 "${workspaceFolder}/exampleScripts/test.bscript"
             ]
         },
         {
-            "type": "gdb",
+            "type": "codelldb",
             "request": "launch",
             "name": "Cli-Release",
             "expressions": "native",
             "program": "cargo",
-            "console": "integratedTerminal",
+            "console": "internalConsole",
             "sourceLanguages": [
                 "rust"
             ],
-            "cwd": "${workspaceFolder}/brane_script_cli",
+            "cwd": "${workspaceFolder}/cli",
             "args": [
                 "run",
                 "--release",

@@ -154,7 +154,7 @@ pub fn ast_builder<'src>()
 
     let path = ident(None)
         .map(|ident| PathSegment { ident })
-        .separated_by(punct2("::"))
+        .separated_by(punct2("::").labelled("path"))
         .at_least(1)
         .collect()
         .map_with(|segments, e| Path {
@@ -194,9 +194,7 @@ pub fn ast_builder<'src>()
         });
     let params = param.separated_by(punct(',')).allow_trailing().collect();
 
-    let struct_ty = params
-        .clone()
-        .nested_in(tree_group(Some(Delimiter::Parenthesis)));
+    let struct_ty = params.clone().nested_in(tree_group(Some(Delimiter::Brace)));
 
     let self_t_sym = Symbol::intern("Self");
     ty.define(
@@ -206,33 +204,82 @@ pub fn ast_builder<'src>()
             path.clone().map(|path| TyKind::Path(path)),
             punct('&')
                 .ignore_then(mut_ty.clone())
-                .map(|ty| TyKind::Ref(ty))
-                .labelled("ref type"),
+                .map(|ty| TyKind::Ref(ty)),
             punct('*')
                 .ignore_then(mut_ty.clone())
-                .map(|ty| TyKind::Ptr(ty))
-                .labelled("pointer type"),
+                .map(|ty| TyKind::Ptr(ty)),
         ))
         .map_with(|kind, e| {
             Box::new(Ty {
                 kind,
                 span: e.span(),
             })
-        }),
+        })
+        .labelled("type"),
     );
 
-    let lit_expr = any_ref()
-        .labelled("literal")
-        .try_map(move |tree: &TokenTree, span| {
-            if let TokenTree::Literal(lit) = tree {
-                return Ok(lit);
+    let lit_expr = any_ref().labelled("literal").try_map(
+        move |tree: &TokenTree, span: Span| -> Result<ast::LitKind, Rich<'src, TokenTree, Span>> {
+            if let TokenTree::Literal(branec_tokens::tree::Literal { lit, span }) = tree {
+                let sym = lit.symbol.as_str();
+                return match lit.kind {
+                    branec_tokens::LitKind::Bool => Ok(ast::LitKind::Bool(match sym {
+                        "true" => true,
+                        "false" => false,
+                        _ => unreachable!("Non true/false bool literal symbol"),
+                    })),
+                    branec_tokens::LitKind::Char => {
+                        if sym.len() != 1 {
+                            unreachable!("Symbol for char was multiple characters?");
+                        }
+                        Ok(ast::LitKind::Char(sym.chars().nth(0).unwrap()))
+                    }
+                    branec_tokens::LitKind::Int => match sym.parse() {
+                        Ok(value) => match lit.suffix {
+                            Some(suffix) => {
+                                let int_ty = match suffix.as_str() {
+                                    "i32" => ast::LitIntType::Signed(ast::IntTy::I32),
+                                    "i64" => ast::LitIntType::Signed(ast::IntTy::I64),
+                                    "isize" => ast::LitIntType::Signed(ast::IntTy::Isize),
+                                    "u32" => ast::LitIntType::Unsigned(ast::UintTy::U32),
+                                    "u64" => ast::LitIntType::Unsigned(ast::UintTy::U64),
+                                    "usize" => ast::LitIntType::Unsigned(ast::UintTy::Usize),
+                                    _ => unreachable!(),
+                                };
+                                Ok(ast::LitKind::Int(value, int_ty))
+                            }
+                            None => Ok(ast::LitKind::Int(value, ast::LitIntType::Unsuffixed)),
+                        },
+                        Err(_) => Err(LabelError::<'src, &'src Group, _>::expected_found(
+                            ["number"],
+                            Some(Maybe::Ref(tree)),
+                            span.clone(),
+                        )),
+                    },
+                    branec_tokens::LitKind::Float => match lit.suffix {
+                        None => Ok(ast::LitKind::Float(
+                            lit.symbol,
+                            ast::LitFloatType::Unsuffixed,
+                        )),
+                        Some(suffix) => {
+                            let float_ty = match suffix.as_str() {
+                                "f32" => ast::LitFloatType::Suffixed(ast::FloatTy::F32),
+                                "f64" => ast::LitFloatType::Suffixed(ast::FloatTy::F64),
+                                _ => unreachable!(),
+                            };
+                            Ok(ast::LitKind::Float(lit.symbol, float_ty))
+                        }
+                    },
+                    branec_tokens::LitKind::Str => Ok(ast::LitKind::Str(lit.symbol)),
+                };
             }
             Err(LabelError::<'src, &'src Group, _>::expected_found(
                 ["literal"],
                 Some(Maybe::Ref(tree)),
                 span,
             ))
-        });
+        },
+    );
 
     let field_expr = ident(None)
         .then_ignore(punct(':'))
@@ -243,25 +290,26 @@ pub fn ast_builder<'src>()
             expr,
         });
 
-    let fields_expr = field_expr
-        .separated_by(punct(','))
-        .collect()
-        .nested_in(tree_group(Some(Delimiter::Parenthesis)));
+    let fields_expr = field_expr.separated_by(punct(',')).collect();
 
-    let struct_expr =
-        path.clone()
-            .or_not()
-            .then(fields_expr.clone())
-            .map_with(|(path, fields), e| {
-                Box::new(StructExpr {
-                    span: e.span(),
-                    path,
-                    fields,
-                })
-            });
+    let struct_expr = path
+        .clone()
+        .or_not()
+        .then(
+            fields_expr
+                .clone()
+                .nested_in(tree_group(Some(Delimiter::Brace))),
+        )
+        .map_with(|(path, fields), e| {
+            Box::new(StructExpr {
+                span: e.span(),
+                path,
+                fields,
+            })
+        });
 
     let atom = choice((
-        lit_expr.clone().map(|literal| ExprKind::Lit(literal.kind)),
+        lit_expr.clone().map(|lit_kind| ExprKind::Lit(lit_kind)),
         path.clone().map(|path| ExprKind::Path(None, path)),
         block.clone().map(|block| ExprKind::Block(block)),
         struct_expr.map(|expr| ExprKind::Struct(expr)),
@@ -279,12 +327,17 @@ pub fn ast_builder<'src>()
     // Method calls
     // fields
 
-    let call = atom.foldl_with(fields_expr.repeated(), |expr, fields, e| {
-        Box::new(Expr {
-            kind: ExprKind::Call(expr, fields),
-            span: e.span(),
-        })
-    });
+    let call = atom.foldl_with(
+        fields_expr
+            .nested_in(tree_group(Some(Delimiter::Parenthesis)))
+            .repeated(),
+        |expr, fields, e| {
+            Box::new(Expr {
+                kind: ExprKind::Call(expr, fields),
+                span: e.span(),
+            })
+        },
+    );
 
     // array indexing
     // ?
@@ -293,6 +346,7 @@ pub fn ast_builder<'src>()
         punct('*').to(UnOpKind::Deref),
         punct('!').to(UnOpKind::Not),
     ))
+    .labelled("operator")
     .map_with(|op, e| (e.span(), op));
 
     let un_op = op.repeated().foldr_with(call.clone(), |op, expr, e| {
@@ -308,6 +362,7 @@ pub fn ast_builder<'src>()
         punct('/').to(BinOpKind::Div),
         punct('%').to(BinOpKind::Rem),
     ))
+    .labelled("operator")
     .map_with(|op, e| (e.span(), op));
 
     let product = un_op
@@ -324,6 +379,7 @@ pub fn ast_builder<'src>()
         .boxed();
 
     let ops = choice((punct('+').to(BinOpKind::Add), punct('-').to(BinOpKind::Sub)))
+        .labelled("operator")
         .map_with(|op, e| (e.span(), op));
 
     let sum = product.clone().foldl_with(
@@ -340,6 +396,7 @@ pub fn ast_builder<'src>()
         punct2("<<").to(BinOpKind::Shl),
         punct2(">>").to(BinOpKind::Shl),
     ))
+    .labelled("operator")
     .map_with(|op, e| (e.span(), op));
 
     let shift = sum
@@ -355,6 +412,7 @@ pub fn ast_builder<'src>()
         .clone()
         .foldl_with(
             punct('&')
+                .labelled("operator")
                 .to(BinOpKind::BitAnd)
                 .map_with(|op, e| (e.span(), op))
                 .then(shift.clone())
@@ -370,6 +428,7 @@ pub fn ast_builder<'src>()
 
     let bit_xor = bit_and.clone().foldl_with(
         punct('^')
+            .labelled("operator")
             .to(BinOpKind::BitXor)
             .map_with(|op, e| (e.span(), op))
             .then(bit_and.clone())
@@ -384,6 +443,7 @@ pub fn ast_builder<'src>()
 
     let bit_or = bit_xor.clone().foldl_with(
         punct('|')
+            .labelled("operator")
             .to(BinOpKind::BitOr)
             .map_with(|op, e| (e.span(), op))
             .then(bit_and.clone())
@@ -404,6 +464,7 @@ pub fn ast_builder<'src>()
         punct2("<=").to(BinOpKind::Gt),
         punct2(">=").to(BinOpKind::Gt),
     ))
+    .labelled("operator")
     .map_with(|op, e| (e.span(), op));
 
     let cmp = bit_or
@@ -421,6 +482,7 @@ pub fn ast_builder<'src>()
 
     let logic_and = cmp.clone().foldl_with(
         punct('|')
+            .labelled("operator")
             .to(BinOpKind::And)
             .map_with(|op, e| (e.span(), op))
             .then(cmp.clone())
@@ -435,6 +497,7 @@ pub fn ast_builder<'src>()
 
     let logic_or = logic_and.clone().foldl_with(
         punct('|')
+            .labelled("operator")
             .to(BinOpKind::Or)
             .map_with(|op, e| (e.span(), op))
             .then(logic_and.clone())

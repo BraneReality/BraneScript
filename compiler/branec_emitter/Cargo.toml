@@ -4,5 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+branec_source = { path = "../branec_source/"}
+
 annotate-snippets = "0.11.5"
 anstream = "0.6.18"
+anyhow.workspace = true

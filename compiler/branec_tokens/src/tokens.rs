@@ -11,12 +11,19 @@ pub struct Token {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum LiteralKind {
-    String(Symbol),
-    Int(i64),
-    Float(f64),
-    True,
-    False,
+pub enum LitKind {
+    Bool,
+    Char,
+    Int,
+    Float,
+    Str,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Lit {
+    pub kind: LitKind,
+    pub symbol: Symbol,
+    pub suffix: Option<Symbol>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -30,7 +37,7 @@ pub enum TokenKind {
     /// text-based identifiers
     Ident(Symbol),
     /// Literal constants
-    Literal(LiteralKind),
+    Lit(Lit),
     /// `(`
     OpenParen,
     /// `)`
@@ -151,14 +158,11 @@ impl fmt::Display for Token {
     }
 }
 
-impl fmt::Display for LiteralKind {
+impl fmt::Display for Lit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LiteralKind::String(sym) => write!(f, "\"{}\"", sym.as_str()),
-            LiteralKind::Int(i) => write!(f, "{}", i),
-            LiteralKind::Float(fl) => write!(f, "{}", fl),
-            LiteralKind::True => write!(f, "true"),
-            LiteralKind::False => write!(f, "false"),
+        match self.suffix {
+            Some(suffix) => write!(f, "{}{}", self.symbol.as_str(), suffix.as_str()),
+            None => write!(f, "{}", self.symbol.as_str()),
         }
     }
 }
@@ -170,7 +174,7 @@ impl fmt::Display for TokenKind {
             TokenKind::BlockComment => write!(f, "/*comment*/"),
             TokenKind::Whitespace => write!(f, " "),
             TokenKind::Ident(sym) => write!(f, "{}", sym.as_str()),
-            TokenKind::Literal(lit) => write!(f, "{}", lit),
+            TokenKind::Lit(lit) => write!(f, "{}", lit),
             TokenKind::OpenParen => write!(f, "("),
             TokenKind::CloseParen => write!(f, ")"),
             TokenKind::OpenBrace => write!(f, "{{"),

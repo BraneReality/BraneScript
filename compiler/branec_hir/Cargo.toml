@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 branec_source = { path = "../branec_source/" }
+branec_ast = { path = "../branec_ast/" }
+branec_symbols = { path = "../branec_symbols/" }
