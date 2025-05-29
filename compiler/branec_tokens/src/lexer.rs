@@ -2,7 +2,36 @@ use branec_source::Span;
 use branec_symbols::Symbol;
 
 use super::tokens::*;
-use chumsky::{input::MappedSpan, prelude::*};
+use chumsky::{input::MappedSpan, label::LabelError, prelude::*, text::TextExpected};
+
+macro_rules! escapable_char {
+    ($delim:literal) => {
+        choice((just('\\').ignore_then(any()), none_of($delim)))
+    };
+}
+macro_rules! keyword {
+    ($keyword:literal) => {
+        text::ascii::ident()
+            .try_map(|s, span| -> Result<(), Rich<'src, char, Span>> {
+                if s == $keyword {
+                    Ok(())
+                } else {
+                    Err(<Rich<'src, char, Span> as LabelError<
+                        'src,
+                        MappedSpan<Span, &'src str, M>,
+                        _,
+                    >>::expected_found(
+                        [TextExpected::<MappedSpan<Span, &'src str, M>>::Identifier(
+                            $keyword,
+                        )],
+                        None,
+                        span,
+                    ))
+                }
+            })
+            .to_slice()
+    };
+}
 
 pub fn lexer<'src, M>() -> impl Parser<
     'src,
@@ -26,25 +55,100 @@ where
 
     let ident = text::ascii::ident().map(|str| TokenKind::Ident(Symbol::intern(str)));
 
-    let int = text::int(10)
+    let bool = text::ascii::ident()
         .to_slice()
-        .from_str()
-        .unwrapped()
-        .map(|int: i64| LiteralKind::Int(int));
+        .try_map(move |s: &str, span| match s {
+            "true" => Ok("true"),
+            "false" => Ok("false"),
+            _ => Err(<Rich<'src, char, Span> as LabelError<
+                'src,
+                MappedSpan<Span, &'src str, M>,
+                _,
+            >>::expected_found(
+                [
+                    TextExpected::<MappedSpan<Span, &'src str, M>>::Identifier("true"),
+                    TextExpected::<MappedSpan<Span, &'src str, M>>::Identifier("false"),
+                ],
+                Option::None,
+                span,
+            )),
+        })
+        .map(|keyword| Lit {
+            kind: LitKind::Bool,
+            symbol: Symbol::intern(keyword),
+            suffix: None,
+        });
+    /*let keyword_test =
+    text::ascii::ident().try_map(|s, span| -> Result<(), Rich<'src, char, Span>> {
+        if s == "text" {
+            Ok(())
+        } else {
+            Err(Rich::<'src, char, Span>::expected_found(
+                [TextExpected::Identifier("test")],
+                Some(chumsky::util::Maybe::Ref(&s)),
+                span,
+            ))
+        }
+    });*/
 
-    let float = text::int(10)
-        .then(just('.').then(text::digits(10)).or_not())
+    let float_suffix = choice((keyword!("f32"), keyword!("f64")))
         .to_slice()
-        .from_str()
-        .unwrapped()
-        .map(|f: f64| LiteralKind::Float(f));
+        .map(|suffix: &str| (suffix, LitKind::Float));
+    let int_suffix = choice((
+        keyword!("i32"),
+        keyword!("i64"),
+        keyword!("u32"),
+        keyword!("u64"),
+        keyword!("isize"),
+        keyword!("usize"),
+    ))
+    .to_slice()
+    .map(|suffix: &str| (suffix, LitKind::Int));
+
+    let number = choice((
+        text::int(10)
+            .then(just('.').then(text::digits(10)))
+            .to_slice()
+            .then(
+                float_suffix
+                    .clone()
+                    .or_not()
+                    .map(|suffix| (suffix.map(|s| s.0), LitKind::Float)),
+            ),
+        text::int(10)
+            .to_slice()
+            .then(int_suffix.or(float_suffix).or_not().map(|suffix| {
+                (
+                    suffix.map(|s| s.0),
+                    suffix.map(|s| s.1).unwrap_or(LitKind::Int),
+                )
+            })),
+    ))
+    .map(|(number, (suffix, kind))| Lit {
+        kind,
+        symbol: Symbol::intern(number),
+        suffix: suffix.map(|s| Symbol::intern(s)),
+    });
+
+    let char = escapable_char!('\'')
+        .to_slice()
+        .delimited_by(just('\''), just('\''))
+        .map(|keyword| Lit {
+            kind: LitKind::Char,
+            symbol: Symbol::intern(keyword),
+            suffix: None,
+        });
 
     let string = just('"')
-        .ignore_then(none_of('"').repeated().to_slice())
+        .ignore_then(escapable_char!('"').repeated().to_slice())
         .then_ignore(just('"'))
-        .map(|str| LiteralKind::String(Symbol::intern(str)));
+        .map(|str| Lit {
+            kind: LitKind::Str,
+            symbol: Symbol::intern(str),
+            suffix: None,
+        });
 
-    let literal = choice((int, float, string)).map(TokenKind::Literal);
+    let literal = choice((char, string, number, bool)).map(|lit| TokenKind::Lit(lit));
 
     let sym = choice((
         just(';').to(TokenKind::Semi),

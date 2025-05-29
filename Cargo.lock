@@ -164,6 +164,7 @@ dependencies = [
  "brane_core",
  "branec",
  "branec_ast",
+ "branec_emitter",
  "branec_parser",
  "branec_source",
  "branec_tokens",
@@ -177,13 +178,17 @@ version = "0.1.0"
 dependencies = [
  "annotate-snippets",
  "anstream",
+ "anyhow",
+ "branec_source",
 ]
 
 [[package]]
 name = "branec_hir"
 version = "0.1.0"
 dependencies = [
+ "branec_ast",
  "branec_source",
+ "branec_symbols",
 ]
 
 [[package]]

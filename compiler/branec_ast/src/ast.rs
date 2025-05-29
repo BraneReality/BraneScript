@@ -1,7 +1,56 @@
-use branec_tokens::LiteralKind;
+pub use branec_source::Span;
+use branec_symbols::Symbol;
 pub use branec_tokens::tree::Ident;
 
-use branec_source::Span;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FloatTy {
+    F16,
+    F32,
+    F64,
+    F128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IntTy {
+    Isize,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UintTy {
+    Usize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LitIntType {
+    Signed(IntTy),
+    Unsigned(UintTy),
+    Unsuffixed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LitFloatType {
+    Suffixed(FloatTy),
+    Unsuffixed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LitKind {
+    Str(Symbol),
+    Char(char),
+    Int(i128, LitIntType),
+    Float(Symbol, LitFloatType),
+    Bool(bool),
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Path {
@@ -185,7 +234,7 @@ pub enum ExprKind {
     Unary(UnOp, Box<Expr>),
 
     /// A literal (e.g., `1`, `"foo"`).
-    Lit(LiteralKind),
+    Lit(LitKind),
 
     /// A cast (e.g., `foo as f64`).
     Cast(Box<Expr>, Box<Ty>),
@@ -513,4 +562,407 @@ pub enum Item {
 pub struct Ast {
     pub span: Span,
     pub items: Vec<Item>,
+}
+
+use std::fmt::{self, Display, Formatter};
+
+impl Display for FloatTy {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Display for IntTy {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Display for UintTy {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Display for LitIntType {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Signed(t) => write!(f, "{}", t),
+            Self::Unsigned(t) => write!(f, "{}", t),
+            Self::Unsuffixed => write!(f, "unsuffixed"),
+        }
+    }
+}
+
+impl Display for LitFloatType {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Suffixed(t) => write!(f, "{}", t),
+            Self::Unsuffixed => write!(f, "unsuffixed"),
+        }
+    }
+}
+
+impl Display for LitKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Str(s) => write!(f, "\"{}\"", s),
+            Self::Char(c) => write!(f, "'{}'", c),
+            Self::Int(i, ty) => write!(f, "{}_{}", i, ty),
+            Self::Float(s, ty) => write!(f, "{}_{}", s, ty),
+            Self::Bool(b) => write!(f, "{}", b),
+        }
+    }
+}
+
+impl Display for Path {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let segments = self
+            .segments
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        write!(f, "{}", segments)
+    }
+}
+
+impl Display for PathSegment {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.ident.sym)
+    }
+}
+
+impl Display for QSelf {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if let Some(trait_path) = &self.as_trait {
+            write!(f, "<{} as {}>", self.ty, trait_path)
+        } else {
+            write!(f, "<{}>", self.ty)
+        }
+    }
+}
+
+impl Display for TyKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Ptr(mt) => write!(f, "*{}", mt),
+            Self::Ref(mt) => write!(f, "&{}", mt),
+            Self::Struct(params) => {
+                let fields = params
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "struct {{ {} }}", fields)
+            }
+            Self::Path(p) => write!(f, "{}", p),
+            Self::ImplicitSelf => write!(f, "self"),
+        }
+    }
+}
+
+impl Display for Ty {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl Display for BorrowKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Display for Mutability {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Not => write!(f, ""),
+            Self::Mut => write!(f, "mut "),
+        }
+    }
+}
+
+impl Display for MutTy {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}{}", self.mutability, self.ty)
+    }
+}
+
+impl Display for UnOpKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let sym = match self {
+            Self::Deref => "*",
+            Self::Not => "!",
+            Self::Neg => "-",
+        };
+        write!(f, "{}", sym)
+    }
+}
+
+impl Display for BinOpKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let sym = match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Rem => "%",
+            Self::And => "&&",
+            Self::Or => "||",
+            Self::BitXor => "^",
+            Self::BitAnd => "&",
+            Self::BitOr => "|",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
+            Self::Eq => "==",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Ne => "!=",
+            Self::Ge => ">=",
+            Self::Gt => ">",
+        };
+        write!(f, "{}", sym)
+    }
+}
+
+impl Display for AssignOpKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let sym = match self {
+            Self::AddAssign => "+=",
+            Self::SubAssign => "-=",
+            Self::MulAssign => "*=",
+            Self::DivAssign => "/=",
+            Self::RemAssign => "%=",
+            Self::BitXorAssign => "^=",
+            Self::BitAndAssign => "&=",
+            Self::BitOrAssign => "|=",
+            Self::ShlAssign => "<<=",
+            Self::ShrAssign => ">>=",
+        };
+        write!(f, "{}", sym)
+    }
+}
+
+impl std::fmt::Display for CallSig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "(")?;
+        for (i, input) in self.inputs.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{input}")?;
+        }
+        write!(f, ")")?;
+        if let FnRetTy::Ty(ty) = &self.output {
+            write!(f, " -> {ty}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for PipeStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(ident) = &self.ident {
+            write!(f, "{} ", ident.sym)?;
+        }
+        if let Some(sig) = &self.sig {
+            write!(f, "{} ", sig)?;
+        }
+        write!(f, "{{{}}}", self.body)
+    }
+}
+
+impl std::fmt::Display for Pipe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "pipe {}{}", self.ident.sym, self.sig)?;
+        for stage in &self.stages {
+            writeln!(f, "  {stage}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Group {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "group {}", self.ident.sym)?;
+        for item in &self.items {
+            writeln!(f, "  {item}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for ExprKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Call(func, args) => {
+                let args = args
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "call {}({})", func, args)
+            }
+            Self::MethodCall(call) => write!(f, "{}", call),
+            Self::Binary((_, op), lhs, rhs) => write!(f, "(l={} op={} r={})", lhs, op, rhs),
+            Self::Unary((_, op), expr) => write!(f, "(op={} expr={})", op, expr),
+            Self::Lit(lit) => write!(f, "{}", lit),
+            Self::Cast(expr, ty) => write!(f, "({} as {})", expr, ty),
+            Self::Let(ident, expr, _) => write!(f, "let {} = {}", ident.sym, expr),
+            Self::If(cond, then, else_) => {
+                if let Some(else_expr) = else_ {
+                    write!(f, "if {} {} else {}", cond, then, else_expr)
+                } else {
+                    write!(f, "if {} {}", cond, then)
+                }
+            }
+            Self::While(cond, body) => write!(f, "while {} {}", cond, body),
+            Self::Block(block) => write!(f, "{}", block),
+            Self::Use(expr, _) => write!(f, "{}.use", expr),
+            Self::Assign(lhs, rhs, _) => write!(f, "{} = {}", lhs, rhs),
+            Self::AssignOp((_, op), lhs, rhs) => write!(f, "{} {} {}", lhs, op, rhs),
+            Self::Field(expr, ident) => write!(f, "{}.{}", expr, ident.sym),
+            Self::Path(Some(qself), path) => write!(f, "<{}>::{}", qself, path),
+            Self::Path(None, path) => write!(f, "{}", path),
+            Self::AddrOf(borrow, mutability, expr) => {
+                write!(f, "&{}{}{}", borrow, mutability, expr)
+            }
+            Self::Ret(Some(expr)) => write!(f, "return {}", expr),
+            Self::Ret(None) => write!(f, "return"),
+            Self::Struct(se) => write!(f, "{}", se),
+            Self::Paren(expr) => write!(f, "({})", expr),
+        }
+    }
+}
+
+impl Display for FieldExpr {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.ident.sym, self.expr)
+    }
+}
+
+impl Display for StructExpr {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let path = self.path.as_ref().map_or("".to_string(), |p| p.to_string());
+        let fields = self
+            .fields
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{} {{ {} }}", path, fields)
+    }
+}
+
+impl Display for MethodCall {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let args = self
+            .args
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{}.{}({})", self.receiver, self.seg, args)
+    }
+}
+
+impl Display for Expr {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl Display for Block {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let stmts = self
+            .stmts
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("expr{} = {}", i, s))
+            .collect::<Vec<_>>()
+            .join(" ");
+        write!(f, "{{ {} }}", stmts)
+    }
+}
+
+impl Display for Local {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "let {}: {}", self.ident.sym, self.ty)?;
+        match &self.kind {
+            LocalKind::Init(expr) => {
+                write!(f, " = {}", expr)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Display for LocalKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Init(expr) => write!(f, "= {}", expr),
+        }
+    }
+}
+
+impl Display for StmtKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Let(local) => write!(f, "{}", local),
+            Self::Final(expr) => write!(f, "{}", expr),
+            Self::Expr(expr) => write!(f, "{};", expr),
+            Self::Empty => write!(f, ";"),
+        }
+    }
+}
+
+impl Display for Stmt {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl Display for Param {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}: {}", self.ident.sym, self.ty)
+    }
+}
+
+impl Display for FnRetTy {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Self::Default(_) => write!(f, "-> ()"),
+            Self::Ty(ty) => write!(f, "-> {}", ty),
+        }
+    }
+}
+
+impl Display for Fn {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "fn {} {} ", self.ident.sym, self.sig)?;
+        if let Some(body) = &self.body {
+            write!(f, "{}", body)
+        } else {
+            write!(f, ";")
+        }
+    }
+}
+
+impl std::fmt::Display for Ast {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for item in &self.items {
+            writeln!(f, "{item}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Item {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Item::Pipe(pipe) => write!(f, "{}", pipe),
+            Item::Group(group) => write!(f, "{}", group),
+        }
+    }
 }

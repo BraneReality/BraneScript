@@ -1,7 +1,7 @@
-use ariadne::{Color, Label, Report, ReportKind, Source};
 use branec_source::{SourceManager, Span, Uri};
 use branec_tokens::{self, tree::TokenTree, TokenInput};
 //use brane_script_runtime::backend::llvm::LLVMJitBackend;
+use branec_emitter::{ConsoleEmiter, Diagnostic, DiagnosticBuilder, DiagnosticEmitter, Level};
 use chumsky::{error::Rich, input::Input, Parser};
 use std::{ops::Deref, sync::Arc};
 
@@ -14,21 +14,18 @@ struct Cli {
 
 pub fn report_rich_error<T: std::fmt::Display>(
     error: &Rich<T, Span>,
-    src: &str,
-    filename: &str,
-    get_span: Option<fn(&T) -> Span>,
+    sources: &SourceManager,
+    emitter: &impl DiagnosticEmitter,
+    get_span: fn(&T) -> Span,
 ) {
-    let mut span = error.span().clone();
-
     // Build the top-level message
+    let mut span = error.span().clone();
     let message = match error.reason() {
         chumsky::error::RichReason::ExpectedFound { expected, found } => {
             let expected: Vec<_> = expected.iter().map(|e| format!("'{}'", e)).collect();
             let found = match found.as_ref() {
                 Some(found) => {
-                    if let Some(get_span) = get_span {
-                        span = get_span(found);
-                    }
+                    span = get_span(found);
                     format!("'{}'", found.deref())
                 }
                 None => "nothing".into(),
@@ -37,30 +34,17 @@ pub fn report_rich_error<T: std::fmt::Display>(
             if expected.is_empty() {
                 format!("Unexpected {found}")
             } else {
-                format!("Expected {}, found {found}", expected.join(", "))
+                let expected = expected.join(", ");
+                format!("Unexpected {found}, was expecting: {}", expected)
             }
         }
         chumsky::error::RichReason::Custom(msg) => msg.clone(),
     };
 
-    // Build the Ariadne report
-    let mut report = Report::build(ReportKind::Error, span.range.clone())
-        .with_note(format!("from source {}", filename))
-        .with_message(message)
-        .with_label(
-            Label::new(span.range)
-                .with_message("error occurred here")
-                .with_color(Color::Red),
-        );
-
-    // Optional: Add notes for each expected token (could be redundant with above)
-    if let chumsky::error::RichReason::ExpectedFound { expected, found: _ } = error.reason() {
-        for expected_token in expected {
-            report = report.with_note(format!("Expected: '{}'", expected_token));
-        }
-    }
-
-    report.finish().print(Source::from(src)).unwrap();
+    DiagnosticBuilder::new(&message, Level::Error, sources)
+        .err_at(span, "unexpected")
+        .emit(emitter)
+        .unwrap();
 }
 
 fn main() -> anyhow::Result<()> {
@@ -73,7 +57,7 @@ fn main() -> anyhow::Result<()> {
         .map(|source| sm.load_from_file(source))
         .collect::<Result<Vec<Uri>, _>>()?;
 
-    //let emitter = Arc::new(ConsoleEmiter::new());
+    let emitter = Arc::new(ConsoleEmiter::new());
 
     for source in sources.iter() {
         let text = sm.get(source)?;
@@ -105,8 +89,8 @@ fn main() -> anyhow::Result<()> {
         if tree.is_none() {
             println!("tree building errors:");
             for e in errs {
-                report_rich_error(&e, text, &source.to_string(), Some(|t| t.span.clone()));
-                println!("{:#?}", e);
+                report_rich_error(&e, &sm, &*emitter, |t| t.span.clone());
+                //println!("{:#?}", e);
             }
             return Ok(());
         }
@@ -125,13 +109,14 @@ fn main() -> anyhow::Result<()> {
         if ast.is_none() {
             println!("ast building errors:");
             for e in errs {
-                println!("{:#?}", e);
+                report_rich_error(&e, &sm, &*emitter, |t| t.span().clone());
+                //println!("{:#?}", e);
             }
             return Ok(());
         }
         let ast = ast.unwrap();
         println!("built ast");
-        println!("{:#?}", ast);
+        println!("{}", ast);
 
         //let hir_arena = HirArena::new();
         //let hir = ast::lowering::LoweringContext::lower(&ast, &hir_arena, emitter.clone())?;

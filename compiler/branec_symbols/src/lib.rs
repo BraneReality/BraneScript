@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::RwLock};
+use std::{
+    collections::HashMap,
+    fmt::{self, Display, Formatter},
+    sync::RwLock,
+};
 
 struct Symbols {
     pub symbol_to_id: HashMap<&'static str, usize>,
@@ -20,7 +24,7 @@ pub struct Symbol {
 }
 
 impl Symbol {
-    pub fn intern(text: &str) -> Symbol {
+    pub fn intern<'src>(text: &'src str) -> Symbol {
         {
             let symbols = SYMBOLS.read().expect("symbol interner failed to init");
             if let Some(symbol) = symbols.symbol_to_id.get(text) {
@@ -46,3 +50,8 @@ impl Symbol {
     }
 }
 
+impl std::fmt::Display for Symbol {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
