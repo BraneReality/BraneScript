@@ -5,10 +5,12 @@ edition = "2021"
 
 [dependencies]
 brane_core = {path = "../../runtime/brane_core"}
+branec_hir = {path = "../branec_hir"}
 typed-arena = "2.0.2"
 anstream = "0.6.18"
 ouroboros = "0.18.5"
 
 anyhow.workspace = true
 scopeguard = "1.2.0"
+salsa = "0.22.0"
 
