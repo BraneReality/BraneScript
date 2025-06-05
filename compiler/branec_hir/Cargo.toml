@@ -7,3 +7,4 @@ edition = "2024"
 branec_source = { path = "../branec_source/" }
 branec_ast = { path = "../branec_ast/" }
 branec_symbols = { path = "../branec_symbols/" }
+salsa = "0.22.0"
