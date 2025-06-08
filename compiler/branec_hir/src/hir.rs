@@ -1,91 +1,114 @@
-use std::collections::HashMap;
-
-pub type GraphId = usize;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ItemId {
-    pub id: usize,
-}
+use std::{collections::HashMap, hash::Hash};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DefId {
     /// Runtime id for a brane
     pub graph: GraphId,
     /// Id of a defintion within a brane
-    pub id: ItemId,
+    pub item: ItemId,
 }
 
-/// This is one unit of code, that can be serialized in to a file.
-pub struct Graph {
+pub struct Project {
+    pub graphs: HashMap<GraphId, Graph>,
     id_count: usize,
-    /// Map runtime ids to vector indices to allow for reordering without breaking references
-    ids: HashMap<ItemId, usize>,
-    /// Items defined in this brane
-    items: Vec<Item>,
 }
 
-#[salsa::input]
+impl Project {
+    pub fn new() -> Self {
+        Self {
+            graphs: HashMap::new(),
+            id_count: 1usize,
+        }
+    }
+
+    pub fn new_graph(&mut self) -> GraphId {
+        let id = self.id_count;
+        self.id_count += 1;
+
+        let graph = Graph::default();
+
+        self.graphs.insert(id, graph);
+        id
+    }
+
+    pub fn graph(&self, id: GraphId) -> Option<&Graph> {
+        self.graphs.get(&id)
+    }
+
+    pub fn graph_mut(&mut self, id: GraphId) -> Option<&mut Graph> {
+        self.graphs.get_mut(&id)
+    }
+
+    pub fn get_item(&self, id: DefId) -> Option<&Item> {
+        self.graph(id.graph)
+            .map(|graph| graph.item(id.item))
+            .flatten()
+    }
+
+    pub fn get_item_mut(&mut self, id: DefId) -> Option<&mut Item> {
+        self.graph_mut(id.graph)
+            .map(|graph| graph.item_mut(id.item))
+            .flatten()
+    }
+}
+
 pub struct Pipe {
     pub id: ItemId,
     pub sig: BlockSig,
 }
 
-#[salsa::input]
 pub struct Fn {
     pub id: ItemId,
+    pub ident: String,
     pub sig: BlockSig,
+    pub body: BlockId,
 }
 
-#[salsa::input]
 pub struct Extern {
     pub id: ItemId,
     pub sig: BlockSig,
 }
 
-#[salsa::input]
 pub struct Trait {
     pub id: ItemId,
     pub functions: Vec<(String, BlockSig)>,
 }
 
-#[salsa::input]
 pub struct TraitImpl {
     pub id: ItemId,
 }
 
-#[salsa::input]
 pub struct BlockSig {
-    #[returns(ref)]
     pub inputs: Vec<()>,
-    #[returns(ref)]
     pub outputs: Vec<()>,
 }
 
-pub type NodeId = usize;
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub enum LocalValue {
+    BrokenRef,
     BlockInput { index: usize },
     NodeOutput { node: NodeId, index: usize },
 }
 
-#[salsa::input]
+pub type BlockId = usize;
 pub struct Block {
-    #[returns(ref)]
+    pub id: BlockId,
     pub outputs: Vec<LocalValue>,
-    #[returns(ref)]
     pub nodes: HashMap<NodeId, Node>,
+    pub id_counter: usize,
 }
 
-#[salsa::input]
+impl Block {}
+
+pub type NodeId = usize;
 pub struct Node {
-    pub id: NodeId,
     /// Local inputs that this node consumes
-    #[returns(ref)]
     pub inputs: Vec<LocalValue>,
     /// Id of Fn Item to execute
     pub expr: DefId,
 }
 
+pub type ItemId = usize;
 pub enum Item {
     /// Pipeline definition
     Pipe(Pipe),
@@ -97,13 +120,41 @@ pub enum Item {
     TraitImpl(TraitImpl),
 }
 
+/// This is one unit of code, that can be serialized in to a file.
+pub type GraphId = usize;
+pub struct Graph {
+    id_count: usize,
+    /// Map runtime ids to vector indices to allow for reordering without breaking references
+    ids: HashMap<ItemId, usize>,
+    /// Items defined in this brane
+    items: Vec<Item>,
+    blocks: HashMap<BlockId, Block>,
+}
+
+impl Default for Graph {
+    fn default() -> Self {
+        Self {
+            id_count: 0,
+            ids: Default::default(),
+            items: Default::default(),
+            blocks: Default::default(),
+        }
+    }
+}
+
 impl Graph {
-    /// Add item to the graph
-    pub fn add_item(&mut self, item: Item) -> ItemId {
-        let id = ItemId { id: self.id_count };
+    /// Add function item to the graph
+    pub fn add_fn(&mut self, ident: String, sig: BlockSig, body: BlockId) -> ItemId {
+        let id = self.id_count;
         self.id_count += 1;
         self.ids.insert(id, self.items.len());
-        self.items.push(item);
+
+        self.items.push(Item::Fn(Fn {
+            id,
+            ident,
+            sig,
+            body,
+        }));
         id
     }
 
@@ -138,17 +189,41 @@ impl Graph {
     }
 
     /// Delete an item, returns the deleted item if successful
-    pub fn delete_item(&mut self, id: ItemId, db: &impl salsa::Database) -> Option<Item> {
+    pub fn delete_item(&mut self, id: ItemId) -> Option<Item> {
         if let Some(index) = self.item_index(id) {
             let item = self.items.swap_remove(index);
             if let Some(swapped) = self.items.get(index) {
-                self.ids.insert(swapped.id(db), index);
+                self.ids.insert(swapped.id(), index);
             }
             self.ids.remove(&id);
             Some(item)
         } else {
             None
         }
+    }
+
+    pub fn create_block(&mut self) -> BlockId {
+        let id = self.id_count;
+        self.id_count += 1;
+
+        self.blocks.insert(
+            id,
+            Block {
+                id,
+                outputs: vec![],
+                nodes: HashMap::new(),
+                id_counter: 0,
+            },
+        );
+        id
+    }
+
+    pub fn block(&self, id: BlockId) -> Option<&Block> {
+        self.blocks.get(&id)
+    }
+
+    pub fn block_mut(&mut self, id: BlockId) -> Option<&mut Block> {
+        self.blocks.get_mut(&id)
     }
 
     /// Get the position of an item
@@ -166,12 +241,12 @@ impl Graph {
 }
 
 impl Item {
-    pub fn id(&self, db: &impl salsa::Database) -> ItemId {
+    pub fn id(&self) -> ItemId {
         match self {
-            Item::Pipe(pipe) => pipe.id(db),
-            Item::Fn(fn_) => fn_.id(db),
-            Item::Trait(trait_) => trait_.id(db),
-            Item::TraitImpl(trait_impl) => trait_impl.id(db),
+            Item::Pipe(pipe) => pipe.id,
+            Item::Fn(fn_) => fn_.id,
+            Item::Trait(trait_) => trait_.id,
+            Item::TraitImpl(trait_impl) => trait_impl.id,
         }
     }
 }
