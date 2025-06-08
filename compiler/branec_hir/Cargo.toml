@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-branec_source = { path = "../branec_source/" }
+#branec_source = { path = "../branec_source/" }
 branec_ast = { path = "../branec_ast/" }
-branec_symbols = { path = "../branec_symbols/" }
-salsa = "0.22.0"
+#branec_symbols = { path = "../branec_symbols/" }
