@@ -379,8 +379,8 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
 
         if let Err(err) = self.module.verify() {
             println!(
-                "prininting failed module:\n{}",
-                self.module.print_to_string()
+                "printing failed module:\n{}",
+                self.module.print_to_string().to_string_lossy()
             );
             return Err(anyhow!("generated module was invalid: {}", err));
         }
@@ -628,22 +628,28 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 output,
             } => todo!(),
             IROp::NextStage { args_t, args } => {
-                let return_dest_ptr = self.brane_ptr(self.stack_ptr.unwrap())?;
-                // This should be calling a function
-
-                let return_value = match self.get_value(*args)? {
-                    BasicValueEnum::IntValue(ptr) => ptr,
-                    _ => bail!("cannot use non-int type as ptr"),
-                };
-
                 let return_type = module
                     .get_struct(args_t)
                     .ok_or(anyhow!("next stage args_t not found: {}", args_t))?;
-                let return_size = return_type.layout(module)?.size;
-                let return_value_ptr = self.brane_ptr(return_value)?;
+                if return_type.members.len() == 1 {
+                    let ret_val = self.get_value(*args)?;
+                    self.builder.build_return(Some(&ret_val))?;
+                } else {
+                    let return_dest_ptr = self.brane_ptr(self.stack_ptr.unwrap())?;
+                    // This should be calling a function
 
-                self.fast_copy(return_value_ptr, return_dest_ptr, return_size)?;
-                self.builder.build_return(None)?;
+                    let return_value = match self.get_value(*args)? {
+                        BasicValueEnum::IntValue(ptr) => ptr,
+                        _ => bail!("cannot use non-int type as ptr"),
+                    };
+
+                    let return_size = return_type.layout(module)?.size;
+                    let return_value_ptr = self.brane_ptr(return_value)?;
+
+                    self.fast_copy(return_value_ptr, return_dest_ptr, return_size)?;
+
+                    self.builder.build_return(None)?;
+                }
                 None
             }
             IROp::INeg { arg } => {
