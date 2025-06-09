@@ -21,11 +21,12 @@ impl Project {
         }
     }
 
-    pub fn new_graph(&mut self) -> GraphId {
+    pub fn new_graph(&mut self, ident: String) -> GraphId {
         let id = self.id_count;
         self.id_count += 1;
 
-        let graph = Graph::default();
+        let mut graph = Graph::default();
+        graph.ident = ident;
 
         self.graphs.insert(id, graph);
         id
@@ -49,6 +50,14 @@ impl Project {
         self.graph_mut(id.graph)
             .map(|graph| graph.item_mut(id.item))
             .flatten()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&GraphId, &Graph)> {
+        self.graphs.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&GraphId, &mut Graph)> {
+        self.graphs.iter_mut()
     }
 }
 
@@ -78,12 +87,22 @@ pub struct TraitImpl {
     pub id: ItemId,
 }
 
-pub struct BlockSig {
-    pub inputs: Vec<()>,
-    pub outputs: Vec<()>,
+pub enum Ty {
+    I32,
+    F32,
 }
 
-#[derive(Copy, Clone)]
+pub struct BlockEdge {
+    pub ident: String,
+    pub ty: Ty,
+}
+
+pub struct BlockSig {
+    pub inputs: Vec<BlockEdge>,
+    pub outputs: Vec<BlockEdge>,
+}
+
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
 pub enum LocalValue {
     BrokenRef,
     BlockInput { index: usize },
@@ -98,10 +117,18 @@ pub struct Block {
     pub id_counter: usize,
 }
 
-impl Block {}
+impl Block {
+    pub fn add_node(&mut self, expr: DefId, inputs: Vec<LocalValue>) -> NodeId {
+        let id = self.id_counter;
+        self.id_counter += 1;
+        self.nodes.insert(id, Node { id, inputs, expr });
+        id
+    }
+}
 
 pub type NodeId = usize;
 pub struct Node {
+    pub id: NodeId,
     /// Local inputs that this node consumes
     pub inputs: Vec<LocalValue>,
     /// Id of Fn Item to execute
@@ -123,6 +150,7 @@ pub enum Item {
 /// This is one unit of code, that can be serialized in to a file.
 pub type GraphId = usize;
 pub struct Graph {
+    pub ident: String,
     id_count: usize,
     /// Map runtime ids to vector indices to allow for reordering without breaking references
     ids: HashMap<ItemId, usize>,
@@ -134,6 +162,7 @@ pub struct Graph {
 impl Default for Graph {
     fn default() -> Self {
         Self {
+            ident: "new graph".into(),
             id_count: 0,
             ids: Default::default(),
             items: Default::default(),
