@@ -1,8 +1,0 @@
-[package]
-name = "branec_source"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-chumsky.workspace = true
-anyhow.workspace = true

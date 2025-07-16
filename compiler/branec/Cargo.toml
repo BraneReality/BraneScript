@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-brane_core = {path = "../../runtime/brane_core"}
-branec_hir = {path = "../branec_hir"}
 anstream = "0.6.18"
 
 anyhow.workspace = true
