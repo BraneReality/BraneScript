@@ -16,7 +16,7 @@ macro_rules! compiler_error {
 }
 
 /// Interprets a script to create an IR module
-struct Interpreter {
+pub struct Interpreter {
     pub intrinsics: HashMap<String, CompilerValue>,
 }
 
@@ -35,21 +35,7 @@ impl Interpreter {
         let args: Vec<CompilerValue> = args
             .into_iter()
             .zip(function.params.values.iter())
-            .map(|(arg, constraint)| {
-                if let CompilerValue {
-                    kind: CompilerValueKind::Function(constraint),
-                    share_info: _,
-                } = constraint
-                {
-                    self.call(constraint, &[arg.clone()])
-                } else {
-                    compiler_error!(
-                        constraint,
-                        "Constraint must be a function, but was {:?}",
-                        constraint
-                    )
-                }
-            })
+            .map(|(arg, constraint)| self.evaluate_constraint(constraint, arg))
             .collect();
 
         // Did any of our constraints fail?
@@ -66,8 +52,17 @@ impl Interpreter {
                 let mut labels = HashMap::new();
                 for op in operations {
                     match op {
-                        types::LabelOperation::Label(label, compiler_value) => {
+                        types::LabelOperation::Label(label, constraints, compiler_value) => {
                             let compiler_value = self.evaluate(compiler_value, &mut labels);
+
+                            let compiler_value = match constraints {
+                                Some(constraint) => {
+                                    let constraint = self.evaluate(constraint, &mut labels);
+                                    self.evaluate_constraint(&constraint, &compiler_value)
+                                }
+                                None => compiler_value,
+                            };
+
                             labels.insert(label.clone(), compiler_value);
                         }
                         types::LabelOperation::Destructure(items, compiler_value) => {
@@ -117,42 +112,73 @@ impl Interpreter {
         labels: &mut HashMap<String, CompilerValue>,
     ) -> CompilerValue {
         match &value.kind {
+            types::CompilerValueKind::Number(_) | types::CompilerValueKind::Error(_) => {
+                value.clone()
+            }
             types::CompilerValueKind::Label(label) => {
+                println!("Evaluating label \"{}\"", label);
                 if let Some(value) = labels.remove(label) {
                     value
                 } else if let Some(intrinsic) = self.intrinsics.get(label) {
-                    intrinsic.clone()
+                    self.evaluate(intrinsic, labels)
                 } else {
                     compiler_error!(value, "Label {} does not exist in this context", label)
                 }
             }
-            types::CompilerValueKind::Number(_)
-            | types::CompilerValueKind::EnumVariant(_)
-            | types::CompilerValueKind::Object(_)
-            | types::CompilerValueKind::Array(_)
-            | types::CompilerValueKind::Error(_) => value.clone(),
-            types::CompilerValueKind::Function(function) => CompilerValue {
-                kind: CompilerValueKind::Function(Function {
-                    params: Array {
-                        values: function
-                            .params
-                            .values
-                            .iter()
-                            .map(|value| self.evaluate(value, labels))
-                            .collect(),
-                    },
-                    defintion: function.defintion.clone(),
+            types::CompilerValueKind::Object(_object) => {
+                todo!("Implement object evaluation");
+            }
+            types::CompilerValueKind::Array(array) => CompilerValue {
+                kind: CompilerValueKind::Array(Array {
+                    values: array
+                        .values
+                        .iter()
+                        .map(|v| self.evaluate(v, labels))
+                        .collect(),
                 }),
-                share_info: value.share_info.clone(),
+                share_info: None,
             },
+            types::CompilerValueKind::EnumVariant(variant) => {
+                println!("Evaluating enum variant {}", variant.label);
+                CompilerValue::variant(
+                    variant.label.clone(),
+                    variant.value.as_ref().map(|v| self.evaluate(&v, labels)),
+                )
+            }
+            types::CompilerValueKind::Function(function) => {
+                println!(
+                    "Evaluating function with {} params",
+                    function.params.values.len()
+                );
+
+                CompilerValue {
+                    kind: CompilerValueKind::Function(Function {
+                        params: Array {
+                            values: function
+                                .params
+                                .values
+                                .iter()
+                                .map(|value| self.evaluate(value, labels))
+                                .collect(),
+                        },
+                        defintion: function.defintion.clone(),
+                    }),
+                    share_info: value.share_info.clone(),
+                }
+            }
             types::CompilerValueKind::Call(function_value, args) => {
+                println!("Evaluating call");
                 let function_value = self.evaluate(function_value, labels);
                 if let CompilerValue {
                     kind: CompilerValueKind::Function(function),
                     share_info: _,
                 } = function_value
                 {
-                    self.call(&function, args)
+                    let args = args
+                        .iter()
+                        .map(|arg| self.evaluate(arg, labels))
+                        .collect::<Vec<_>>();
+                    self.call(&function, &args)
                 } else {
                     compiler_error!(
                         value,
@@ -168,8 +194,24 @@ impl Interpreter {
                     share_info: _,
                 } = enum_variant_value
                 {
-                    if let Some(selected_branch) = branches.get(&enum_variant.label) {
-                        self.call(selected_branch, &[(*enum_variant.value).clone()])
+                    if let Some(branch) = branches.get(&enum_variant.label) {
+                        if let CompilerValue {
+                            kind: CompilerValueKind::Function(branch_fn),
+                            share_info: _,
+                        } = self.evaluate(branch, labels)
+                        {
+                            match enum_variant.value {
+                                Some(value) => self.call(&branch_fn, &[(*value).clone()]),
+                                None => self.call(&branch_fn, &[]),
+                            }
+                        } else {
+                            compiler_error!(
+                                value,
+                                "Branch {} value {:?} was not function!",
+                                enum_variant.label,
+                                branch
+                            )
+                        }
                     } else {
                         compiler_error!(
                             value,
@@ -185,6 +227,59 @@ impl Interpreter {
                     )
                 }
             }
+        }
+    }
+
+    /// Evaluate a constraint, constraint and value must already be resolved as labels are
+    /// sometimes not in scope
+    pub fn evaluate_constraint(
+        &self,
+        constraint: &CompilerValue,
+        value: &CompilerValue,
+    ) -> CompilerValue {
+        if let CompilerValue {
+            kind: CompilerValueKind::EnumVariant(enum_variant),
+            share_info: _,
+        } = constraint
+        {
+            match enum_variant.label.as_str() {
+                "Some" => {
+                    if let Some(constraint_value) = &enum_variant.value {
+                        if let CompilerValue {
+                            kind: CompilerValueKind::Function(constraint_fn),
+                            share_info: _,
+                        } = constraint_value.as_ref()
+                        {
+                            self.call(&constraint_fn, &[value.clone()])
+                        } else {
+                            compiler_error!(
+                                constraint,
+                                "Constraint must be a function with one parameter, but was {:?}",
+                                constraint_value
+                            )
+                        }
+                    } else {
+                        CompilerValue::error(
+                            format!("Expected Some variant to contain value"),
+                            format!("Evaluating constraint {:?}", constraint),
+                        )
+                    }
+                }
+                "None" => value.clone(),
+                _ => CompilerValue::error(
+                    format!(
+                        "Branch for enum variant \"{}\" not found",
+                        enum_variant.label
+                    ),
+                    format!("Evaluating constraint {:?}", constraint),
+                ),
+            }
+        } else {
+            compiler_error!(
+                constraint,
+                "Constraint must be an Optional enum, but was {:?}",
+                constraint
+            )
         }
     }
 }

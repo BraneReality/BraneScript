@@ -121,6 +121,7 @@ dependencies = [
 name = "branec_parser"
 version = "0.1.0"
 dependencies = [
+ "branec",
  "chumsky",
 ]
 

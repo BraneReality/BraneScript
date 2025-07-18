@@ -12,7 +12,7 @@ pub struct Number {
 #[derive(Clone, Debug)]
 pub struct EnumVariant {
     pub label: String,
-    pub value: Box<CompilerValue>,
+    pub value: Option<Box<CompilerValue>>,
 }
 
 #[derive(Clone, Debug)]
@@ -41,7 +41,7 @@ pub struct Function {
 #[derive(Clone, Debug)]
 pub enum LabelOperation {
     /// Label single compiler value
-    Label(String, CompilerValue),
+    Label(String, Option<CompilerValue>, CompilerValue),
     /// Hoist and optionally rename struct membes
     Destructure(Vec<(String, Option<String>)>, CompilerValue),
 }
@@ -82,7 +82,7 @@ pub enum CompilerValueKind {
     /// (Function | Label, args)
     Call(Box<CompilerValue>, Vec<CompilerValue>),
     /// Map an enum value
-    Match(Box<CompilerValue>, HashMap<String, Function>),
+    Match(Box<CompilerValue>, HashMap<String, CompilerValue>),
     /// Error
     Error(Error),
 }
@@ -105,6 +105,51 @@ pub struct ShareInfo {
 pub struct CompilerValue {
     pub kind: CompilerValueKind,
     pub share_info: Option<ShareInfo>,
+}
+
+impl CompilerValue {
+    pub fn label(label: impl Into<String>) -> Self {
+        Self {
+            kind: CompilerValueKind::Label(label.into()),
+            share_info: None,
+        }
+    }
+
+    pub fn number(number: impl Into<f64>) -> Self {
+        Self {
+            kind: CompilerValueKind::Number(Number {
+                value: number.into(),
+            }),
+            share_info: None,
+        }
+    }
+
+    pub fn variant(label: impl Into<String>, value: Option<CompilerValue>) -> Self {
+        Self {
+            kind: CompilerValueKind::EnumVariant(EnumVariant {
+                label: label.into(),
+                value: value.map(|value| Box::new(value)),
+            }),
+            share_info: None,
+        }
+    }
+
+    pub fn error(msg: impl Into<String>, source: impl Into<String>) -> CompilerValue {
+        Self {
+            kind: CompilerValueKind::Error(Error {
+                stack_trace: vec![source.into()],
+                message: msg.into(),
+            }),
+            share_info: None,
+        }
+    }
+
+    pub fn is_number(&self) -> bool {
+        match &self.kind {
+            CompilerValueKind::Number(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl Object {
