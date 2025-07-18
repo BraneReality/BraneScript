@@ -54,7 +54,13 @@ pub enum FunctionDefinition {
         /// Final value expression to be returned, may refrence labels defined above
         value: Box<CompilerValue>,
     },
-    Intrinsic(Arc<dyn Fn(Vec<CompilerValue>) -> CompilerValue>),
+    Intrinsic(Arc<dyn Fn(&[CompilerValue]) -> CompilerValue>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Error {
+    pub stack_trace: Vec<String>,
+    pub message: String,
 }
 
 #[derive(Clone, Debug)]
@@ -76,7 +82,9 @@ pub enum CompilerValueKind {
     /// (Function | Label, args)
     Call(Box<CompilerValue>, Vec<CompilerValue>),
     /// Map an enum value
-    Match(Box<CompilerValue>, Vec<(String, CompilerValue)>),
+    Match(Box<CompilerValue>, HashMap<String, Function>),
+    /// Error
+    Error(Error),
 }
 
 /// When a value is shared, we need to store some info about it
