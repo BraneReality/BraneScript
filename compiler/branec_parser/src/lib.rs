@@ -89,16 +89,19 @@ where
         share_info: None,
     });
 
-    let call = atom.clone().foldl_with(
-        atom.clone()
-            .separated_by(just(','))
-            .collect()
-            .delimited_by(just('('), just(')'))
-            .repeated(),
-        |function, args, _e| CompilerValue {
-            kind: CompilerValueKind::Call(Box::new(function), args),
-            share_info: None,
-        },
+    let mut call = Recursive::declare();
+    call.define(
+        atom.clone().foldl_with(
+            call.clone()
+                .separated_by(just(','))
+                .collect()
+                .delimited_by(just('('), just(')'))
+                .repeated(),
+            |function, args, _e| CompilerValue {
+                kind: CompilerValueKind::Call(Box::new(function), args),
+                share_info: None,
+            },
+        ),
     );
 
     let function = ();
