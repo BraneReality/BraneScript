@@ -21,48 +21,35 @@ fn main() -> anyhow::Result<()> {
 
     intrinsics.insert(
         "Number".into(),
-        CompilerValue {
-            kind: CompilerValueKind::Function(Function {
-                params: Array {
-                    values: vec![CompilerValue::variant("None", None)],
-                },
-                defintion: FunctionDefinition::Intrinsic(Arc::new(|args| {
-                    let arg = &args[0];
-                    if !arg.is_number() {
-                        CompilerValue::error(format!("Expected number but found {:?}", arg), "TODO")
-                    } else {
-                        arg.clone()
-                    }
-                })),
-            }),
-            share_info: None,
-        },
+        CompilerValue::intrinsic_fn([("arg", vec![])], |args| {
+            let arg = &args[0];
+            if !arg.is_number() {
+                CompilerValue::error(format!("Expected number but found {:?}", arg), "TODO")
+            } else {
+                arg.clone()
+            }
+        }),
     );
 
     intrinsics.insert(
         "add".into(),
-        CompilerValue {
-            kind: CompilerValueKind::Function(Function {
-                params: Array {
-                    values: vec![
-                        CompilerValue::variant("Some", Some(CompilerValue::label("Number"))),
-                        CompilerValue::variant("Some", Some(CompilerValue::label("Number"))),
-                    ],
-                },
-                defintion: FunctionDefinition::Intrinsic(Arc::new(|args| {
-                    let a = &args[0];
-                    let b = &args[1];
-                    if let (CompilerValueKind::Number(a), CompilerValueKind::Number(b)) =
-                        (&a.kind, &b.kind)
-                    {
-                        CompilerValue::number(a.value + b.value)
-                    } else {
-                        unreachable!("Should be guarded by constraints");
-                    }
-                })),
-            }),
-            share_info: None,
-        },
+        CompilerValue::intrinsic_fn(
+            [
+                ("a", vec![CompilerValue::label("Number")]),
+                ("a", vec![CompilerValue::label("Number")]),
+            ],
+            |args| {
+                let a = &args[0];
+                let b = &args[1];
+                if let (CompilerValueKind::Number(a), CompilerValueKind::Number(b)) =
+                    (&a.kind, &b.kind)
+                {
+                    CompilerValue::number(a.value + b.value)
+                } else {
+                    unreachable!("Should be guarded by constraints");
+                }
+            },
+        ),
     );
 
     let itpr = Interpreter { intrinsics };
@@ -77,7 +64,7 @@ fn main() -> anyhow::Result<()> {
             .into_result()
             .map_err(|e| anyhow!("{:#?}", e))?;
 
-        let result = itpr.call(&script_fn, &[]);
+        let result = itpr.call(&script_fn, []);
         println!("Result: {:#?}", result);
     }
 

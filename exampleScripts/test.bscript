@@ -1,6 +1,20 @@
 a = 2
 b = 2
 
-add(a, add(a, b))
+my_add = fn(d, c) { 
+    add(d, c) 
+}
 
+res1 = my_add(a, b)
+
+struct_add = fn(s) {
+    { a, b } = s
+    add(a, b)
+}
+
+b = 2
+struct_add({
+    a: res1,
+    b
+})
 

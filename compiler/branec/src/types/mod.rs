@@ -34,6 +34,8 @@ pub struct Object {
 
 #[derive(Clone, Debug)]
 pub struct Function {
+    /// The members of this array should be defined as:
+    /// { label: String, constraints: Array<Function> }
     pub params: Array,
     pub defintion: FunctionDefinition,
 }
@@ -54,7 +56,7 @@ pub enum FunctionDefinition {
         /// Final value expression to be returned, may refrence labels defined above
         value: Box<CompilerValue>,
     },
-    Intrinsic(Arc<dyn Fn(&[CompilerValue]) -> CompilerValue>),
+    Intrinsic(Arc<dyn Fn(Vec<CompilerValue>) -> CompilerValue>),
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +71,8 @@ pub enum CompilerValueKind {
     Label(String),
     /// Number constant
     Number(Number),
+    /// A string literal, we don't use array here for both performance and because I'm lazy
+    String(String),
     /// A labeled variant
     EnumVariant(EnumVariant),
     /// Array of values
@@ -124,6 +128,13 @@ impl CompilerValue {
         }
     }
 
+    pub fn string(str: impl Into<String>) -> Self {
+        Self {
+            kind: CompilerValueKind::String(str.into()),
+            share_info: None,
+        }
+    }
+
     pub fn variant(label: impl Into<String>, value: Option<CompilerValue>) -> Self {
         Self {
             kind: CompilerValueKind::EnumVariant(EnumVariant {
@@ -134,11 +145,54 @@ impl CompilerValue {
         }
     }
 
-    pub fn error(msg: impl Into<String>, source: impl Into<String>) -> CompilerValue {
+    pub fn object(members: impl IntoIterator<Item = ObjectMember>) -> Self {
+        Self {
+            kind: CompilerValueKind::Object(Object::new(members)),
+            share_info: None,
+        }
+    }
+
+    pub fn array(values: Vec<CompilerValue>) -> Self {
+        Self {
+            kind: CompilerValueKind::Array(Array { values }),
+            share_info: None,
+        }
+    }
+
+    pub fn error(msg: impl Into<String>, source: impl Into<String>) -> Self {
         Self {
             kind: CompilerValueKind::Error(Error {
                 stack_trace: vec![source.into()],
                 message: msg.into(),
+            }),
+            share_info: None,
+        }
+    }
+
+    pub fn intrinsic_fn(
+        params: impl IntoIterator<Item = (impl Into<String>, Vec<CompilerValue>)>,
+        callback: impl Fn(Vec<CompilerValue>) -> CompilerValue + 'static,
+    ) -> Self {
+        Self {
+            kind: CompilerValueKind::Function(Function {
+                params: Array {
+                    values: params
+                        .into_iter()
+                        .map(|(label, constraints)| {
+                            CompilerValue::object([
+                                ObjectMember {
+                                    label: "label".into(),
+                                    value: Self::string(label.into()),
+                                },
+                                ObjectMember {
+                                    label: "constraints".into(),
+                                    value: Self::array(constraints),
+                                },
+                            ])
+                        })
+                        .collect(),
+                },
+                defintion: FunctionDefinition::Intrinsic(Arc::new(callback)),
             }),
             share_info: None,
         }
@@ -150,11 +204,55 @@ impl CompilerValue {
             _ => false,
         }
     }
+
+    pub fn as_number(&self) -> Option<&Number> {
+        match &self.kind {
+            CompilerValueKind::Number(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn as_string(&self) -> Option<&String> {
+        match &self.kind {
+            CompilerValueKind::String(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn as_array(&self) -> Option<&Array> {
+        match &self.kind {
+            CompilerValueKind::Array(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    pub fn as_object(&self) -> Option<&Object> {
+        match &self.kind {
+            CompilerValueKind::Object(inner) => Some(inner),
+            _ => None,
+        }
+    }
 }
 
 impl Object {
+    pub fn new(members: impl IntoIterator<Item = ObjectMember>) -> Self {
+        let (key_index, members) = members.into_iter().enumerate().fold(
+            (HashMap::new(), Vec::new()),
+            |(mut key_index, mut members), (index, member)| {
+                key_index.insert(member.label.clone(), index);
+                members.push(member);
+                (key_index, members)
+            },
+        );
+        Self { key_index, members }
+    }
+
     pub fn members(&self) -> &Vec<ObjectMember> {
         &self.members
+    }
+
+    pub fn members_mut(&mut self) -> impl Iterator<Item = (&String, &mut CompilerValue)> {
+        self.members.iter_mut().map(|m| (&m.label, &mut m.value))
     }
 
     pub fn get(&self, label: &str) -> Option<&ObjectMember> {
