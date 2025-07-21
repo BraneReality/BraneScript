@@ -94,9 +94,11 @@ where
                 .clone()
                 .then_ignore(token("=>"))
                 .then(compiler_value.clone())
+                .labelled("match branch")
                 .map(|(label, branch): (&str, CompilerValue)| (label.to_string(), branch))
                 .separated_by(token(","))
-                .collect::<HashMap<String, CompilerValue>>(),
+                .collect::<HashMap<String, CompilerValue>>()
+                .delimited_by(token("{"), token("}")),
         )
         .map_with(|(value, branches), _| CompilerValueKind::Match(Box::new(value), branches));
 
