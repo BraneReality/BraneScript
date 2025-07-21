@@ -8,7 +8,8 @@ members = [
     "runtime/brane_backend",
     "runtime/brane_backend_llvm", 
     "compiler/branec", 
-    #"compiler/branec_parser", 
+    "compiler/branec/macros", 
+    "compiler/branec_parser", 
 ]
 
 [workspace.dependencies]

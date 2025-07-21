@@ -17,40 +17,9 @@ struct Cli {
 fn main() -> anyhow::Result<()> {
     let cli = <Cli as clap::Parser>::parse();
 
-    let mut intrinsics = HashMap::new();
-
-    intrinsics.insert(
-        "Number".into(),
-        CompilerValue::intrinsic_fn([("arg", vec![])], |args| {
-            let arg = &args[0];
-            if !arg.is_number() {
-                CompilerValue::error(format!("Expected number but found {:?}", arg), "TODO")
-            } else {
-                arg.clone()
-            }
-        }),
-    );
-
-    intrinsics.insert(
-        "add".into(),
-        CompilerValue::intrinsic_fn(
-            [
-                ("a", vec![CompilerValue::label("Number")]),
-                ("a", vec![CompilerValue::label("Number")]),
-            ],
-            |args| {
-                let a = &args[0];
-                let b = &args[1];
-                if let (CompilerValueKind::Number(a), CompilerValueKind::Number(b)) =
-                    (&a.kind, &b.kind)
-                {
-                    CompilerValue::number(a.value + b.value)
-                } else {
-                    unreachable!("Should be guarded by constraints");
-                }
-            },
-        ),
-    );
+    let intrinsics = branec::stdlib::define()
+        .unpack()
+        .collect::<HashMap<String, CompilerValue>>();
 
     let itpr = Interpreter { intrinsics };
 
@@ -65,7 +34,7 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow!("{:#?}", e))?;
 
         let result = itpr.call(&script_fn, []);
-        println!("Result: {:#?}", result);
+        println!("Result: {}", result);
     }
 
     Ok(())
