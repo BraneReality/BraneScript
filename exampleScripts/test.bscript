@@ -1,7 +1,13 @@
 a = 2
 b = 2
 
-my_add = fn(d, c) { 
+{must_be} = Value
+d_constraint = must_be(Number)
+
+{must_be} = Value
+c_constraint = must_be(Number)
+
+my_add = fn(d: d_constraint, c: c_constraint) { 
     add(d, c) 
 }
 
@@ -17,4 +23,3 @@ struct_add({
     a: res1,
     b
 })
-

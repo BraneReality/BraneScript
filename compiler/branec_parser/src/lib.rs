@@ -107,8 +107,9 @@ where
                 .collect::<Vec<_>>()
                 .delimited_by(token("("), token(")")),
         )
+        .then(token("=>").ignore_then(compiler_value.clone()).or_not())
         .then(fn_def.clone().delimited_by(token("{"), token("}")))
-        .map_with(|(params, defintion), _| {
+        .map_with(|((params, returns), defintion), _| {
             CompilerValueKind::Function(Function {
                 params: Array {
                     values: params
@@ -128,6 +129,9 @@ where
                             ])
                         })
                         .collect(),
+                },
+                returns: Array {
+                    values: returns.map(|c| vec![c]).unwrap_or_default(),
                 },
                 defintion,
             })
@@ -176,7 +180,8 @@ where
     );
 
     fn_def.map(|defintion| Function {
-        params: Array { values: vec![] },
+        params: Array { values: Vec::new() },
+        returns: Array { values: Vec::new() },
         defintion,
     })
 }

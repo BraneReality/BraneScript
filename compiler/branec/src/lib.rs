@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+pub mod stdlib;
 pub mod types;
 use types::{CompilerValue, CompilerValueKind, Error, Function};
 
@@ -16,6 +17,7 @@ macro_rules! compiler_error {
 }
 
 /// Interprets a script to create an IR module
+#[derive(Default)]
 pub struct Interpreter {
     pub intrinsics: HashMap<String, CompilerValue>,
 }
@@ -46,7 +48,7 @@ impl Interpreter {
             let Some(param) = param.as_object() else {
                 return compiler_error!(
                     function,
-                    "function parameter was not an object, found: {:?}",
+                    "function parameter was not an object, found: {}",
                     param
                 );
             };
@@ -83,9 +85,10 @@ impl Interpreter {
         }
 
         match &function.defintion {
-            types::FunctionDefinition::Intrinsic(closure) => {
-                closure(label_args.into_iter().map(|(_label, arg)| arg).collect())
-            }
+            types::FunctionDefinition::Intrinsic(closure) => closure(
+                label_args.into_iter().map(|(_label, arg)| arg).collect(),
+                self,
+            ),
             types::FunctionDefinition::Closure { operations, value } => {
                 let mut labels = label_args.into_iter().collect();
                 for op in operations {
@@ -129,7 +132,7 @@ impl Interpreter {
                             } else {
                                 return compiler_error!(
                                     function,
-                                    "Value {:?} was not an object, and cannot be destructured",
+                                    "Value {} was not an object, and cannot be destructured",
                                     compiler_value
                                 );
                             }
@@ -154,6 +157,9 @@ impl Interpreter {
             CompilerValueKind::Number(_)
             | CompilerValueKind::String(_)
             | CompilerValueKind::Error(_) => value.clone(),
+            CompilerValueKind::Consumed => {
+                CompilerValue::error("Tried to use consumed value", "evaluation")
+            }
             CompilerValueKind::Label(label) => {
                 println!("Evaluating label \"{}\"", label);
                 if let Some(value) = labels.remove(label) {
@@ -203,6 +209,14 @@ impl Interpreter {
                                 .map(|value| self.evaluate(value, labels))
                                 .collect(),
                         },
+                        returns: Array {
+                            values: function
+                                .returns
+                                .values
+                                .iter()
+                                .map(|value| self.evaluate(value, labels))
+                                .collect(),
+                        },
                         defintion: function.defintion.clone(),
                     }),
                     share_info: value.share_info.clone(),
@@ -221,7 +235,7 @@ impl Interpreter {
                 } else {
                     compiler_error!(
                         value,
-                        "Value {:?} was not a function, and cannot be called",
+                        "Value {} was not a function, and cannot be called",
                         function_value
                     )
                 }
@@ -246,7 +260,7 @@ impl Interpreter {
                         } else {
                             compiler_error!(
                                 value,
-                                "Branch {} value {:?} was not function!",
+                                "Branch {} value {} was not function!",
                                 enum_variant.label,
                                 branch
                             )
@@ -261,7 +275,7 @@ impl Interpreter {
                 } else {
                     compiler_error!(
                         value,
-                        "Value {:?} was not an enum variant",
+                        "Value {} was not an enum variant",
                         enum_variant_value
                     )
                 }
@@ -285,7 +299,7 @@ impl Interpreter {
         } else {
             compiler_error!(
                 constraint,
-                "Constraint must be a function with one parameter, but was {:?}",
+                "Constraint must be a function with one parameter, but was {}",
                 constraint
             )
         }
