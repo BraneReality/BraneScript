@@ -1,0 +1,4 @@
+match True {
+    True => fn () { 1 },
+    False => fn () { 0 }
+}
