@@ -1,10 +1,7 @@
 a = 2
 b = 2
 
-{must_be} = Value
-nc = must_be(Number)
-
-my_add = fn(d: nc, c: nc) { 
+my_add = fn (d: Number, c: Number) {
     add(d, c) 
 }
 
@@ -20,3 +17,4 @@ struct_add({
     a: res1,
     b
 })
+
