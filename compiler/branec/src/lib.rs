@@ -2,24 +2,12 @@ use std::collections::HashMap;
 
 pub mod stdlib;
 pub mod types;
-use types::{CompilerValue, CompilerValueKind, Error, Function};
-
-macro_rules! compiler_error {
-    ($value:expr, $($msg:tt)*) => {
-        CompilerValue {
-            kind: CompilerValueKind::Error(Error {
-                stack_trace: vec![format!("evaluate {:?}", $value)],
-                message: format!($($msg)*),
-            }),
-            share_info: None,
-        }
-    };
-}
+use types::{Error, Expression, Function, Value};
 
 /// Interprets a script to create an IR module
 #[derive(Default)]
 pub struct Interpreter {
-    pub intrinsics: HashMap<String, CompilerValue>,
+    pub intrinsics: HashMap<String, Value>,
 }
 
 impl Interpreter {
@@ -27,61 +15,32 @@ impl Interpreter {
     pub fn call(
         &self,
         function: &Function,
-        args: impl IntoIterator<
-            Item = CompilerValue,
-            IntoIter = impl ExactSizeIterator<Item = CompilerValue>,
-        >,
-    ) -> CompilerValue {
+        args: impl IntoIterator<Item = Value, IntoIter = impl ExactSizeIterator<Item = Value>>,
+    ) -> Result<Value, Vec<Error>> {
         let args = args.into_iter();
-        if args.len() != function.params.values.len() {
-            return compiler_error!(
-                function,
+
+        if args.len() != function.params.len() {
+            return Err(vec![Error::new(format!(
                 "function call was expecting {} args, but was passed {} args",
-                function.params.values.len(),
-                args.len()
-            );
+                function.params.len(),
+                args.len(),
+            ))]);
         }
 
         // Convert args to labeled values while checking constraints
-        let mut label_args = Vec::new();
-        for (arg, param) in args.zip(function.params.values.iter()) {
-            let Some(param) = param.as_object() else {
-                return compiler_error!(
-                    function,
-                    "function parameter was not an object, found: {}",
-                    param
-                );
-            };
+        let (label_args, errors) = args.zip(function.params.iter()).fold(
+            (Vec::new(), Vec::new()),
+            |(mut label_args, mut errors), (arg, param)| {
+                match param.ty.contains(&arg) {
+                    Ok(_) => label_args.push((param.label.clone(), arg)),
+                    Err(mut errs) => errors.append(&mut errs),
+                }
+                (label_args, errors)
+            },
+        );
 
-            let Some(label) = param.get("label").map(|s| s.value.as_string()).flatten() else {
-                return compiler_error!(
-                    function,
-                    "function parameter did not have string member label: {:?}",
-                    param
-                );
-            };
-
-            let Some(constraints) = param
-                .get("constraints")
-                .map(|s| s.value.as_array())
-                .flatten()
-            else {
-                return compiler_error!(
-                    function,
-                    "function parameter did not have array member constraints: {:?}",
-                    param
-                );
-            };
-
-            let arg = constraints.values.iter().fold(arg, |arg, constraint| {
-                self.evaluate_constraint(constraint, arg)
-            });
-
-            if let CompilerValueKind::Error(_) = arg.kind {
-                // TODO append stack trace
-                return arg.clone();
-            }
-            label_args.push((label.clone(), arg));
+        if !errors.is_empty() {
+            return Err(errors);
         }
 
         match &function.defintion {
@@ -90,51 +49,40 @@ impl Interpreter {
                 self,
             ),
             types::FunctionDefinition::Closure { operations, value } => {
-                let mut labels = label_args.into_iter().collect();
+                let mut labels: HashMap<String, Value> = label_args.into_iter().collect();
                 for op in operations {
                     match op {
-                        types::LabelOperation::Label(label, constraints, compiler_value) => {
-                            let compiler_value = self.evaluate(compiler_value, &mut labels);
+                        types::LabelOperation::Label(label, ty, compiler_value) => {
+                            let compiler_value = self.evaluate(compiler_value, &mut labels)?;
 
-                            let compiler_value = match constraints {
-                                Some(constraint) => {
-                                    let constraint = self.evaluate(constraint, &mut labels);
-                                    self.evaluate_constraint(&constraint, compiler_value)
-                                }
-                                None => compiler_value,
-                            };
-
+                            if let Some(ty) = ty {
+                                let ty = self.evaluate(ty, &mut labels)?;
+                                ty.contains(&compiler_value)?;
+                            }
                             labels.insert(label.clone(), compiler_value);
                         }
                         types::LabelOperation::Destructure(items, compiler_value) => {
-                            let compiler_value = self.evaluate(compiler_value, &mut labels);
-                            if let CompilerValue {
-                                kind: CompilerValueKind::Object(object),
-                                share_info: _,
-                            } = compiler_value
-                            {
+                            let compiler_value = self.evaluate(compiler_value, &mut labels)?;
+                            if let Value::Object(object) = compiler_value {
+                                let mut members: HashMap<String, Value> = object.unpack().collect();
                                 for (member, label) in items.iter() {
-                                    if let Some(member_value) = object.get(&member) {
-                                        let member_value =
-                                            self.evaluate(&member_value.value, &mut labels);
+                                    if let Some(member_value) = members.remove(member) {
                                         labels.insert(
                                             label.clone().unwrap_or(member.clone()),
                                             member_value,
                                         );
                                     } else {
-                                        return compiler_error!(
-                                            function,
+                                        return Err(vec![Error::new(format!(
                                             "Object does not have member {}!",
                                             member
-                                        );
+                                        ))]);
                                     }
                                 }
                             } else {
-                                return compiler_error!(
-                                    function,
+                                return Err(vec![Error::new(format!(
                                     "Value {} was not an object, and cannot be destructured",
                                     compiler_value
-                                );
+                                ))]);
                             }
                         }
                     }
@@ -145,163 +93,213 @@ impl Interpreter {
         }
     }
 
-    /// Simplify value as much as possible by resolving labels and evaluating functions
+    /// Evaluate an expression to a value
     /// this might be called a "beta_reduction"
     pub fn evaluate(
         &self,
-        value: &CompilerValue,
-        labels: &mut HashMap<String, CompilerValue>,
-    ) -> CompilerValue {
+        expr: &Expression,
+        labels: &mut HashMap<String, Value>,
+    ) -> Result<Value, Vec<Error>> {
         use types::*;
-        match &value.kind {
-            CompilerValueKind::Number(_)
-            | CompilerValueKind::String(_)
-            | CompilerValueKind::Error(_) => value.clone(),
-            CompilerValueKind::Consumed => {
-                CompilerValue::error("Tried to use consumed value", "evaluation")
-            }
-            CompilerValueKind::Label(label) => {
+        match &expr {
+            Expression::Value(value) => Ok(value.clone()),
+            Expression::Label(label) => {
                 println!("Evaluating label \"{}\"", label);
                 if let Some(value) = labels.remove(label) {
-                    value
+                    Ok(value)
                 } else if let Some(intrinsic) = self.intrinsics.get(label) {
-                    self.evaluate(intrinsic, labels)
+                    Ok(intrinsic.clone())
                 } else {
-                    compiler_error!(value, "Label {} does not exist in this context", label)
+                    Err(vec![Error::new(format!(
+                        "Label {} does not exist in this context",
+                        label
+                    ))])
                 }
             }
-            CompilerValueKind::Object(object) => {
-                CompilerValue::object(object.members().iter().map(|m| ObjectMember {
-                    label: m.label.clone(),
-                    value: self.evaluate(&m.value, labels),
-                }))
-            }
-            CompilerValueKind::Array(array) => CompilerValue {
-                kind: CompilerValueKind::Array(Array {
-                    values: array
-                        .values
-                        .iter()
-                        .map(|v| self.evaluate(v, labels))
-                        .collect(),
-                }),
-                share_info: None,
-            },
-            CompilerValueKind::EnumVariant(variant) => {
-                println!("Evaluating enum variant {}", variant.label);
-                CompilerValue::variant(
-                    variant.label.clone(),
-                    variant.value.as_ref().map(|v| self.evaluate(&v, labels)),
-                )
-            }
-            CompilerValueKind::Function(function) => {
-                println!(
-                    "Evaluating function with {} params",
-                    function.params.values.len()
-                );
-
-                CompilerValue {
-                    kind: CompilerValueKind::Function(Function {
-                        params: Array {
-                            values: function
-                                .params
-                                .values
-                                .iter()
-                                .map(|value| self.evaluate(value, labels))
-                                .collect(),
-                        },
-                        returns: Array {
-                            values: function
-                                .returns
-                                .values
-                                .iter()
-                                .map(|value| self.evaluate(value, labels))
-                                .collect(),
-                        },
-                        defintion: function.defintion.clone(),
-                    }),
-                    share_info: value.share_info.clone(),
-                }
-            }
-            CompilerValueKind::Call(function_value, args) => {
+            Expression::Call(function_expr, args) => {
                 println!("Evaluating call");
-                let function_value = self.evaluate(function_value, labels);
-                if let CompilerValue {
-                    kind: CompilerValueKind::Function(function),
-                    share_info: _,
-                } = function_value
-                {
-                    let args = args.iter().map(|arg| self.evaluate(arg, labels));
-                    self.call(&function, args)
-                } else {
-                    compiler_error!(
-                        value,
-                        "Value {} was not a function, and cannot be called",
-                        function_value
-                    )
+                let mut errors = Vec::new();
+                let function_value = self.evaluate(&function_expr, labels);
+
+                let mut arg_values = Vec::new();
+                for arg in args {
+                    match self.evaluate(arg, labels) {
+                        Ok(arg) => arg_values.push(arg),
+                        Err(mut errs) => errors.append(&mut errs),
+                    }
                 }
-            }
-            CompilerValueKind::Match(enum_variant_value, branches) => {
-                let enum_variant_value = self.evaluate(enum_variant_value, labels);
-                if let CompilerValue {
-                    kind: CompilerValueKind::EnumVariant(enum_variant),
-                    share_info: _,
-                } = enum_variant_value
-                {
-                    if let Some(branch) = branches.get(&enum_variant.label) {
-                        if let CompilerValue {
-                            kind: CompilerValueKind::Function(branch_fn),
-                            share_info: _,
-                        } = self.evaluate(branch, labels)
-                        {
-                            match enum_variant.value {
-                                Some(value) => self.call(&branch_fn, [*value]),
-                                None => self.call(&branch_fn, []),
+
+                if errors.is_empty() {
+                    match function_value {
+                        Ok(function) => {
+                            if let Value::Function(function) = function {
+                                self.call(&function, arg_values)
+                            } else {
+                                Err(vec![Error::new(format!(
+                                    "Value {} was not a function, and cannot be called",
+                                    function
+                                ))])
                             }
-                        } else {
-                            compiler_error!(
-                                value,
-                                "Branch {} value {} was not function!",
-                                enum_variant.label,
-                                branch
-                            )
                         }
-                    } else {
-                        compiler_error!(
-                            value,
-                            "Branch for enum variant \"{}\" not found",
-                            enum_variant.label
-                        )
+                        Err(errs) => Err(errs),
                     }
                 } else {
-                    compiler_error!(
-                        value,
-                        "Value {} was not an enum variant",
-                        enum_variant_value
-                    )
+                    Err(errors)
                 }
             }
-        }
-    }
+            Expression::Error(errors) => Err(errors.clone()),
+            Expression::Consumed => Err(vec![Error::new("Tried to use consumed value")]),
+            Expression::Structure(ty, members) => {
+                let mut member_values = Vec::new();
+                let mut errors = Vec::new();
+                for (label, speculative, expr) in members {
+                    match self.evaluate(expr, labels) {
+                        Ok(value) => member_values.push(ObjectMember {
+                            label: label.clone(),
+                            speculative: *speculative,
+                            value,
+                        }),
+                        Err(mut errs) => errors.append(&mut errs),
+                    }
+                }
 
-    /// Evaluate a constraint, constraint and value must already be resolved as labels are
-    /// not evaluated by this function
-    pub fn evaluate_constraint(
-        &self,
-        constraint: &CompilerValue,
-        value: CompilerValue,
-    ) -> CompilerValue {
-        if let CompilerValue {
-            kind: CompilerValueKind::Function(constraint_fn),
-            share_info: _,
-        } = constraint
-        {
-            self.call(&constraint_fn, [value])
-        } else {
-            compiler_error!(
-                constraint,
-                "Constraint must be a function with one parameter, but was {}",
-                constraint
-            )
+                if errors.is_empty() {
+                    let mut object = Object::new(None, member_values);
+
+                    match ty.as_ref().map(|ty| self.evaluate(ty, labels)) {
+                        Some(Ok(ty)) => match &ty {
+                            Value::Object(obj_ty) => {
+                                object.label = obj_ty.label.clone();
+                                let ret = Value::Object(object);
+                                match ty.contains(&ret) {
+                                    Ok(()) => Ok(ret),
+                                    Err(errors) => Err(errors),
+                                }
+                            }
+                            _ => Err(vec![Error::new(format!(
+                                "Expected an object type value, but found: {}",
+                                ty
+                            ))]),
+                        },
+                        Some(Err(errors)) => Err(errors),
+                        None => Ok(Value::Object(object)),
+                    }
+                } else {
+                    Err(errors)
+                }
+            }
+            Expression::EnumVariant(ty, variant, value) => {
+                let variants = vec![match value {
+                    Some(value) => EnumVariant {
+                        label: variant.clone(),
+                        value: Some(self.evaluate(value, labels)?),
+                    },
+                    None => EnumVariant {
+                        label: variant.clone(),
+                        value: None,
+                    },
+                }];
+                let mut value_enum = Enum {
+                    label: None,
+                    variants,
+                };
+                match ty {
+                    Some(ty) => {
+                        if let Value::Enum(ty_enum) = self.evaluate(&ty, labels)? {
+                            value_enum.label = ty_enum.label.clone();
+                            let res = Value::Enum(value_enum);
+                            Value::Enum(ty_enum).contains(&res)?;
+                            Ok(res)
+                        } else {
+                            Err(vec![Error::new(format!(
+                                "Expected an enum type value, but found: {}",
+                                ty
+                            ))])
+                        }
+                    }
+                    None => Ok(Value::Enum(value_enum)),
+                }
+            }
+            Expression::Match(condition, branches) => {
+                let condition = self.evaluate(&condition, labels)?;
+                let (branches, errors) = branches.iter().fold(
+                    (Vec::new(), Vec::new()),
+                    |(mut branches, mut errors), (ty, func)| {
+                        match (self.evaluate(&ty, labels), self.evaluate(&func, labels)) {
+                            (Ok(ty), Ok(func)) => {
+                                // TODO validate type is type, and function sig accepts type
+                                if let Value::Function(func) = func {
+                                    branches.push((ty, func));
+                                } else {
+                                    errors.push(Error::new("Expected Function Value"))
+                                }
+                            }
+                            (Ok(_), Err(mut err)) | (Err(mut err), Ok(_)) => {
+                                errors.append(&mut err)
+                            }
+                            (Err(mut e1), Err(mut e2)) => {
+                                errors.append(&mut e1);
+                                errors.append(&mut e2);
+                            }
+                        }
+                        (branches, errors)
+                    },
+                );
+
+                if errors.is_empty() {
+                    for (cond, func) in branches {
+                        if let Err(_) = cond.contains(&condition) {
+                            continue;
+                        }
+
+                        return self.call(&func, [condition]);
+                    }
+                    Err(vec![Error::new(format!(
+                        "No branch of match statement accepts {}",
+                        condition
+                    ))])
+                } else {
+                    Err(errors)
+                }
+            }
+            Expression::ConstructFunction(params, returns, operations, value) => {
+                let (params, mut errors) = params.iter().fold(
+                    (Vec::new(), Vec::new()),
+                    |(mut params, mut errors), (label, type_value)| {
+                        match self.evaluate(type_value, labels) {
+                            Ok(ty) => params.push(FunctionParam {
+                                label: label.clone(),
+                                ty,
+                            }),
+                            Err(mut errs) => errors.append(&mut errs),
+                        }
+                        (params, errors)
+                    },
+                );
+                let returns = self.evaluate(&returns, labels);
+                let returns = match returns {
+                    Ok(r) => Box::new(r),
+                    Err(mut errs) => {
+                        errors.append(&mut errs);
+                        return Err(errors);
+                    }
+                };
+
+                if !errors.is_empty() {
+                    return Err(errors);
+                }
+
+                //TODO validate function body
+
+                Ok(Value::Function(Function {
+                    params,
+                    returns,
+                    defintion: FunctionDefinition::Closure {
+                        operations: operations.clone(),
+                        value: value.clone(),
+                    },
+                }))
+            }
         }
     }
 }

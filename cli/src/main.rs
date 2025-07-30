@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 //use brane_script_runtime::backend::llvm::LLVMJitBackend;
 use branec::{
-    types::{Array, CompilerValue, CompilerValueKind, Function, FunctionDefinition},
+    types::{Array, Function, FunctionDefinition, Value},
     Interpreter,
 };
 use chumsky::{error::Rich, input::Input, Parser};
@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
 
     let intrinsics = branec::stdlib::define()
         .unpack()
-        .collect::<HashMap<String, CompilerValue>>();
+        .collect::<HashMap<String, Value>>();
 
     let itpr = Interpreter { intrinsics };
 
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow!("{:#?}", e))?;
 
         let result = itpr.call(&script_fn, []);
-        println!("Result: {}", result);
+        println!("Result: {:#?}", result);
     }
 
     Ok(())

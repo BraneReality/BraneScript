@@ -103,6 +103,7 @@ version = "0.1.0"
 dependencies = [
  "anstream",
  "anyhow",
+ "defer",
  "macros",
 ]
 

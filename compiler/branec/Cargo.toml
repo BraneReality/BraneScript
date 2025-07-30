@@ -8,4 +8,5 @@ anstream = "0.6.18"
 macros = { path = "./macros" }
 
 anyhow.workspace = true
+defer.workspace = true
 

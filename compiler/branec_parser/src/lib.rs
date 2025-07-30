@@ -28,22 +28,22 @@ pub fn parser<'src, M>() -> impl Parser<
 where
     M: 'static + Fn(SimpleSpan) -> Span,
 {
-    let mut compiler_value = Recursive::declare();
+    let mut expression = Recursive::declare();
     let mut fn_def = Recursive::declare();
 
     let ident = text::unicode::ident().to_slice().padded();
 
     let label_def = ident
         .clone()
-        .then(token(":").ignore_then(compiler_value.clone()).or_not());
+        .then(token(":").ignore_then(expression.clone()).or_not());
 
     let label_stmt = label_def
         .clone()
         .then_ignore(token("="))
-        .then(compiler_value.clone())
+        .then(expression.clone())
         .map(
-            |((label, constraints), value): ((&str, Option<CompilerValue>), CompilerValue)| {
-                LabelOperation::Label(label.to_string(), constraints, value)
+            |((label, type_value), value): ((&str, Option<Expression>), Expression)| {
+                LabelOperation::Label(label.to_string(), type_value, value)
             },
         );
 
@@ -57,7 +57,7 @@ where
         .collect::<Vec<(String, Option<String>)>>()
         .delimited_by(token("{"), token("}"))
         .then_ignore(token("="))
-        .then(compiler_value.clone())
+        .then(expression.clone())
         .map_with(|(labels, object), _| LabelOperation::Destructure(labels, object));
 
     let number = token("-")
@@ -67,40 +67,52 @@ where
         .to_slice()
         .padded()
         .try_map(|s: &str, span| s.parse::<f64>().map_err(|e| Rich::custom(span, e)))
-        .map_with(|value, _| Number { value });
+        .map_with(|value, _| Number {
+            value: NumberState::Const(NumberValue::Float(value)),
+            bit_width: NumberBitWidth::Unresolved,
+            storage_type: StorageType::Unresolved,
+        });
 
     let array_lit = ();
     let structure = label_def
         .clone()
         .separated_by(token(","))
-        .collect::<Vec<(&str, Option<CompilerValue>)>>()
+        .collect::<Vec<(&str, Option<Expression>)>>()
         .delimited_by(token("{"), token("}"))
         .map_with(|members, _| {
-            CompilerValueKind::Object(Object::new(members.iter().map(|(label, value)| {
-                ObjectMember {
-                    label: (*label).into(),
-                    value: value
-                        .as_ref()
-                        .map(|v| v.clone())
-                        .unwrap_or_else(|| CompilerValue::label(*label)),
-                }
-            })))
+            // TODO parse type_value + speculative(?)
+            Expression::Structure(
+                None,
+                members
+                    .iter()
+                    .map(|(label, value)| {
+                        (
+                            (*label).into(),
+                            false,
+                            value
+                                .as_ref()
+                                .map(|v: &Expression| v.clone())
+                                .unwrap_or_else(|| Expression::Label(label.to_string())),
+                        )
+                    })
+                    .collect::<Vec<(String, bool, Expression)>>(),
+            )
         });
 
     let match_expr = token("match")
-        .ignore_then(compiler_value.clone())
+        .ignore_then(expression.clone())
         .then(
-            ident
+            expression
+                .clone()
                 .clone()
                 .then_ignore(token("=>"))
-                .then(compiler_value.clone())
+                .then(expression.clone())
                 .labelled("match branch")
-                .map(|(label, branch): (&str, CompilerValue)| (label.to_string(), branch))
                 .separated_by(token(","))
-                .collect::<HashMap<String, CompilerValue>>()
+                .collect::<Vec<(Expression, Expression)>>()
                 .delimited_by(token("{"), token("}")),
         )
-        .map_with(|(value, branches), _| CompilerValueKind::Match(Box::new(value), branches));
+        .map_with(|(value, branches), _| Expression::Match(Box::new(value), branches));
 
     let fn_expr = token("fn")
         .ignore_then(
@@ -109,47 +121,36 @@ where
                 .collect::<Vec<_>>()
                 .delimited_by(token("("), token(")")),
         )
-        .then(token("=>").ignore_then(compiler_value.clone()).or_not())
+        .then(token("=>").ignore_then(expression.clone()).or_not())
         .then(fn_def.clone().delimited_by(token("{"), token("}")))
-        .map_with(|((params, returns), defintion), _| {
-            CompilerValueKind::Function(Function {
-                params: Array {
-                    values: params
+        .map_with(
+            |((params, return_type_value), (label_ops, return_value)), _| {
+                Expression::ConstructFunction(
+                    params
                         .into_iter()
-                        .map(|(label, constraints)| {
-                            CompilerValue::object([
-                                ObjectMember {
-                                    label: "label".into(),
-                                    value: CompilerValue::string(label),
-                                },
-                                ObjectMember {
-                                    label: "constraints".into(),
-                                    value: CompilerValue::array(
-                                        constraints.map(|c| vec![c]).unwrap_or_default(),
-                                    ),
-                                },
-                            ])
+                        .map(|(label, type_value)| {
+                            (
+                                label.to_string(),
+                                type_value.unwrap_or(Expression::Value(Value::Any)),
+                            )
                         })
                         .collect(),
-                },
-                returns: Array {
-                    values: returns.map(|c| vec![c]).unwrap_or_default(),
-                },
-                defintion,
-            })
-        });
+                    return_type_value
+                        .map(|c| Box::new(c))
+                        .unwrap_or(Box::new(Expression::Value(Value::Any))),
+                    label_ops,
+                    return_value,
+                )
+            },
+        );
 
     let atom = choice((
         fn_expr,
         match_expr,
         structure,
-        ident.map(|label: &str| CompilerValueKind::Label(label.into())),
-        number.map_with(|n, _| CompilerValueKind::Number(n)),
-    ))
-    .map_with(|kind, _| CompilerValue {
-        kind,
-        share_info: None,
-    });
+        ident.map(|label: &str| Expression::Label(label.into())),
+        number.map_with(|n, _| Expression::Value(Value::Number(n))),
+    ));
 
     let mut call = Recursive::declare();
     call.define(
@@ -159,31 +160,26 @@ where
                 .collect()
                 .delimited_by(token("("), token(")"))
                 .repeated(),
-            |function, args, _e| CompilerValue {
-                kind: CompilerValueKind::Call(Box::new(function), args),
-                share_info: None,
-            },
+            |function, args, _e| Expression::Call(Box::new(function), args),
         ),
     );
 
     let pipeline = ();
-    compiler_value.define(call.padded());
+    expression.define(call.padded());
 
+    // returns (operation, value)
     fn_def.define(
         choice((label_stmt, destructure))
             .repeated()
             //.separated_by(token(";"))
             .collect()
-            .then(compiler_value)
-            .map_with(|(operations, value), _e| FunctionDefinition::Closure {
-                operations,
-                value: Box::new(value),
-            }),
+            .then(expression)
+            .map_with(|(lo, r): (Vec<LabelOperation>, Expression), _| (lo, Box::new(r))),
     );
 
-    fn_def.map(|defintion| Function {
-        params: Array { values: Vec::new() },
-        returns: Array { values: Vec::new() },
-        defintion,
+    fn_def.map(|(operations, value)| Function {
+        params: vec![],
+        returns: Box::new(Value::Any),
+        defintion: FunctionDefinition::Closure { operations, value },
     })
 }
