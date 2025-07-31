@@ -1,7 +1,12 @@
-use std::collections::HashMap;
-
 use branec::types::*;
-use chumsky::prelude::*;
+use chumsky::{
+    IterParser, Parser,
+    error::Rich,
+    extra,
+    prelude::{Recursive, choice, just},
+    span::SimpleSpan,
+    text,
+};
 
 pub type Span = SimpleSpan;
 
@@ -31,11 +36,12 @@ where
     let mut expression = Recursive::declare();
     let mut fn_def = Recursive::declare();
 
-    let ident = text::unicode::ident().to_slice().padded();
+    let ident = text::unicode::ident().to_slice().padded().labelled("label");
 
     let label_def = ident
         .clone()
-        .then(token(":").ignore_then(expression.clone()).or_not());
+        .then(token(":").ignore_then(expression.clone()).or_not())
+        .map(|v: (&str, Option<Expression>)| v);
 
     let label_stmt = label_def
         .clone()
@@ -45,7 +51,8 @@ where
             |((label, type_value), value): ((&str, Option<Expression>), Expression)| {
                 LabelOperation::Label(label.to_string(), type_value, value)
             },
-        );
+        )
+        .labelled("label stmt");
 
     let destructure = ident
         .clone()
@@ -58,7 +65,8 @@ where
         .delimited_by(token("{"), token("}"))
         .then_ignore(token("="))
         .then(expression.clone())
-        .map_with(|(labels, object), _| LabelOperation::Destructure(labels, object));
+        .map_with(|(labels, object), _| LabelOperation::Destructure(labels, object))
+        .labelled("destructure");
 
     let number = token("-")
         .or_not()
@@ -71,7 +79,8 @@ where
             value: NumberState::Const(NumberValue::Float(value)),
             bit_width: NumberBitWidth::Unresolved,
             storage_type: StorageType::Unresolved,
-        });
+        })
+        .labelled("number");
 
     let array_lit = ();
     let structure = label_def
@@ -97,32 +106,30 @@ where
                     })
                     .collect::<Vec<(String, bool, Expression)>>(),
             )
-        });
+        })
+        .labelled("structure");
 
     let match_expr = token("match")
         .ignore_then(expression.clone())
         .then(
             expression
                 .clone()
-                .clone()
-                .then_ignore(token("=>"))
-                .then(expression.clone())
-                .labelled("match branch")
                 .separated_by(token(","))
-                .collect::<Vec<(Expression, Expression)>>()
+                .collect::<Vec<Expression>>()
                 .delimited_by(token("{"), token("}")),
         )
-        .map_with(|(value, branches), _| Expression::Match(Box::new(value), branches));
+        .map_with(|(value, branches), _| Expression::Match(Box::new(value), branches))
+        .labelled("match");
 
-    let fn_expr = token("fn")
-        .ignore_then(
-            label_def
-                .separated_by(token(","))
-                .collect::<Vec<_>>()
-                .delimited_by(token("("), token(")")),
-        )
-        .then(token("=>").ignore_then(expression.clone()).or_not())
+    let fn_expr = label_def
+        .clone()
+        .separated_by(token(","))
+        .collect::<Vec<_>>()
+        .delimited_by(token("("), token(")"))
+        .then_ignore(token("=>"))
+        .then(expression.clone().or_not())
         .then(fn_def.clone().delimited_by(token("{"), token("}")))
+        .labelled("function definition")
         .map_with(
             |((params, return_type_value), (label_ops, return_value)), _| {
                 Expression::ConstructFunction(
@@ -144,11 +151,45 @@ where
             },
         );
 
+    let pipe_expr = label_def
+        .clone()
+        .separated_by(token(","))
+        .collect::<Vec<_>>()
+        .delimited_by(token("("), token(")"))
+        .then_ignore(token("=>"))
+        .then(expression.clone().or_not())
+        .then(
+            expression
+                .clone()
+                .separated_by(token(","))
+                .collect()
+                .delimited_by(token("["), token("]")),
+        )
+        .labelled("pipeline definition")
+        .map_with(|((params, return_type_value), segments), _| {
+            Expression::ConstructPipeline(
+                params
+                    .into_iter()
+                    .map(|(label, type_value)| {
+                        (
+                            label.to_string(),
+                            type_value.unwrap_or(Expression::Value(Value::Any)),
+                        )
+                    })
+                    .collect(),
+                return_type_value
+                    .map(|c| Box::new(c))
+                    .unwrap_or(Box::new(Expression::Value(Value::Any))),
+                segments,
+            )
+        });
+
     let atom = choice((
         fn_expr,
+        pipe_expr,
         match_expr,
         structure,
-        ident.map(|label: &str| Expression::Label(label.into())),
+        ident.map_with(|label: &str, _| Expression::Label(label.into())),
         number.map_with(|n, _| Expression::Value(Value::Number(n))),
     ));
 
@@ -164,8 +205,7 @@ where
         ),
     );
 
-    let pipeline = ();
-    expression.define(call.padded());
+    expression.define(call.labelled("expression").padded().map(|e: Expression| e));
 
     // returns (operation, value)
     fn_def.define(

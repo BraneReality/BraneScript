@@ -224,22 +224,23 @@ impl Interpreter {
                 let condition = self.evaluate(&condition, labels)?;
                 let (branches, errors) = branches.iter().fold(
                     (Vec::new(), Vec::new()),
-                    |(mut branches, mut errors), (ty, func)| {
-                        match (self.evaluate(&ty, labels), self.evaluate(&func, labels)) {
-                            (Ok(ty), Ok(func)) => {
-                                // TODO validate type is type, and function sig accepts type
+                    |(mut branches, mut errors), func| {
+                        match self.evaluate(&func, labels) {
+                            Ok(func) => {
                                 if let Value::Function(func) = func {
-                                    branches.push((ty, func));
+                                    if func.params.len() == 1 {
+                                        branches.push(func);
+                                    } else {
+                                        errors.push(Error::new(
+                                            "Can only match on single parameter functions",
+                                        ))
+                                    }
                                 } else {
                                     errors.push(Error::new("Expected Function Value"))
                                 }
                             }
-                            (Ok(_), Err(mut err)) | (Err(mut err), Ok(_)) => {
-                                errors.append(&mut err)
-                            }
-                            (Err(mut e1), Err(mut e2)) => {
-                                errors.append(&mut e1);
-                                errors.append(&mut e2);
+                            Err(mut errs) => {
+                                errors.append(&mut errs);
                             }
                         }
                         (branches, errors)
@@ -247,12 +248,12 @@ impl Interpreter {
                 );
 
                 if errors.is_empty() {
-                    for (cond, func) in branches {
-                        if let Err(_) = cond.contains(&condition) {
+                    for branch in branches {
+                        if let Err(_) = branch.params[0].ty.contains(&condition) {
                             continue;
                         }
 
-                        return self.call(&func, [condition]);
+                        return self.call(&branch, [condition]);
                     }
                     Err(vec![Error::new(format!(
                         "No branch of match statement accepts {}",
@@ -299,6 +300,9 @@ impl Interpreter {
                         value: value.clone(),
                     },
                 }))
+            }
+            Expression::ConstructPipeline(items, expression, expressions) => {
+                todo!("Construct pipe not implemenented")
             }
         }
     }

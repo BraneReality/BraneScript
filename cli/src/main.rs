@@ -28,10 +28,38 @@ fn main() -> anyhow::Result<()> {
     let parser = branec_parser::parser();
     {
         let input = document.map_span(move |span| span);
-        let script_fn = parser
-            .parse(input)
-            .into_result()
-            .map_err(|e| anyhow!("{:#?}", e))?;
+        let script_fn = parser.parse(input).into_result().map_err(|errs| {
+            let mut message = String::new();
+            for e in errs {
+                let mut line = 1;
+                let mut char_pos = 0;
+                let mut count = 0;
+                for c in document.chars() {
+                    if count >= e.span().start {
+                        break;
+                    }
+                    if c == '\n' {
+                        line += 1;
+                        char_pos = 0;
+                    } else {
+                        char_pos += 1;
+                    }
+                    count += 1;
+                }
+                message += format!(
+                    "[{}:{}] {:#?} in contexts {:?}",
+                    line,
+                    char_pos,
+                    e,
+                    e.contexts()
+                        .map(|c| c.0.to_string())
+                        .reduce(|a, b| format!("{}, {}", a, b))
+                        .unwrap_or_default()
+                )
+                .as_str();
+            }
+            anyhow!(message)
+        })?;
 
         let result = itpr.call(&script_fn, []);
         println!("Result: {:#?}", result);

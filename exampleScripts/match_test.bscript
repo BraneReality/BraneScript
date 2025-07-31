@@ -1,4 +1,4 @@
 match True {
-    True => fn (_) { 1 },
-    False => fn (_) { 0 }
+    (_: True) => { 1 },
+    (_: False) => { 0 }
 }
