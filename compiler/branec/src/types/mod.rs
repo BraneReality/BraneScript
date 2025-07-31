@@ -1142,7 +1142,7 @@ pub enum Expression {
     /// Match based on types
     ///
     /// (condition, [type value, function accepting arg of type])
-    Match(Box<Expression>, Vec<(Expression, Expression)>),
+    Match(Box<Expression>, Vec<Expression>),
     /// Create a structured object, optionally enforcing a type
     ///
     /// (type value, [(label, speculative, member value)]
@@ -1161,6 +1161,10 @@ pub enum Expression {
         Vec<LabelOperation>,
         Box<Expression>,
     ),
+    /// Construct a pipeline
+    ///
+    /// (params: [(label, type value)], return type value, segment functions)
+    ConstructPipeline(Vec<(String, Expression)>, Box<Expression>, Vec<Expression>),
     /// Way to report errors down a value path
     Error(Vec<Error>),
     /// Previously consumed value, when a label is consumed we put this in it's place
@@ -1231,7 +1235,7 @@ impl Display for Expression {
                 condition,
                 branches
                     .iter()
-                    .map(|(label, value)| format!("{} => {}", label, value))
+                    .map(|branch| branch.to_string())
                     .reduce(|a, b| format!("{}, {}", a, b))
                     .unwrap_or_default()
             ),
@@ -1277,6 +1281,7 @@ impl Display for Expression {
                 )
             }
             ConstructFunction(items, expression, label_operations, expression1) => todo!(),
+            ConstructPipeline(items, expression, expressions) => todo!(),
         }
     }
 }

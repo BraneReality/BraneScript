@@ -1,20 +1,22 @@
 a = 2
-b = 2
 
-my_add = fn (d: Number, c: Number) {
+my_add = (d: Number, c: Number) => {
     add(d, c) 
 }
 
-res1 = my_add(a, b)
-
-struct_add = fn(s) {
+struct_add = (s) => {
     { a, b } = s
     add(a, b)
 }
 
 b = 2
-struct_add({
-    a: res1,
-    b
-})
 
+{
+    pipe_test: (a: Number, b: Number) => Number [
+        my_add,
+        (res: Number) => {
+            {a: res, b }       
+        },
+        struct_add
+    ]
+}
