@@ -443,7 +443,7 @@ impl Display for Enum {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArrayState {
-    Const(Vec<Value>),
+    Const(Vec<Ty>),
     Variable(Option<NumberState>),
 }
 
@@ -867,7 +867,7 @@ impl Ty {
                             ))])
                         } else {
                             for (ty, value) in ty_values.iter().zip(value_values.iter()) {
-                                ty.ty.contains(&value.ty)?
+                                ty.contains(value)?
                             }
                             Ok(())
                         }
@@ -1172,7 +1172,6 @@ struct IRBuilder(Arc<dyn Fn(&mut IRModule) -> Result<Artifact, Vec<Error>> + Syn
 
 #[derive(Clone, Debug, PartialEq)]
 enum Artifact {
-    Value(IRIDRef),
     /// ID of struct inside module
     Struct(IRIDRef),
     /// ID of function inside module
@@ -1243,7 +1242,7 @@ impl Expression {
     pub fn variant(
         label: Option<impl Into<String>>,
         variant: impl Into<String>,
-        value: Option<Value>,
+        value: Option<Ty>,
     ) -> Self {
         Self::Ty(Ty::variant(label, variant, value))
     }
@@ -1252,7 +1251,7 @@ impl Expression {
         Self::Ty(Ty::Object(Object::new(None, members)))
     }
 
-    pub fn array(values: Vec<Value>, element_ty: Ty) -> Self {
+    pub fn array(values: Vec<Ty>, element_ty: Ty) -> Self {
         Self::Ty(Ty::Array(Array {
             values: ArrayState::Const(values),
             element_ty: Some(Box::new(element_ty)),
@@ -1563,15 +1562,7 @@ impl CompilerTyApi for String {
     fn as_ty(&self) -> Ty {
         Ty::Array(Array {
             element_ty: Some(Box::new(u8::ty())),
-            values: ArrayState::Const(
-                self.as_bytes()
-                    .iter()
-                    .map(|b| Value {
-                        ty: b.as_ty(),
-                        value: None,
-                    })
-                    .collect(),
-            ),
+            values: ArrayState::Const(self.as_bytes().iter().map(|b| b.as_value()).collect()),
         })
     }
 
@@ -1589,7 +1580,7 @@ impl CompilerTyApi for String {
                 return String::from_utf8(
                     array
                         .iter()
-                        .map(|v| u8::from_ty(&v.ty))
+                        .map(|v| u8::from_value(v))
                         .collect::<Result<Vec<u8>, Error>>()?,
                 )
                 .map_err(|e| Error {
@@ -1629,14 +1620,7 @@ impl<T: CompilerTyApi> CompilerTyApi for Box<T> {
 impl<T: CompilerTyApi> CompilerTyApi for Vec<T> {
     fn as_ty(&self) -> Ty {
         Ty::Array(Array {
-            values: ArrayState::Const(
-                self.iter()
-                    .map(|item| Value {
-                        ty: item.as_ty(),
-                        value: None,
-                    })
-                    .collect(),
-            ),
+            values: ArrayState::Const(self.iter().map(|item| item.as_ty()).collect()),
             element_ty: Some(Box::new(T::ty())),
         })
     }
@@ -1645,10 +1629,7 @@ impl<T: CompilerTyApi> CompilerTyApi for Vec<T> {
         if let Some(array) = value.as_array() {
             match &array.values {
                 ArrayState::Const(array) => {
-                    return array
-                        .iter()
-                        .map(|v| T::from_ty(&v.ty))
-                        .collect::<Result<Vec<_>, _>>()
+                    return array.iter().map(T::from_ty).collect::<Result<Vec<_>, _>>()
                 }
                 ArrayState::Variable(_) => {}
             }
