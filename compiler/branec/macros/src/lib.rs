@@ -4,8 +4,8 @@ use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{DeriveInput, LitStr, parse_macro_input};
 
-#[proc_macro_derive(CompilerValueApi)]
-pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(CompilerTyApi)]
+pub fn compiler_ty_alias_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     // Generate the implementation for either struct or enum
@@ -14,7 +14,7 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
             let name = &input.ident;
             let name_str = name.to_string();
 
-            let fields_to_values = match &object.fields {
+            let fields_to_tys = match &object.fields {
                 syn::Fields::Named(fields) => fields
                     .named
                     .iter()
@@ -23,7 +23,7 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                         let label = LitStr::new(ident.to_string().as_str(), input.ident.span());
                         let ty = &field.ty;
                         quote! {
-                            ObjectMember::new(#label, <#ty as CompilerValueApi>::as_value(&self.#ident))
+                            ObjectMember::new(#label, Value{ty: <#ty as CompilerTyApi>::as_ty(&self.#ident), value: None})
                         }
                     })
                     .reduce(|a, b| {
@@ -31,7 +31,7 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                     })
                     .unwrap_or(quote! {}),
                 _ => {
-                    quote_spanned! { input.ident.span() => compile_error!("CompilerValueApi can only be derived for structs with named fields") }
+                    quote_spanned! { input.ident.span() => compile_error!("CompilerTyApi can only be derived for structs with named fields") }
                 }
             };
 
@@ -44,11 +44,11 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                         let label = LitStr::new(ident.to_string().as_str(), input.ident.span());
                         let ty = &field.ty;
                         quote! {
-                            #ident: <#ty as CompilerValueApi>::from_value(
+                            #ident: <#ty as CompilerTyApi>::from_ty(
 
                                 &object.get(#label).ok_or_else(|| {
                                     Error::new(format!("Missing field: {}", #label))
-                                })?.value
+                                })?.value.ty
                             )?
                         }
                     })
@@ -57,7 +57,7 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                     })
                     .unwrap_or(quote! {}),
                 _ => {
-                    quote_spanned! { input.ident.span() => compile_error!("CompilerValueApi can only be derived for structs with named fields") }
+                    quote_spanned! { input.ident.span() => compile_error!("CompilerTyApi can only be derived for structs with named fields") }
                 }
             };
 
@@ -72,12 +72,12 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                     })
                     .unzip(),
                 _ => {
-                    return quote_spanned! { input.ident.span() => compile_error!("CompilerValueApi can only be derived for structs with named fields") }.into();
+                    return quote_spanned! { input.ident.span() => compile_error!("CompilerTyApi can only be derived for structs with named fields") }.into();
                 }
             };
 
-            // Generate type representation - same shape as as_value but with type values
-            let fields_to_type_values = field_types
+            // Generate type representation - same shape as as_ty but with type values
+            let fields_to_type_tys = field_types
                 .iter()
                 .zip(field_idents.iter())
                 .map(|(ty, ident)| {
@@ -85,11 +85,11 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                     let ty_str = quote!(#ty).to_string();
                     if ty_str.contains(&name_str) || ty_str.contains("Self") {
                         quote! {
-                            ObjectMember::new(#label, Value::Recursive(#name_str.into()))
+                            ObjectMember::new(#label, Value{ty: Ty::Recursive(#name_str.into()), value: None})
                         }
                     } else {
                         quote! {
-                            ObjectMember::new(#label, <#ty as CompilerValueApi>::ty())
+                            ObjectMember::new(#label, Value{ty:<#ty as CompilerTyApi>::ty(), value: None})
                         }
                     }
                 })
@@ -99,19 +99,19 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                 .unwrap_or(quote! {});
 
             quote! {
-                impl CompilerValueApi for #name {
-                    fn as_value(&self) -> Value {
-                        Value::Object(Object::new(
+                impl CompilerTyApi for #name {
+                    fn as_ty(&self) -> Ty {
+                        Ty::Object(Object::new(
                             Some(#name_str.to_string()),
-                            vec![#fields_to_values]
+                            vec![#fields_to_tys]
                         ))
                     }
 
-                    fn from_value(value: &Value) -> Result<Self, Error> {
-                        let Value::Object(object) = value else {
+                    fn from_ty(ty: &Ty) -> Result<Self, Error> {
+                        let Ty::Object(object) = ty else {
                             return Err(Error::new(format!(
                                 "Expected an object but found {:?}",
-                                value
+                                ty
                             )));
                         };
                         Ok(Self {
@@ -119,10 +119,10 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                         })
                     }
 
-                    fn ty() -> Value {
-                        Value::Object(Object::new(
+                    fn ty() -> Ty {
+                        Ty::Object(Object::new(
                             Some(#name_str.to_string()),
-                            vec![#fields_to_type_values]
+                            vec![#fields_to_type_tys]
                         ))
                     }
                 }
@@ -132,13 +132,13 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
             let name = &input.ident;
             let name_str = name.to_string();
 
-            // For each variant in as_value - only one variant will be present
+            // For each variant in as_ty - only one variant will be present
             let to_arms = object.variants.iter().map(|variant| {
                 let variant_ident = &variant.ident;
                 let label = variant_ident.to_string();
                 match &variant.fields {
                     syn::Fields::Unit => quote! {
-                        Self::#variant_ident => Value::Enum(Enum {
+                        Self::#variant_ident => Ty::Enum(Enum {
                             label: Some(#name_str.to_string()),
                             variants: vec![EnumVariant {
                                 label: #label.to_string(),
@@ -147,16 +147,16 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                         })
                     },
                     syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => quote! {
-                        Self::#variant_ident(inner) => Value::Enum(Enum {
+                        Self::#variant_ident(inner) => Ty::Enum(Enum {
                             label: Some(#name_str.to_string()),
                             variants: vec![EnumVariant {
                                 label: #label.to_string(),
-                                value: Some(inner.as_value()),
+                                value: Some(Value { ty: inner.as_ty(), value: None}),
                             }]
                         })
                     },
                     _ => quote_spanned! { variant.ident.span() =>
-                        compile_error!("Only unit and single-value tuple variants are supported in enums for CompilerValueApi")
+                        compile_error!("Only unit and single-value tuple variants are supported in enums for CompilerTyApi")
                     },
                 }
             });
@@ -176,12 +176,12 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                                     "Expected value for enum variant {}", 
                                     #label
                                 )))?;
-                                Ok(Self::#variant_ident(<#ty as CompilerValueApi>::from_value(&inner)?))
+                                Ok(Self::#variant_ident(<#ty as CompilerTyApi>::from_ty(&inner.ty)?))
                             }
                         }
                     },
                     _ => quote_spanned! { variant.ident.span() =>
-                        compile_error!("Only unit and single-value tuple variants are supported in enums for CompilerValueApi")
+                        compile_error!("Only unit and single-value tuple variants are supported in enums for CompilerTyApi")
                     },
                 }
             });
@@ -207,41 +207,41 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                                 quote! {
                                     EnumVariant {
                                         label: #ident_str.to_string(),
-                                        value: Some(Value::Recursive(#name_str.into())),
+                                        value: Some(Ty::Recursive(#name_str.into())),
                                     }
                                 }
                             } else {
                                 quote! {
                                     EnumVariant {
                                         label: #ident_str.to_string(),
-                                        value: Some(<#ty as CompilerValueApi>::ty()),
+                                        value: Some(<#ty as CompilerTyApi>::ty()),
                                     }
                                 }
                             }
                         }
-                        _ => panic!("Unsupported enum variant for ty() in CompilerValueApi"),
+                        _ => panic!("Unsupported enum variant for ty() in CompilerTyApi"),
                     }
                 })
                 .collect();
 
             quote! {
-                impl CompilerValueApi for #name {
-                    fn as_value(&self) -> Value {
+                impl CompilerTyApi for #name {
+                    fn as_ty(&self) -> Ty {
                         match self {
                             #(#to_arms),*
                         }
                     }
 
-                    fn from_value(value: &Value) -> Result<Self, Error> {
-                        let Value::Enum(enum_value) = value else {
+                    fn from_ty(ty: &Ty) -> Result<Self, Error> {
+                        let Ty::Enum(enum_ty) = ty else {
                             return Err(Error::new(format!(
                                 "Expected an enum variant but found {:?}",
-                                value
+                                ty
                             )));
                         };
 
                         // Assuming the enum has only one variant when deserializing
-                        let variant = enum_value.variants.iter().next().ok_or_else(|| {
+                        let variant = enum_ty.variants.iter().next().ok_or_else(|| {
                             Error::new("Enum has no variants".to_string())
                         })?;
 
@@ -254,8 +254,8 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
                         }
                     }
 
-                    fn ty() -> Value {
-                        Value::Enum(Enum {
+                    fn ty() -> Ty {
+                        Ty::Enum(Enum {
                             label: Some(#name_str.to_string()),
                             variants: vec![
                                 #(#all_variant_specs),*
@@ -266,7 +266,7 @@ pub fn compiler_value_alias_derive(input: TokenStream) -> TokenStream {
             }
         }
         _ => {
-            quote_spanned! { input.ident.span() => compile_error!("CompilerValueApi can only be derived for structs and enums") }
+            quote_spanned! { input.ident.span() => compile_error!("CompilerTyApi can only be derived for structs and enums") }
         }
     })
 }

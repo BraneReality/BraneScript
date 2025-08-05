@@ -1,16 +1,16 @@
 use std::sync::LazyLock;
 
 use crate::types::*;
-use macros::CompilerValueApi;
+use macros::CompilerTyApi;
 
-#[derive(CompilerValueApi)]
+#[derive(CompilerTyApi)]
 pub enum Bool {
     True,
     False,
 }
 
-static NUMBER: LazyLock<Value> = LazyLock::new(|| {
-    Value::Number(Number {
+static NUMBER: LazyLock<Ty> = LazyLock::new(|| {
+    Ty::Number(Number {
         value: NumberState::Range(
             NumberRange {
                 begin: RangeBound {
@@ -29,15 +29,22 @@ static NUMBER: LazyLock<Value> = LazyLock::new(|| {
     })
 });
 
+// TODO: Add intrinsics for shared types
+
+#[derive(CompilerTyApi)]
+pub struct PipelineId {
+    pub value: String,
+}
+
 pub fn define() -> Object {
     let add = ObjectMember::new(
         "add",
-        Value::intrinsic_fn(
+        Ty::intrinsic_fn(
             [("a", NUMBER.clone()), ("a", NUMBER.clone())],
-            |args: Vec<Value>, _| -> Result<Value, Vec<Error>> {
+            |args: Vec<Ty>, _| -> Result<Ty, Vec<Error>> {
                 let a = &args[0];
                 let b = &args[1];
-                if let (Value::Number(a), Value::Number(b)) = (&a, &b) {
+                if let (Ty::Number(a), Ty::Number(b)) = (&a, &b) {
                     let value = match (&a.value, &b.value) {
                         (NumberState::Const(a), NumberState::Const(b)) => {
                             NumberState::Const(match (a, b) {
@@ -60,7 +67,7 @@ pub fn define() -> Object {
                         (NumberState::Range(a), NumberState::Range(b)) => todo!(),
                     };
 
-                    Ok(Value::Number(Number {
+                    Ok(Ty::Number(Number {
                         value,
                         // Temp, we need to actually handle these
                         bit_width: a.bit_width,
@@ -79,8 +86,8 @@ pub fn define() -> Object {
     Object::new(
         Some("std".into()),
         [
-            ObjectMember::new("True", Bool::True.as_value()),
-            ObjectMember::new("False", Bool::False.as_value()),
+            ObjectMember::new("True", Bool::True.as_ty()),
+            ObjectMember::new("False", Bool::False.as_ty()),
             ObjectMember::new("Bool", Bool::ty()),
             ObjectMember::new("Number", NUMBER.clone()),
             add,

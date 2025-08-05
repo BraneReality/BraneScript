@@ -138,13 +138,13 @@ where
                         .map(|(label, type_value)| {
                             (
                                 label.to_string(),
-                                type_value.unwrap_or(Expression::Value(Value::Any)),
+                                type_value.unwrap_or(Expression::Ty(Ty::Any)),
                             )
                         })
                         .collect(),
                     return_type_value
                         .map(|c| Box::new(c))
-                        .unwrap_or(Box::new(Expression::Value(Value::Any))),
+                        .unwrap_or(Box::new(Expression::Ty(Ty::Any))),
                     label_ops,
                     return_value,
                 )
@@ -173,13 +173,13 @@ where
                     .map(|(label, type_value)| {
                         (
                             label.to_string(),
-                            type_value.unwrap_or(Expression::Value(Value::Any)),
+                            type_value.unwrap_or(Expression::Ty(Ty::Any)),
                         )
                     })
                     .collect(),
                 return_type_value
                     .map(|c| Box::new(c))
-                    .unwrap_or(Box::new(Expression::Value(Value::Any))),
+                    .unwrap_or(Box::new(Expression::Ty(Ty::Any))),
                 segments,
             )
         });
@@ -190,7 +190,7 @@ where
         match_expr,
         structure,
         ident.map_with(|label: &str, _| Expression::Label(label.into())),
-        number.map_with(|n, _| Expression::Value(Value::Number(n))),
+        number.map_with(|n, _| Expression::Ty(Ty::Number(n))),
     ));
 
     let mut call = Recursive::declare();
@@ -219,7 +219,7 @@ where
 
     fn_def.map(|(operations, value)| Function {
         params: vec![],
-        returns: Box::new(Value::Any),
+        returns: Box::new(Ty::Any),
         defintion: FunctionDefinition::Closure { operations, value },
     })
 }

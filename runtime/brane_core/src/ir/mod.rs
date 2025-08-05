@@ -238,10 +238,6 @@ pub enum IROp {
         args_t: IRIDRef,
         output: Option<IRValue>,
     },
-    NextStage {
-        args_t: IRIDRef,
-        args: IRValue,
-    },
 }
 
 #[derive(Clone)]
