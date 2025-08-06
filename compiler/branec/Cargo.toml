@@ -5,8 +5,6 @@ edition = "2021"
 
 [dependencies]
 anstream = "0.6.18"
-macros = { path = "./macros" }
-
 brane_core = { path = "../../runtime/brane_core/" }
 
 anyhow.workspace = true

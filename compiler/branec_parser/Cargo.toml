@@ -5,5 +5,3 @@ edition = "2024"
 
 [dependencies]
 chumsky.workspace = true
-
-branec = { path = "../branec/" }
