@@ -1,5 +1,6 @@
 use std::{ops::Range, sync::Arc};
 
+#[derive(Clone)]
 pub struct Span {
     pub range: Range<usize>,
     pub source: Arc<String>,
@@ -41,11 +42,17 @@ pub struct Literal {
     pub span: Span,
 }
 
-pub struct TemplateParam(String);
-pub struct TemplateArg(Ty);
+pub struct Ident {
+    pub span: Span,
+    pub text: String,
+}
+
+pub struct TemplateParam(pub Ident);
+
+pub struct TemplateArg(pub Ty);
 
 pub struct PathSegment {
-    pub label: String,
+    pub ident: Ident,
     pub template_args: Vec<TemplateArg>,
 }
 
@@ -68,13 +75,13 @@ pub enum NativeTy {
 
 pub enum TyKind {
     Native(NativeTy),
-    /// (isMut, type)
+    /// (is mut, type)
     Ptr(bool, Option<Box<Ty>>),
-    /// (isMut, type)
+    /// (is mut, type)
     Slice(bool, Option<Box<Ty>>),
     Path(Path),
     Tuple(Vec<Box<Ty>>),
-    Struct(Vec<(String, Box<Ty>)>),
+    Struct(Vec<(Ident, Box<Ty>)>),
     //TODO Fn,Pipe
 }
 
@@ -85,10 +92,13 @@ pub struct Ty {
 
 pub enum ExprKind {
     Literal(Literal),
+    Array(Vec<Expr>),
+    Tuple(Vec<Expr>),
+    Struct(Option<Path>, Vec<(Ident, Expr)>),
     Path(Path),
     Ref(Box<Expr>),
     Deref(Box<Expr>),
-    Field(Box<Expr>, String),
+    Field(Box<Expr>, PathSegment),
     Call(Box<Expr>, Vec<Expr>),
 }
 
@@ -98,28 +108,28 @@ pub struct Expr {
 }
 
 pub struct Path {
-    pub segments: Vec<String>,
+    pub segments: Vec<PathSegment>,
     pub span: Span,
 }
 
 pub struct Struct {
-    pub label: String,
+    pub ident: Ident,
     pub span: Span,
-    pub fields: Vec<(String, Ty)>,
+    pub fields: Vec<(Ident, Ty)>,
     pub template_params: Vec<TemplateParam>,
 }
 
 pub struct Enum {
-    pub label: String,
+    pub ident: Ident,
     pub span: Span,
-    pub variants: Vec<(String, Option<Ty>)>,
+    pub variants: Vec<(Ident, Option<Ty>)>,
     pub template_params: Vec<TemplateParam>,
 }
 
 pub struct Function {
-    pub label: String,
+    pub ident: Ident,
     pub span: Span,
-    pub params: Vec<(String, Ty)>,
+    pub params: Vec<(Ident, Ty)>,
     pub ret_ty: Option<Ty>,
     pub body: Block,
     pub template_params: Vec<TemplateParam>,
@@ -127,10 +137,10 @@ pub struct Function {
 
 pub enum CaseKind {
     Int(i128),
-    EnumVariant(String),
+    EnumVariant(Ident, Option<Ident>),
 }
 
-pub struct SwitchCase {
+pub struct MatchBranch {
     pub span: Span,
     pub case: CaseKind,
     pub body: Stmt,
@@ -138,12 +148,12 @@ pub struct SwitchCase {
 
 pub enum StmtKind {
     Expression(Expr),
-    Slice(Vec<Expr>),
     Assign(Expr, Expr),
-    VariableDef(Ty, String, Expr),
+    VariableDef(Ty, Ident, Expr),
     If(Expr, Box<Stmt>, Option<Box<Stmt>>),
     While(Expr, Box<Stmt>),
-    Switch(Span, Expr, Vec<SwitchCase>),
+    Match(Span, Expr, Vec<MatchBranch>),
+    Block(Block),
 }
 
 pub struct Stmt {
@@ -162,13 +172,11 @@ pub enum PipelineStage {
 }
 
 pub struct Pipeline {
-    pub label: String,
+    pub ident: Ident,
     pub span: Span,
-    pub exported: bool,
-    pub params: Vec<(String, Ty)>,
+    pub params: Vec<(Ident, Ty)>,
     pub ret_ty: Option<Ty>,
     pub stages: Vec<PipelineStage>,
-    pub template_params: Vec<TemplateParam>,
 }
 
 pub enum DefKind {
@@ -176,6 +184,7 @@ pub enum DefKind {
     Enum(Enum),
     Function(Function),
     Pipeline(Pipeline),
+    Namespace(Ident, Vec<Def>),
 }
 
 pub struct Def {
