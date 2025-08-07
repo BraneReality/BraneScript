@@ -1,7 +1,7 @@
 pub mod ast;
-
 use ast::*;
 
+use branec_source::Span;
 use chumsky::prelude::*;
 use chumsky::{IterParser, Parser, error::Rich, extra, span::SimpleSpan, text};
 
@@ -16,7 +16,7 @@ pub fn token<'src, M>(
 where
     M: 'static + Fn(SimpleSpan) -> Span,
 {
-    just(text).padded().to_slice().labelled(text)
+    just(text).labelled(text).padded().to_slice()
 }
 
 pub fn string_literal<'src, M>() -> impl Parser<
@@ -244,6 +244,7 @@ where
     ty.define(
         choice((
             native_ty.map(TyKind::Native),
+            path.clone().map(|path| TyKind::Path(path)),
             token("*")
                 .ignore_then(token("mut").or_not())
                 .then(choice((
@@ -413,16 +414,26 @@ where
 
     let match_stmt = token("match")
         .ignore_then(expr.clone().delimited_by(token("("), token(")")))
-        .then(match_branch.separated_by(token(",")).collect())
+        .then(
+            match_branch
+                .repeated()
+                .collect()
+                .delimited_by(token("{"), token("}")),
+        )
         .map_with(|(cond, cases), e| StmtKind::Match(e.span(), cond, cases));
 
     stmt.define(
         choice((
-            expr.then_ignore(token(";"))
+            expr.clone()
+                .then_ignore(token(";"))
                 .map(|expr| StmtKind::Expression(expr)),
             assign,
             variable_def,
             if_stmt,
+            token("return")
+                .ignore_then(expr.or_not())
+                .then_ignore(token(";"))
+                .map(|expr| StmtKind::Return(expr)),
             while_stmt,
             match_stmt,
             block.clone().map(|b| StmtKind::Block(b)),
@@ -440,7 +451,7 @@ where
 
     let struct_def = token("struct")
         .ignore_then(ident.clone())
-        .then(template_params.clone())
+        .then(template_params.clone().or_not())
         .then(
             field_def
                 .clone()
@@ -453,32 +464,33 @@ where
                 ident,
                 span: e.span(),
                 fields,
-                template_params,
+                template_params: template_params.unwrap_or_default(),
             })
         });
 
     let enum_def = token("enum")
         .ignore_then(ident.clone())
-        .then(template_params.clone())
+        .then(template_params.clone().or_not())
         .then(
             ident
                 .clone()
                 .then(ty.clone().delimited_by(token("("), token(")")).or_not())
                 .separated_by(token(","))
-                .collect(),
+                .collect()
+                .delimited_by(token("{"), token("}")),
         )
         .map_with(|((ident, template_params), variants), e| {
             DefKind::Enum(Enum {
                 ident,
                 span: e.span(),
                 variants,
-                template_params,
+                template_params: template_params.unwrap_or_default(),
             })
         });
 
     let function_def = token("fn")
         .ignore_then(ident.clone())
-        .then(template_params)
+        .then(template_params.or_not())
         .then(
             field_def
                 .clone()
@@ -486,7 +498,7 @@ where
                 .collect()
                 .delimited_by(token("("), token(")")),
         )
-        .then(token("=>").ignore_then(ty.clone()).or_not())
+        .then(token("->").ignore_then(ty.clone()).or_not())
         .then(block.clone())
         .map_with(
             |((((ident, template_params), params), ret_ty), body), e| Function {
@@ -495,7 +507,7 @@ where
                 params,
                 ret_ty,
                 body,
-                template_params,
+                template_params: template_params.unwrap_or_default(),
             },
         );
 
@@ -513,7 +525,7 @@ where
                 .collect()
                 .delimited_by(token("("), token(")")),
         )
-        .then(token("=>").ignore_then(ty.clone()).or_not())
+        .then(token("->").ignore_then(ty.clone()).or_not())
         .then(
             pipeline_stage
                 .separated_by(token(","))

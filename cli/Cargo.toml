@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 clap = { version = "4.5.31", features = ["derive"] }
-chumsky = "0.10.1"
 
 branec = {path = "../compiler/branec" }
 brane_core = {path = "../runtime/brane_core" }
-branec_parser = {path = "../compiler/branec_parser" }
+branec_source = {path = "../compiler/branec_source" }
+branec_emitter = {path = "../compiler/branec_emitter" }

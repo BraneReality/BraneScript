@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anstream = "0.6.18"
 brane_core = { path = "../../runtime/brane_core/" }
+branec_source = { path = "../branec_source/" }
+branec_parser = { path = "../branec_parser/" }
+branec_emitter = { path = "../branec_emitter/" }
 
+chumsky.workspace = true
 anyhow.workspace = true
-defer.workspace = true
 

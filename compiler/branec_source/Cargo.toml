@@ -1,8 +1,8 @@
 [package]
-name = "branec_parser"
+name = "branec_source"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-branec_source = { path = "../branec_source/" }
 chumsky.workspace = true
+anyhow.workspace = true
