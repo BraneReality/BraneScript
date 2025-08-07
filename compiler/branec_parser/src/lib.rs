@@ -22,7 +22,7 @@ where
 pub fn string_literal<'src, M>() -> impl Parser<
     'src,
     chumsky::input::MappedSpan<Span, &'src str, M>,
-    Literal,
+    String,
     extra::Full<Rich<'src, char, Span>, (), ()>,
 > + Clone
 where
@@ -38,10 +38,6 @@ where
             .collect(),
         )
         .then_ignore(just('"'))
-        .map_with(|value: Vec<char>, e| Literal {
-            kind: LiteralKind::String(value.into_iter().collect()),
-            span: e.span(),
-        })
 }
 
 /// Parse all types of escape sequences
@@ -196,7 +192,10 @@ where
         })
         .labelled("number");
 
-    let literal = number.or(string_literal());
+    let literal = number.or(string_literal().map_with(|value, e| Literal {
+        kind: LiteralKind::String(value),
+        span: e.span(),
+    }));
 
     let template_param = ident.clone().map(|ident| TemplateParam(ident));
     let template_arg = ty.clone().map(|t| TemplateArg(t));
@@ -419,7 +418,8 @@ where
 
     stmt.define(
         choice((
-            expr.map(|expr| StmtKind::Expression(expr)),
+            expr.then_ignore(token(";"))
+                .map(|expr| StmtKind::Expression(expr)),
             assign,
             variable_def,
             if_stmt,
@@ -542,6 +542,21 @@ where
         )
         .map(|(ident, defs)| DefKind::Namespace(ident, defs));
 
+    let link_def = token("link")
+        .ignore_then(string_literal())
+        .then_ignore(token(";"))
+        .map_with(|link, e| {
+            DefKind::Link(Ident {
+                span: e.span(),
+                text: link,
+            })
+        });
+
+    let use_def = token("use")
+        .ignore_then(path.clone())
+        .then_ignore(token(";"))
+        .map(|path| DefKind::Use(path));
+
     def.define(
         choice((
             struct_def,
@@ -549,6 +564,8 @@ where
             function_def.map(|f| DefKind::Function(f)),
             pipeline_def,
             namespace,
+            use_def,
+            link_def,
         ))
         .map_with(|kind, e| Def {
             kind,

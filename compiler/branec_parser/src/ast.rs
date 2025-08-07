@@ -184,6 +184,8 @@ pub enum DefKind {
     Enum(Enum),
     Function(Function),
     Pipeline(Pipeline),
+    Link(Ident),
+    Use(Path),
     Namespace(Ident, Vec<Def>),
 }
 
