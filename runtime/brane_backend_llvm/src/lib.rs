@@ -311,12 +311,12 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 0 => (AnyTypeEnum::VoidType(self.context.void_type()), None),
                 1 => {
                     let m = &output_t.members[0];
-                    if let IRType::Native(_) = &m.r#type {
-                        (self.get_llvm_type(&m.r#type).as_any_type_enum(), None)
+                    if let IRType::Native(_) = &m.ty {
+                        (self.get_llvm_type(&m.ty).as_any_type_enum(), None)
                     } else {
                         (
                             AnyTypeEnum::VoidType(self.context.void_type()),
-                            Some(BasicMetadataTypeEnum::from(self.get_llvm_type(&m.r#type))),
+                            Some(BasicMetadataTypeEnum::from(self.get_llvm_type(&m.ty))),
                         )
                     }
                 }
@@ -336,7 +336,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
             }
 
             for m in input_t.members.iter() {
-                input_args.push(self.get_llvm_type(&m.r#type).into())
+                input_args.push(self.get_llvm_type(&m.ty).into())
             }
 
             let function_type = if let AnyTypeEnum::VoidType(void_t) = return_type {
@@ -412,7 +412,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     .into(),
             ),
             IROp::ConstF32 { value: _ } => todo!(),
-            IROp::AllocA { r#type } => {
+            IROp::AllocA { ty: r#type } => {
                 let (size, alignment) = r#type.size_layout(module)?;
                 let misaligned_by = self.stack_offset % alignment;
                 if misaligned_by != 0 {
@@ -428,7 +428,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 self.stack_offset += size;
                 Some(aligned_i32_ptr.into())
             }
-            IROp::Load { r#type, ptr } => {
+            IROp::Load { ty: r#type, ptr } => {
                 let int_ptr = self.get_value(*ptr)?;
                 let int_ptr = match int_ptr {
                     BasicValueEnum::IntValue(int_ptr) => int_ptr,

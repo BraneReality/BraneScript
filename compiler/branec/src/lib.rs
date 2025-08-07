@@ -1,5 +1,5 @@
-use anyhow::{anyhow, bail};
-use brane_core::ir::IRModule;
+use anyhow::{anyhow, bail, Result};
+use brane_core::ir::{IRIDRef, IRModule};
 use branec_emitter::{self as emt, Diagnostic, DiagnosticEmitter};
 use branec_parser::ast;
 use branec_source::{SourceManager, Span, Uri};
@@ -75,5 +75,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
 
         Ok(())
+    }
+
+    pub fn emit_fn(&mut self, module: &mut IRModule) -> Result<IRIDRef> {
+        Ok(IRIDRef(0))
     }
 }

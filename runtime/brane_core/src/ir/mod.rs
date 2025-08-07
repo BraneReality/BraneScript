@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct IRIDRef(pub u32);
@@ -87,26 +87,10 @@ impl IRNativeType {
 pub enum IRType {
     Native(IRNativeType),
     Struct(IRIDRef),
+    Enum(IRIDRef),
 }
 
-impl IRIDRef {
-    pub fn size_layout(&self, module: &IRModule) -> anyhow::Result<(usize, usize)> {
-        let layout = module
-            .get_struct(self)
-            .ok_or(anyhow!("couldn't find struct {}", self))?
-            .layout(module)?;
-        Ok((layout.size, layout.alignment))
-    }
-}
-
-impl IRType {
-    pub fn size_layout(&self, module: &IRModule) -> anyhow::Result<(usize, usize)> {
-        Ok(match self {
-            IRType::Native(nt) => (nt.size(), nt.size()),
-            IRType::Struct(idref) => idref.size_layout(module)?,
-        })
-    }
-}
+impl IRIDRef {}
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct IRValue(pub u32);
@@ -123,10 +107,10 @@ pub enum IROp {
         value: f32,
     },
     AllocA {
-        r#type: IRType,
+        ty: IRType,
     },
     Load {
-        r#type: IRNativeType,
+        ty: IRNativeType,
         ptr: IRValue,
     },
     Store {
@@ -243,7 +227,7 @@ pub enum IROp {
 #[derive(Clone)]
 pub struct IRStructMember {
     pub id: Option<String>,
-    pub r#type: IRType,
+    pub ty: IRType,
 }
 
 pub struct IRStruct {
@@ -258,6 +242,11 @@ pub struct IRStructLayout {
     // total size of the struct
     pub size: usize,
     pub alignment: usize,
+}
+
+/// Increase a size or offset so that it alligns properly
+pub fn pad_align(size: usize, align: usize) -> usize {
+    (size + align - 1) & !(size - 1) // Align offset
 }
 
 impl IRStruct {
@@ -275,10 +264,10 @@ impl IRStruct {
         }
 
         for member in &self.members {
-            let (size, align) = member.r#type.size_layout(module)?;
+            let (size, align) = module.size_align(&member.ty)?;
 
             if !self.packed {
-                offset = (offset + align - 1) & !(align - 1); // Align offset
+                offset = pad_align(offset, align); // Align offset
             }
             byte_offsets.push(offset);
             offset += size;
@@ -288,7 +277,7 @@ impl IRStruct {
         }
 
         if !self.packed {
-            offset = (offset + max_alignment - 1) & !(max_alignment - 1); // Align total size
+            offset = pad_align(offset, max_alignment); // Align total size
         }
 
         assert_ne!(0, offset, "structs with members cannot be zero sized!");
@@ -297,6 +286,76 @@ impl IRStruct {
             byte_offsets,
             size: offset,
             alignment: max_alignment,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct IREnumVariant {
+    pub id: String,
+    pub ty: Option<IRType>,
+}
+
+#[derive(Clone)]
+pub struct IREnum {
+    pub id: Option<String>,
+    pub variants: Vec<IREnumVariant>,
+    pub packed: bool,
+}
+
+pub struct IREnumLayout {
+    // total size of the struct
+    pub union_size: usize,
+    pub index_offset: usize,
+    pub index_ty: IRNativeType,
+    pub size: usize,
+    pub alignment: usize,
+}
+
+impl IREnum {
+    pub fn layout(&self, module: &IRModule) -> anyhow::Result<IREnumLayout> {
+        if self.variants.is_empty() {
+            return Ok(IREnumLayout {
+                alignment: 1,
+                union_size: 0,
+                index_offset: 0,
+                size: 1,
+                index_ty: IRNativeType::U8,
+            });
+        }
+
+        let (union_size, alignment) =
+            self.variants
+                .iter()
+                .fold(Ok((0, 1)), |res, member| -> anyhow::Result<_> {
+                    let (size, align) = match res {
+                        Err(err) => return Err(err),
+                        Ok(tpl) => tpl,
+                    };
+                    Ok(if let Some(ty) = &member.ty {
+                        let (ty_size, ty_align) = module.size_align(ty)?;
+                        (ty_size.max(size), ty_align.max(align))
+                    } else {
+                        (size, align)
+                    })
+                })?;
+
+        let index_ty = match self.variants.len() {
+            0..256 => IRNativeType::U8,
+            256..65536 => IRNativeType::U16,
+            _ => bail!("Enum must have less than 65,536 variants"),
+        };
+
+        let alignment = index_ty.alignment().max(alignment);
+        let index_offset = pad_align(union_size, index_ty.alignment());
+        let size = pad_align(index_offset + index_ty.size(), alignment);
+
+        Ok(IREnumLayout {
+            union_size,
+            index_offset,
+            index_ty,
+            size,
+            alignment,
         })
     }
 }
@@ -318,19 +377,52 @@ pub struct IRPipeline {
 pub struct IRModule {
     pub id: String,
     pub structs: Vec<IRStruct>,
+    pub enums: Vec<IREnum>,
     pub functions: Vec<IRFunction>,
     pub pipelines: Vec<IRPipeline>,
 }
 
 impl IRModule {
+    pub fn size_align(&self, ty: &IRType) -> anyhow::Result<(usize, usize)> {
+        Ok(match ty {
+            IRType::Native(ty) => (ty.size(), ty.alignment()),
+            IRType::Struct(ty) => {
+                let s = self
+                    .get_struct(ty)
+                    .ok_or_else(|| anyhow!("couldn't find struct {}", ty))?
+                    .layout(self)?;
+                (s.size, s.alignment)
+            }
+            IRType::Enum(ty) => {
+                let s = self
+                    .get_enum(ty)
+                    .ok_or_else(|| anyhow!("couldn't find enum {}", ty))?
+                    .layout(self)?;
+                (s.size, s.alignment)
+            }
+        })
+    }
+
     pub fn get_struct(&self, id: &IRIDRef) -> Option<&IRStruct> {
         self.structs.get(id.0 as usize)
+    }
+
+    pub fn get_function(&self, id: &IRIDRef) -> Option<&IRFunction> {
+        self.functions.get(id.0 as usize)
+    }
+
+    pub fn get_pipeline(&self, id: &IRIDRef) -> Option<&IRPipeline> {
+        self.pipelines.get(id.0 as usize)
+    }
+
+    fn get_enum(&self, id: &IRIDRef) -> Option<&IREnum> {
+        self.enums.get(id.0 as usize)
     }
 }
 
 use std::fmt;
 impl fmt::Display for IRIDRef {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{}", self.0)
     }
 }
@@ -345,7 +437,8 @@ impl fmt::Display for IRType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             IRType::Native(native) => write!(f, "{}", native),
-            IRType::Struct(id) => write!(f, "{}", id),
+            IRType::Struct(id) => write!(f, "struct({})", id),
+            IRType::Enum(id) => write!(f, "enum({})", id),
         }
     }
 }
@@ -362,8 +455,8 @@ impl fmt::Display for IROp {
             IROp::ArgValue { index } => write!(f, "(arg {})", index),
             IROp::ConstI32 { value } => write!(f, "(const.i32 {})", value),
             IROp::ConstF32 { value } => write!(f, "(const.f32 {})", value),
-            IROp::AllocA { r#type } => write!(f, "(alloc {})", r#type),
-            IROp::Load { r#type, ptr } => write!(f, "(load {} {})", r#type.to_str(), ptr),
+            IROp::AllocA { ty } => write!(f, "(alloc {})", ty),
+            IROp::Load { ty, ptr } => write!(f, "(load {} {})", ty.to_str(), ptr),
             IROp::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
             IROp::INeg { arg } => write!(f, "(i_neg {})", arg),
             IROp::FNeg { arg } => write!(f, "(f_neg {})", arg),
@@ -432,8 +525,8 @@ impl fmt::Display for IRPipeline {
 impl fmt::Display for IRStructMember {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.id {
-            Some(id) => write!(f, "(\"{}\" {})", id, self.r#type),
-            None => write!(f, "({})", self.r#type),
+            Some(id) => write!(f, "(\"{}\" {})", id, self.ty),
+            None => write!(f, "({})", self.ty),
         }
     }
 }
