@@ -401,9 +401,6 @@ impl fmt::Display for IROp {
                     write!(f, "(ret {})", args_t)
                 }
             }
-            IROp::NextStage { args_t, args } => {
-                write!(f, "(stage.next {} {})", args_t, args)
-            }
         }
     }
 }

@@ -1,4 +1,0 @@
-match True {
-    (_: True) => { 1 },
-    (_: False) => { 0 }
-}

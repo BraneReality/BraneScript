@@ -627,7 +627,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 input,
                 output,
             } => todo!(),
-            IROp::NextStage { args_t, args } => {
+            /*IROp::NextStage { args_t, args } => {
                 let return_type = module
                     .get_struct(args_t)
                     .ok_or(anyhow!("next stage args_t not found: {}", args_t))?;
@@ -651,7 +651,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     self.builder.build_return(None)?;
                 }
                 None
-            }
+            }*/
             IROp::INeg { arg } => {
                 let arg = self.get_value(*arg)?;
                 if let BasicValueEnum::IntValue(arg) = arg {

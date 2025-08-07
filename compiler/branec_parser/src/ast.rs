@@ -1,35 +1,4 @@
-use std::{ops::Range, sync::Arc};
-
-#[derive(Clone)]
-pub struct Span {
-    pub range: Range<usize>,
-    pub source: Arc<String>,
-}
-
-impl chumsky::span::Span for Span {
-    type Context = Arc<String>;
-
-    type Offset = usize;
-
-    fn new(context: Self::Context, range: Range<Self::Offset>) -> Self {
-        Self {
-            range,
-            source: context,
-        }
-    }
-
-    fn context(&self) -> Self::Context {
-        self.source.clone()
-    }
-
-    fn start(&self) -> Self::Offset {
-        self.range.start.clone()
-    }
-
-    fn end(&self) -> Self::Offset {
-        self.range.end.clone()
-    }
-}
+use branec_source::Span;
 
 pub enum LiteralKind {
     Float(f64),
@@ -154,6 +123,7 @@ pub enum StmtKind {
     While(Expr, Box<Stmt>),
     Match(Span, Expr, Vec<MatchBranch>),
     Block(Block),
+    Return(Option<Expr>),
 }
 
 pub struct Stmt {
