@@ -15,10 +15,12 @@ fn main() -> anyhow::Result<()> {
     let mut ctx = CompileContext {
         emitter: branec_emitter::ConsoleEmitter::new(),
         sources: SourceManager::new(),
-        loaded: Default::default(),
+        loaded_modules: Default::default(),
     };
 
-    ctx.emit_module(&Uri::File(cli.input.into()))?;
+    let module = ctx.emit_module(&Uri::File(cli.input.into()), vec!["test_mod".into()])?;
+
+    println!("Emitted module:\n{}", module);
 
     Ok(())
 }

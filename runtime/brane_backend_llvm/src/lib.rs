@@ -1,5 +1,5 @@
 use anyhow::{Context, anyhow, bail};
-use brane_core::ir::{IRFunction, IRModule, IROp, IRType, IRValue};
+use brane_core::ir::{Function, Op, IRValueModule, Type};
 use defer::defer;
 pub use inkwell::{
     builder::Builder as InkBuilder, context::Context as InkContext, module::Module as InkModule,
@@ -23,7 +23,7 @@ use std::{
 pub struct LLVMJitBackend {
     lljit: LLVMOrcLLJITRef,
 
-    staged_modules: Mutex<Vec<(IRModule, LLVMOrcThreadSafeModuleRef)>>,
+    staged_modules: Mutex<Vec<(Module, LLVMOrcThreadSafeModuleRef)>>,
     pub functions: RwLock<HashMap<String, LLVMOrcExecutorAddress>>,
 }
 
@@ -102,7 +102,7 @@ impl LLVMJitBackend {
         })
     }
 
-    pub fn stage_module(&self, ir_module: IRModule) -> anyhow::Result<()> {
+    pub fn stage_module(&self, ir_module: Module) -> anyhow::Result<()> {
         let ts_ctx = unsafe { LLVMOrcCreateNewThreadSafeContext() };
 
         let context = unsafe { InkContext::new(LLVMOrcThreadSafeContextGetContext(ts_ctx)) };
@@ -270,10 +270,7 @@ pub struct LLVMModuleBuilder<'ctx> {
 }
 
 impl<'ctx> LLVMModuleBuilder<'ctx> {
-    pub fn build(
-        bs_module: &IRModule,
-        context: &'ctx InkContext,
-    ) -> anyhow::Result<InkModule<'ctx>> {
+    pub fn build(bs_module: &Module, context: &'ctx InkContext) -> anyhow::Result<InkModule<'ctx>> {
         let module = context.create_module(&bs_module.id);
         let builder = context.create_builder();
 
@@ -294,7 +291,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         Ok(mb.module)
     }
 
-    fn build_module(&mut self, bs_module: &IRModule) -> anyhow::Result<()> {
+    fn build_module(&mut self, bs_module: &Module) -> anyhow::Result<()> {
         self.functions.reserve(bs_module.functions.len());
 
         for f in bs_module.functions.iter() {
@@ -311,7 +308,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 0 => (AnyTypeEnum::VoidType(self.context.void_type()), None),
                 1 => {
                     let m = &output_t.members[0];
-                    if let IRType::Native(_) = &m.ty {
+                    if let Type::Native(_) = &m.ty {
                         (self.get_llvm_type(&m.ty).as_any_type_enum(), None)
                     } else {
                         (
@@ -391,13 +388,13 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
     #[allow(unused_variables)]
     fn build_op(
         &mut self,
-        op: &IROp,
+        op: &Op,
         llvm_func: FunctionValue<'ctx>,
-        ir_func: &IRFunction,
-        module: &IRModule,
+        ir_func: &Function,
+        module: &Module,
     ) -> anyhow::Result<()> {
         let new_value = match op {
-            IROp::ArgValue { index } => {
+            Op::ArgValue { index } => {
                 let input_type = module
                     .get_struct(&ir_func.input)
                     .expect("We've already tested args");
@@ -405,14 +402,14 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 let arg_offset = llvm_func.count_params() - input_type.members.len() as u32;
                 llvm_func.get_nth_param(arg_offset + *index)
             }
-            IROp::ConstI32 { value } => Some(
+            Op::ConstI32 { value } => Some(
                 self.context
                     .i32_type()
                     .const_int(unsafe { std::mem::transmute(*value as i64) }, false)
                     .into(),
             ),
-            IROp::ConstF32 { value: _ } => todo!(),
-            IROp::AllocA { ty: r#type } => {
+            Op::ConstF32 { value: _ } => todo!(),
+            Op::AllocA { ty: r#type } => {
                 let (size, alignment) = r#type.size_layout(module)?;
                 let misaligned_by = self.stack_offset % alignment;
                 if misaligned_by != 0 {
@@ -428,7 +425,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 self.stack_offset += size;
                 Some(aligned_i32_ptr.into())
             }
-            IROp::Load { ty: r#type, ptr } => {
+            Op::Load { ty: r#type, ptr } => {
                 let int_ptr = self.get_value(*ptr)?;
                 let int_ptr = match int_ptr {
                     BasicValueEnum::IntValue(int_ptr) => int_ptr,
@@ -436,11 +433,11 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 };
 
                 let true_ptr = self.brane_ptr(int_ptr)?;
-                let llvm_t = self.get_llvm_type(&IRType::Native(*r#type));
+                let llvm_t = self.get_llvm_type(&Type::Native(*r#type));
                 let value = self.builder.build_load(llvm_t, true_ptr, "loaded-v")?;
                 Some(BasicValueEnum::from(value))
             }
-            IROp::Store { src, ptr } => {
+            Op::Store { src, ptr } => {
                 let int_ptr = self.get_value(*ptr)?;
                 let int_ptr = match int_ptr {
                     BasicValueEnum::IntValue(int_ptr) => int_ptr,
@@ -453,7 +450,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 self.builder.build_store(true_ptr, src_v)?;
                 None
             }
-            IROp::IAdd { left, right } => {
+            Op::IAdd { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -464,7 +461,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("IAdd args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::FAdd { left, right } => {
+            Op::FAdd { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
@@ -475,7 +472,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("FAdd args were not both float values ({}, {})", left, right)
                 }
             }
-            IROp::ISub { left, right } => {
+            Op::ISub { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -486,7 +483,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("ISub args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::FSub { left, right } => {
+            Op::FSub { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
@@ -497,7 +494,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("FSub args were not both float values ({}, {})", left, right)
                 }
             }
-            IROp::IMul { left, right } => {
+            Op::IMul { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -508,7 +505,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("IMul args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::FMul { left, right } => {
+            Op::FMul { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
@@ -519,7 +516,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("FMul args were not both float values ({}, {})", left, right)
                 }
             }
-            IROp::SDiv { left, right } => {
+            Op::SDiv { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -530,7 +527,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("SDiv args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::UDiv { left, right } => {
+            Op::UDiv { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -541,7 +538,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("UDiv args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::FDiv { left, right } => {
+            Op::FDiv { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) =
@@ -552,7 +549,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("FDiv args were not both float values ({}, {})", left, right)
                 }
             }
-            IROp::SRem { left, right } => {
+            Op::SRem { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -563,7 +560,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("SRem args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::URem { left, right } => {
+            Op::URem { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -574,7 +571,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("URem args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::FRem { left, right } => {
+            Op::FRem { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -585,11 +582,11 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("URem args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::CmpEq { left, right } => todo!(),
-            IROp::CmpNe { left, right } => todo!(),
-            IROp::CmpGt { left, right } => todo!(),
-            IROp::CmpGe { left, right } => todo!(),
-            IROp::And { left, right } => {
+            Op::CmpEq { left, right } => todo!(),
+            Op::CmpNe { left, right } => todo!(),
+            Op::CmpGt { left, right } => todo!(),
+            Op::CmpGe { left, right } => todo!(),
+            Op::And { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -600,7 +597,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("And args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::Or { left, right } => {
+            Op::Or { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -611,7 +608,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("Or args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::Xor { left, right } => {
+            Op::Xor { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -622,7 +619,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("Xor args were not both int values ({}, {})", left, right)
                 }
             }
-            IROp::Call {
+            Op::Call {
                 func,
                 input,
                 output,
@@ -652,7 +649,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 }
                 None
             }*/
-            IROp::INeg { arg } => {
+            Op::INeg { arg } => {
                 let arg = self.get_value(*arg)?;
                 if let BasicValueEnum::IntValue(arg) = arg {
                     Some(self.builder.build_int_neg(arg, "")?.into())
@@ -660,7 +657,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("INeg arg was not an int value {}", arg)
                 }
             }
-            IROp::FNeg { arg } => {
+            Op::FNeg { arg } => {
                 let arg = self.get_value(*arg)?;
                 if let BasicValueEnum::FloatValue(arg) = arg {
                     Some(self.builder.build_float_neg(arg, "")?.into())
@@ -668,7 +665,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     bail!("FNeg arg was not an float value {}", arg)
                 }
             }
-            IROp::ShiftL { left, right } => {
+            Op::ShiftL { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -683,7 +680,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     )
                 }
             }
-            IROp::IShiftR { left, right } => {
+            Op::IShiftR { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -702,7 +699,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     )
                 }
             }
-            IROp::UShiftR { left, right } => {
+            Op::UShiftR { left, right } => {
                 let left = self.get_value(*left)?;
                 let right = self.get_value(*right)?;
                 if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) =
@@ -721,13 +718,13 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                     )
                 }
             }
-            IROp::Ret { args_t, output } => todo!(),
+            Op::Ret { args_t, output } => todo!(),
         };
         self.op_values.push(new_value);
         Ok(())
     }
 
-    fn get_value(&self, ir_value: IRValue) -> anyhow::Result<BasicValueEnum<'ctx>> {
+    fn get_value(&self, ir_value: Value) -> anyhow::Result<BasicValueEnum<'ctx>> {
         Ok(self
             .op_values
             .get(ir_value.0 as usize)
@@ -764,10 +761,10 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
         })
     }
 
-    fn get_llvm_type(&mut self, bs_type: &IRType) -> BasicTypeEnum<'ctx> {
-        use brane_core::ir::IRNativeType::*;
+    fn get_llvm_type(&mut self, bs_type: &Type) -> BasicTypeEnum<'ctx> {
+        use brane_core::ir::NativeType::*;
         match bs_type {
-            IRType::Native(native_type) => match native_type {
+            Type::Native(native_type) => match native_type {
                 Bool => BasicTypeEnum::IntType(self.context.bool_type()),
                 U8 | I8 => BasicTypeEnum::IntType(self.context.i8_type()),
                 U16 | I16 => BasicTypeEnum::IntType(self.context.i16_type()),
@@ -778,7 +775,7 @@ impl<'ctx> LLVMModuleBuilder<'ctx> {
                 U128 | I128 => BasicTypeEnum::IntType(self.context.i128_type()),
                 FnPtr => todo!("funciton pointers not implemented"),
             },
-            IRType::Struct(_) => BasicTypeEnum::IntType(self.context.i32_type()), // Referred to as int ptrs
+            Type::Struct(_) => BasicTypeEnum::IntType(self.context.i32_type()), // Referred to as int ptrs
         }
     }
 

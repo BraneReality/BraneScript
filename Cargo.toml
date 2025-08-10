@@ -6,7 +6,7 @@ members = [
     "cli", 
     "runtime/brane_core",
     "runtime/brane_backend",
-    "runtime/brane_backend_llvm", 
+    #"runtime/brane_backend_llvm", 
     "compiler/branec", 
     "compiler/branec_parser", 
     "compiler/branec_emitter",

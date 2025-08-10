@@ -1,0 +1,33 @@
+enum MyEnum {
+    None,
+    Float(f32),
+    Int(i32)
+}
+
+struct MyStruct {
+    a: MyEnum,
+    b: MyEnum
+}
+
+fn add_enums(a: *MyEnum, b: MyEnum) -> MyEnum {
+    match(a) {
+        None => return None;
+        Float(a) => match(b) {
+            None => return None;
+            Float(b) => return MyEnum.Float(add(a, b));
+            Int(b) => return MyEnum.Float(add(a, Float(b)));
+        }
+        Int(a) => match(b) {
+            None => return None;
+            Float(b) => return MyEnum.Float(add(Float(a), b));
+            Int(b) => return MyEnum.Int(add(a, b));
+        }
+    }
+}
+
+pipe add_structs(a: MyStruct, b: MyStruct) -> MyStruct [{
+    return new MyStruct {
+        a: add_enums(a.a, b.a),
+        b: add_enums(a.b, b.b)
+    };
+}]

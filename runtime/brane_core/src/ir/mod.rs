@@ -1,10 +1,15 @@
 use anyhow::{anyhow, bail};
 
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct IRIDRef(pub u32);
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub enum Ref {
+    Struct(i32),
+    Enum(i32),
+    Function(i32),
+    Pipeline(i32),
+}
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum IRNativeType {
+pub enum NativeType {
     Bool,
     U8,
     I8,
@@ -18,13 +23,11 @@ pub enum IRNativeType {
     F64,
     U128,
     I128,
-    Ptr,
-    FnPtr,
 }
 
-impl IRNativeType {
+impl NativeType {
     pub fn to_str(&self) -> &'static str {
-        use IRNativeType::*;
+        use NativeType::*;
         match self {
             Bool => "bool",
             U8 => "u8",
@@ -39,13 +42,11 @@ impl IRNativeType {
             F64 => "f64",
             U128 => "u128",
             I128 => "i128",
-            Ptr => "ptr",
-            FnPtr => "fnPtr",
         }
     }
 
-    pub fn from_str(text: &str) -> Result<IRNativeType, ()> {
-        use IRNativeType::*;
+    pub fn from_str(text: &str) -> Result<NativeType, ()> {
+        use NativeType::*;
         match text {
             "bool" => Ok(Bool),
             "u8" => Ok(U8),
@@ -60,21 +61,18 @@ impl IRNativeType {
             "f64" => Ok(F64),
             "u128" => Ok(U128),
             "i128" => Ok(I128),
-            "ptr" => Ok(Ptr),
-            "fnPtr" => Ok(FnPtr),
             _ => Err(()),
         }
     }
 
     pub fn size(&self) -> usize {
-        use IRNativeType::*;
+        use NativeType::*;
         match self {
             Bool | I8 | U8 => 1,
             I16 | U16 => 2,
-            I32 | U32 | F32 | Ptr => 4,
+            I32 | U32 | F32 => 4,
             I64 | U64 | F64 => 8,
             U128 | I128 => 16,
-            FnPtr => todo!("fn pointer not implemented"),
         }
     }
 
@@ -84,159 +82,166 @@ impl IRNativeType {
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
-pub enum IRType {
-    Native(IRNativeType),
-    Struct(IRIDRef),
-    Enum(IRIDRef),
+pub enum Ty {
+    Native(NativeType),
+    Struct(i32),
+    Enum(i32),
+    /// (is mutable, inner ty)
+    Ptr(bool, Option<Box<Ty>>),
 }
 
-impl IRIDRef {}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct IRValue(pub u32);
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum Value {
+    PhiArg { block: u32, arg: u32 },
+    FnArg(u32),
+    BlockOp { block: u32, op: u32 },
+    ConstI32(i32),
+    ConstI64(i64),
+    ConstF32(f32),
+    ConstF64(f64),
+}
 
 #[derive(PartialEq, Clone, Debug)]
-pub enum IROp {
-    ArgValue {
-        index: u32,
-    },
-    ConstI32 {
-        value: i32,
-    },
-    ConstF32 {
-        value: f32,
-    },
+pub enum Op {
     AllocA {
-        ty: IRType,
+        ty: Ty,
     },
     Load {
-        ty: IRNativeType,
-        ptr: IRValue,
+        ty: NativeType,
+        ptr: Value,
     },
     Store {
-        src: IRValue,
-        ptr: IRValue,
+        src: Value,
+        ptr: Value,
     },
     // Unary ops
     INeg {
-        arg: IRValue,
+        arg: Value,
     },
     FNeg {
-        arg: IRValue,
+        arg: Value,
     },
     // Binary ops
     IAdd {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     FAdd {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     ISub {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     FSub {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     IMul {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     FMul {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     SDiv {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     UDiv {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     FDiv {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     URem {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     SRem {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     FRem {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     CmpEq {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     CmpNe {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     CmpGt {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     CmpGe {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     And {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     Or {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     Xor {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     ShiftL {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     IShiftR {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     UShiftR {
-        left: IRValue,
-        right: IRValue,
+        left: Value,
+        right: Value,
     },
     Call {
-        func: IRIDRef,
-        input: IRValue,
-        output: IRValue,
+        func: i32,
+        input: Vec<Value>,
+        output: Value,
     },
-    Ret {
-        args_t: IRIDRef,
-        output: Option<IRValue>,
+    Jump {
+        block: i32,
     },
+    JumpIf {
+        cond: Value,
+        block: i32,
+    },
+    JumpTable {
+        cond: Value,
+        block: i32,
+    },
+    Ret(Option<(Ty, Value)>),
 }
 
-#[derive(Clone)]
-pub struct IRStructMember {
+#[derive(Clone, PartialEq)]
+pub struct StructMember {
     pub id: Option<String>,
-    pub ty: IRType,
+    pub ty: Ty,
 }
 
-pub struct IRStruct {
+pub struct Struct {
     pub id: Option<String>,
-    pub members: Vec<IRStructMember>,
+    pub members: Vec<StructMember>,
     pub packed: bool,
 }
 
-pub struct IRStructLayout {
+pub struct StructLayout {
     // offsets of struct members in bytes
     pub byte_offsets: Vec<usize>,
     // total size of the struct
@@ -249,14 +254,14 @@ pub fn pad_align(size: usize, align: usize) -> usize {
     (size + align - 1) & !(size - 1) // Align offset
 }
 
-impl IRStruct {
-    pub fn layout(&self, module: &IRModule) -> anyhow::Result<IRStructLayout> {
+impl Struct {
+    pub fn layout(&self, module: &Module) -> anyhow::Result<StructLayout> {
         let mut byte_offsets = Vec::with_capacity(self.members.len());
         let mut offset = 0;
         let mut max_alignment = 1;
 
         if self.members.is_empty() {
-            return Ok(IRStructLayout {
+            return Ok(StructLayout {
                 byte_offsets,
                 size: 1,
                 alignment: 1,
@@ -282,7 +287,7 @@ impl IRStruct {
 
         assert_ne!(0, offset, "structs with members cannot be zero sized!");
 
-        Ok(IRStructLayout {
+        Ok(StructLayout {
             byte_offsets,
             size: offset,
             alignment: max_alignment,
@@ -290,37 +295,37 @@ impl IRStruct {
     }
 }
 
-#[derive(Clone)]
-pub struct IREnumVariant {
+#[derive(Clone, PartialEq)]
+pub struct EnumVariant {
     pub id: String,
-    pub ty: Option<IRType>,
+    pub ty: Option<Ty>,
 }
 
 #[derive(Clone)]
-pub struct IREnum {
+pub struct Enum {
     pub id: Option<String>,
-    pub variants: Vec<IREnumVariant>,
+    pub variants: Vec<EnumVariant>,
     pub packed: bool,
 }
 
-pub struct IREnumLayout {
+pub struct EnumLayout {
     // total size of the struct
     pub union_size: usize,
     pub index_offset: usize,
-    pub index_ty: IRNativeType,
+    pub index_ty: NativeType,
     pub size: usize,
     pub alignment: usize,
 }
 
-impl IREnum {
-    pub fn layout(&self, module: &IRModule) -> anyhow::Result<IREnumLayout> {
+impl Enum {
+    pub fn layout(&self, module: &Module) -> anyhow::Result<EnumLayout> {
         if self.variants.is_empty() {
-            return Ok(IREnumLayout {
+            return Ok(EnumLayout {
                 alignment: 1,
                 union_size: 0,
                 index_offset: 0,
                 size: 1,
-                index_ty: IRNativeType::U8,
+                index_ty: NativeType::U8,
             });
         }
 
@@ -341,8 +346,8 @@ impl IREnum {
                 })?;
 
         let index_ty = match self.variants.len() {
-            0..256 => IRNativeType::U8,
-            256..65536 => IRNativeType::U16,
+            0..256 => NativeType::U8,
+            256..65536 => NativeType::U16,
             _ => bail!("Enum must have less than 65,536 variants"),
         };
 
@@ -350,7 +355,7 @@ impl IREnum {
         let index_offset = pad_align(union_size, index_ty.alignment());
         let size = pad_align(index_offset + index_ty.size(), alignment);
 
-        Ok(IREnumLayout {
+        Ok(EnumLayout {
             union_size,
             index_offset,
             index_ty,
@@ -360,149 +365,212 @@ impl IREnum {
     }
 }
 
-pub struct IRFunction {
+pub struct Block {
+    /// Phi nodes all declared at the "beginning" of blocks for eazy analysis
+    pub phi: Vec<Vec<Value>>,
+    pub ops: Vec<Op>,
+}
+
+pub struct Function {
     pub id: String,
-    pub input: IRIDRef,
-    pub output: IRIDRef,
-    pub operations: Vec<IROp>,
+    pub input: Vec<Ty>,
+    pub output: Option<Ty>,
+    pub blocks: Vec<Block>,
 }
 
 pub struct IRPipeline {
     pub id: String,
-    pub input: IRIDRef,
-    pub output: IRIDRef,
-    pub stages: Vec<IRIDRef>,
+    pub input: Vec<Ty>,
+    pub output: Option<Ty>,
+    /// Function ids
+    pub stages: Vec<i32>,
 }
 
-pub struct IRModule {
+pub struct Module {
     pub id: String,
-    pub structs: Vec<IRStruct>,
-    pub enums: Vec<IREnum>,
-    pub functions: Vec<IRFunction>,
+    pub structs: Vec<Struct>,
+    pub enums: Vec<Enum>,
+    pub functions: Vec<Function>,
     pub pipelines: Vec<IRPipeline>,
 }
 
-impl IRModule {
-    pub fn size_align(&self, ty: &IRType) -> anyhow::Result<(usize, usize)> {
+impl Module {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            structs: Default::default(),
+            enums: Default::default(),
+            functions: Default::default(),
+            pipelines: Default::default(),
+        }
+    }
+
+    pub fn size_align(&self, ty: &Ty) -> anyhow::Result<(usize, usize)> {
         Ok(match ty {
-            IRType::Native(ty) => (ty.size(), ty.alignment()),
-            IRType::Struct(ty) => {
+            Ty::Native(ty) => (ty.size(), ty.alignment()),
+            Ty::Struct(ty) => {
                 let s = self
-                    .get_struct(ty)
+                    .get_struct(*ty)
                     .ok_or_else(|| anyhow!("couldn't find struct {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
             }
-            IRType::Enum(ty) => {
+            Ty::Enum(ty) => {
                 let s = self
-                    .get_enum(ty)
+                    .get_enum(*ty)
                     .ok_or_else(|| anyhow!("couldn't find enum {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
             }
+            Ty::Ptr(_, _) => (4, 4),
         })
     }
 
-    pub fn get_struct(&self, id: &IRIDRef) -> Option<&IRStruct> {
-        self.structs.get(id.0 as usize)
+    pub fn get_struct(&self, id: i32) -> Option<&Struct> {
+        self.structs.get(id as usize)
     }
 
-    pub fn get_function(&self, id: &IRIDRef) -> Option<&IRFunction> {
-        self.functions.get(id.0 as usize)
+    pub fn get_function(&self, id: i32) -> Option<&Function> {
+        self.functions.get(id as usize)
     }
 
-    pub fn get_pipeline(&self, id: &IRIDRef) -> Option<&IRPipeline> {
-        self.pipelines.get(id.0 as usize)
+    pub fn get_pipeline(&self, id: i32) -> Option<&IRPipeline> {
+        self.pipelines.get(id as usize)
     }
 
-    fn get_enum(&self, id: &IRIDRef) -> Option<&IREnum> {
-        self.enums.get(id.0 as usize)
+    fn get_enum(&self, id: i32) -> Option<&Enum> {
+        self.enums.get(id as usize)
     }
 }
 
 use std::fmt;
-impl fmt::Display for IRIDRef {
+impl fmt::Display for Ref {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "#{}", self.0)
+        match self {
+            Ref::Struct(s) => write!(f, "Struct({})", s),
+            Ref::Enum(e) => write!(f, "Enum({})", e),
+            Ref::Function(c) => write!(f, "Function({})", c),
+            Ref::Pipeline(p) => write!(f, "Pipeline({})", p),
+        }
     }
 }
 
-impl fmt::Display for IRNativeType {
+impl fmt::Display for NativeType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.to_str())
     }
 }
 
-impl fmt::Display for IRType {
+impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            IRType::Native(native) => write!(f, "{}", native),
-            IRType::Struct(id) => write!(f, "struct({})", id),
-            IRType::Enum(id) => write!(f, "enum({})", id),
-        }
-    }
-}
-
-impl fmt::Display for IRValue {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "$({})", self.0)
-    }
-}
-
-impl fmt::Display for IROp {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            IROp::ArgValue { index } => write!(f, "(arg {})", index),
-            IROp::ConstI32 { value } => write!(f, "(const.i32 {})", value),
-            IROp::ConstF32 { value } => write!(f, "(const.f32 {})", value),
-            IROp::AllocA { ty } => write!(f, "(alloc {})", ty),
-            IROp::Load { ty, ptr } => write!(f, "(load {} {})", ty.to_str(), ptr),
-            IROp::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
-            IROp::INeg { arg } => write!(f, "(i_neg {})", arg),
-            IROp::FNeg { arg } => write!(f, "(f_neg {})", arg),
-            IROp::IAdd { left, right } => write!(f, "(i_add {} {})", left, right),
-            IROp::FAdd { left, right } => write!(f, "(s_add {} {})", left, right),
-            IROp::ISub { left, right } => write!(f, "(i_sub {} {})", left, right),
-            IROp::FSub { left, right } => write!(f, "(f_sub {} {})", left, right),
-            IROp::IMul { left, right } => write!(f, "(i_mul {} {})", left, right),
-            IROp::FMul { left, right } => write!(f, "(f_mul {} {})", left, right),
-            IROp::SDiv { left, right } => write!(f, "(s_div {} {})", left, right),
-            IROp::UDiv { left, right } => write!(f, "(u_div {} {})", left, right),
-            IROp::FDiv { left, right } => write!(f, "(f_div {} {})", left, right),
-            IROp::SRem { left, right } => write!(f, "(s_rem {} {})", left, right),
-            IROp::URem { left, right } => write!(f, "(u_rem {} {})", left, right),
-            IROp::FRem { left, right } => write!(f, "(f_rem {} {})", left, right),
-            IROp::CmpEq { left, right } => write!(f, "(eq {} {})", left, right),
-            IROp::CmpNe { left, right } => write!(f, "(ne {} {})", left, right),
-            IROp::CmpGt { left, right } => write!(f, "(gt {} {})", left, right),
-            IROp::CmpGe { left, right } => write!(f, "(ge {} {})", left, right),
-            IROp::And { left, right } => write!(f, "(and {} {})", left, right),
-            IROp::Or { left, right } => write!(f, "(or {} {})", left, right),
-            IROp::Xor { left, right } => write!(f, "(xor {} {})", left, right),
-            IROp::ShiftL { left, right } => write!(f, "(shl {} {})", left, right),
-            IROp::IShiftR { left, right } => write!(f, "(i_shr {} {})", left, right),
-            IROp::UShiftR { left, right } => write!(f, "(u_shr {} {})", left, right),
-            IROp::Call {
-                func,
-                input,
-                output,
-            } => write!(f, "(call {} {} {})", func, input, output),
-            IROp::Ret { args_t, output } => {
-                if let Some(out_val) = &output {
-                    write!(f, "(ret {} {})", args_t, out_val)
-                } else {
-                    write!(f, "(ret {})", args_t)
+            Ty::Native(native) => write!(f, "{}", native),
+            Ty::Struct(id) => write!(f, "struct({})", id),
+            Ty::Enum(id) => write!(f, "enum({})", id),
+            Ty::Ptr(mutable, ty) => {
+                write!(f, "{}", if *mutable { "ptr" } else { "mut_ptr" })?;
+                if let Some(ty) = ty {
+                    write!(f, "{}", ty)?;
                 }
+                Ok(())
             }
         }
     }
 }
 
-impl fmt::Display for IRFunction {
+impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(func \"{}\" {} {}", self.id, self.input, self.output)?;
-        for (i, op) in self.operations.iter().enumerate() {
-            write!(f, "\n   {:4} <- {}", i, op)?;
+        match self {
+            Value::PhiArg { block, arg } => {
+                write!(f, "$PhiArg(block: {}, arg: {})", block, arg)
+            }
+            Value::FnArg(arg) => write!(f, "$FnArg({})", arg),
+            Value::BlockOp { block, op } => write!(f, "$BlockOp(block: {}, op: {})", block, op),
+            Value::ConstI32(val) => write!(f, "$ConstI32({})", val),
+            Value::ConstI64(val) => write!(f, "$ConstI64({})", val),
+            Value::ConstF32(val) => write!(f, "$ConstF32({})", val),
+            Value::ConstF64(val) => write!(f, "$ConstF64({})", val),
+        }
+    }
+}
+
+impl fmt::Display for Op {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Op::AllocA { ty } => write!(f, "(alloc {})", ty),
+            Op::Load { ty, ptr } => write!(f, "(load {} {})", ty.to_str(), ptr),
+            Op::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
+            Op::INeg { arg } => write!(f, "(i_neg {})", arg),
+            Op::FNeg { arg } => write!(f, "(f_neg {})", arg),
+            Op::IAdd { left, right } => write!(f, "(i_add {} {})", left, right),
+            Op::FAdd { left, right } => write!(f, "(s_add {} {})", left, right),
+            Op::ISub { left, right } => write!(f, "(i_sub {} {})", left, right),
+            Op::FSub { left, right } => write!(f, "(f_sub {} {})", left, right),
+            Op::IMul { left, right } => write!(f, "(i_mul {} {})", left, right),
+            Op::FMul { left, right } => write!(f, "(f_mul {} {})", left, right),
+            Op::SDiv { left, right } => write!(f, "(s_div {} {})", left, right),
+            Op::UDiv { left, right } => write!(f, "(u_div {} {})", left, right),
+            Op::FDiv { left, right } => write!(f, "(f_div {} {})", left, right),
+            Op::SRem { left, right } => write!(f, "(s_rem {} {})", left, right),
+            Op::URem { left, right } => write!(f, "(u_rem {} {})", left, right),
+            Op::FRem { left, right } => write!(f, "(f_rem {} {})", left, right),
+            Op::CmpEq { left, right } => write!(f, "(eq {} {})", left, right),
+            Op::CmpNe { left, right } => write!(f, "(ne {} {})", left, right),
+            Op::CmpGt { left, right } => write!(f, "(gt {} {})", left, right),
+            Op::CmpGe { left, right } => write!(f, "(ge {} {})", left, right),
+            Op::And { left, right } => write!(f, "(and {} {})", left, right),
+            Op::Or { left, right } => write!(f, "(or {} {})", left, right),
+            Op::Xor { left, right } => write!(f, "(xor {} {})", left, right),
+            Op::ShiftL { left, right } => write!(f, "(shl {} {})", left, right),
+            Op::IShiftR { left, right } => write!(f, "(i_shr {} {})", left, right),
+            Op::UShiftR { left, right } => write!(f, "(u_shr {} {})", left, right),
+            Op::Call {
+                func,
+                input,
+                output,
+            } => write!(
+                f,
+                "(call {} [{}] {})",
+                func,
+                input
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                output
+            ),
+            Op::Ret(Some((out_t, out_v))) => {
+                write!(f, "(ret {} {})", out_t, out_v)
+            }
+            Op::Ret(None) => {
+                write!(f, "ret")
+            }
+            Op::Jump { block } => write!(f, "(jump {})", block),
+            Op::JumpIf { cond, block } => write!(f, "(jump_if {} {})", cond, block),
+            Op::JumpTable { cond, block } => write!(f, "(jump_table {} {})", cond, block),
+        }
+    }
+}
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(func \"{}\" ", self.id)?;
+        write!(f, "(")?;
+        for (i, ty) in self.input.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{}", ty)?;
+        }
+        write!(f, ") ")?;
+        match &self.output {
+            Some(ty) => write!(f, "{}", ty)?,
+            None => write!(f, "nil")?,
+        }
+        for (i, block) in self.blocks.iter().enumerate() {
+            write!(f, "\n   Block {}:", i)?;
+            for (j, op) in block.ops.iter().enumerate() {
+                write!(f, "\n      {:4} <- {}", j, op)?;
+            }
         }
         write!(f, ")")
     }
@@ -510,11 +578,20 @@ impl fmt::Display for IRFunction {
 
 impl fmt::Display for IRPipeline {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "(pipe \"{}\" {} {} (stages",
-            self.id, self.input, self.output
-        )?;
+        write!(f, "(pipe \"{}\" ", self.id)?;
+        write!(f, "(")?;
+        for (i, ty) in self.input.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{}", ty)?;
+        }
+        write!(f, ") ")?;
+        match &self.output {
+            Some(ty) => write!(f, "{}", ty)?,
+            None => write!(f, "nil")?,
+        }
+        write!(f, " (stages")?;
         for stage in &self.stages {
             write!(f, " {}", stage)?;
         }
@@ -522,7 +599,7 @@ impl fmt::Display for IRPipeline {
     }
 }
 
-impl fmt::Display for IRStructMember {
+impl fmt::Display for StructMember {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match &self.id {
             Some(id) => write!(f, "(\"{}\" {})", id, self.ty),
@@ -531,7 +608,7 @@ impl fmt::Display for IRStructMember {
     }
 }
 
-impl fmt::Display for IRStruct {
+impl fmt::Display for Struct {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let id = self.id.as_deref().unwrap_or("-anon");
         write!(f, "(struct \"{}\"", id)?;
@@ -542,7 +619,7 @@ impl fmt::Display for IRStruct {
     }
 }
 
-impl fmt::Display for IRModule {
+impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(module \"{}\"", self.id)?;
         for s in &self.structs {
