@@ -1,28 +1,16 @@
-struct MyStruct {
-    a: i32,
-    b: f32
-}
-
 enum MyEnum {
     None,
     Float(f32),
     Int(i32)
 }
 
-fn add_enums(a: MyEnum, b: MyEnum) -> MyEnum {
-    match(a) {
-        None => return None;
-        Float(a) => match(b) {
-            None => return None;
-            Float(b) => return add(a, b);
-            Int(b) => return add(a, b);
-        }
-        Int(a) => match(b) {
-            None => return None;
-            Float(b) => return add(a, b);
-            Int(b) => return add(a, b);
-        }
-    }
+struct MyStruct {
+    a: MyEnum,
+    b: MyEnum
+}
+
+fn add_test(a: i32, b: i32) -> i32 {
+    return add(a, b);
 }
 
 pipe add_structs(a: MyStruct, b: MyStruct) -> MyStruct [{

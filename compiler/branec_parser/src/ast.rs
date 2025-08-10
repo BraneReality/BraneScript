@@ -1,31 +1,37 @@
 use branec_source::Span;
 
+#[derive(Clone)]
 pub enum LiteralKind {
     Float(f64),
     Int(i128),
     String(String),
 }
 
+#[derive(Clone)]
 pub struct Literal {
     pub kind: LiteralKind,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub struct Ident {
     pub span: Span,
     pub text: String,
 }
 
-pub struct TemplateParam(pub Ident);
-
-pub struct TemplateArg(pub Ty);
-
-pub struct PathSegment {
-    pub ident: Ident,
-    pub template_args: Vec<TemplateArg>,
+impl PartialEq for Ident {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
+pub struct TemplateParam(pub Ident);
+
+#[derive(PartialEq, Clone)]
+pub struct TemplateArg(pub Ty);
+
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum NativeTy {
     I8,
     I16,
@@ -42,6 +48,7 @@ pub enum NativeTy {
     String,
 }
 
+#[derive(PartialEq, Clone)]
 pub enum TyKind {
     Native(NativeTy),
     /// (is mut, type)
@@ -54,11 +61,19 @@ pub enum TyKind {
     //TODO Fn,Pipe
 }
 
+#[derive(Clone)]
 pub struct Ty {
     pub span: Span,
     pub kind: TyKind,
 }
 
+impl PartialEq for Ty {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+#[derive(Clone)]
 pub enum ExprKind {
     Literal(Literal),
     Array(Vec<Expr>),
@@ -71,16 +86,43 @@ pub enum ExprKind {
     Call(Box<Expr>, Vec<Expr>),
 }
 
+#[derive(Clone)]
 pub struct Expr {
     pub span: Span,
     pub kind: ExprKind,
 }
 
+#[derive(Clone, PartialEq)]
+pub struct PathSegment {
+    pub ident: Ident,
+    pub template_args: Vec<TemplateArg>,
+}
+
+#[derive(Clone)]
 pub struct Path {
     pub segments: Vec<PathSegment>,
     pub span: Span,
 }
 
+use std::fmt;
+impl fmt::Display for Path {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let segments: Vec<String> = self
+            .segments
+            .iter()
+            .map(|seg| seg.ident.text.clone())
+            .collect();
+        write!(f, "{}", segments.join("."))
+    }
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.segments == other.segments
+    }
+}
+
+#[derive(Clone)]
 pub struct Struct {
     pub ident: Ident,
     pub span: Span,
@@ -88,6 +130,7 @@ pub struct Struct {
     pub template_params: Vec<TemplateParam>,
 }
 
+#[derive(Clone)]
 pub struct Enum {
     pub ident: Ident,
     pub span: Span,
@@ -95,6 +138,7 @@ pub struct Enum {
     pub template_params: Vec<TemplateParam>,
 }
 
+#[derive(Clone)]
 pub struct Function {
     pub ident: Ident,
     pub span: Span,
@@ -104,17 +148,20 @@ pub struct Function {
     pub template_params: Vec<TemplateParam>,
 }
 
+#[derive(Clone)]
 pub enum CaseKind {
     Int(i128),
     EnumVariant(Ident, Option<Ident>),
 }
 
+#[derive(Clone)]
 pub struct MatchBranch {
     pub span: Span,
     pub case: CaseKind,
     pub body: Stmt,
 }
 
+#[derive(Clone)]
 pub enum StmtKind {
     Expression(Expr),
     Assign(Expr, Expr),
@@ -126,21 +173,25 @@ pub enum StmtKind {
     Return(Option<Expr>),
 }
 
+#[derive(Clone)]
 pub struct Stmt {
     pub span: Span,
     pub kind: StmtKind,
 }
 
+#[derive(Clone)]
 pub struct Block {
     pub statements: Vec<Stmt>,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum PipelineStage {
     Block(Block),
     Fn(Function),
 }
 
+#[derive(Clone)]
 pub struct Pipeline {
     pub ident: Ident,
     pub span: Span,
@@ -149,6 +200,7 @@ pub struct Pipeline {
     pub stages: Vec<PipelineStage>,
 }
 
+#[derive(Clone)]
 pub enum DefKind {
     Struct(Struct),
     Enum(Enum),
@@ -159,7 +211,21 @@ pub enum DefKind {
     Namespace(Ident, Vec<Def>),
 }
 
+#[derive(Clone)]
 pub struct Def {
     pub kind: DefKind,
     pub span: Span,
+}
+impl Def {
+    pub fn ident(&self) -> Option<&Ident> {
+        match &self.kind {
+            DefKind::Struct(s) => Some(&s.ident),
+            DefKind::Enum(e) => Some(&e.ident),
+            DefKind::Function(f) => Some(&f.ident),
+            DefKind::Pipeline(p) => Some(&p.ident),
+            DefKind::Link(l) => Some(l),
+            DefKind::Namespace(n, _) => Some(n),
+            _ => None,
+        }
+    }
 }
