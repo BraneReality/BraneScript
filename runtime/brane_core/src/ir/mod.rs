@@ -235,6 +235,7 @@ pub struct StructMember {
     pub ty: Ty,
 }
 
+#[derive(Clone, PartialEq)]
 pub struct Struct {
     pub id: Option<String>,
     pub members: Vec<StructMember>,
@@ -301,7 +302,7 @@ pub struct EnumVariant {
     pub ty: Option<Ty>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Enum {
     pub id: Option<String>,
     pub variants: Vec<EnumVariant>,
@@ -438,7 +439,7 @@ impl Module {
         self.pipelines.get(id as usize)
     }
 
-    fn get_enum(&self, id: i32) -> Option<&Enum> {
+    pub fn get_enum(&self, id: i32) -> Option<&Enum> {
         self.enums.get(id as usize)
     }
 }
