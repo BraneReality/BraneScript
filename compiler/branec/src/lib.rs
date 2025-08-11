@@ -7,6 +7,7 @@ use chumsky::input::Input;
 use chumsky::span::Span as _;
 use chumsky::Parser;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -198,7 +199,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     /// Emit a value coresponding to the location of a value or variable
     pub fn emit_l_value(&mut self, stmt: &ast::Expr, ctx: &mut FunctionCtx) -> Result<LValue> {}
 
-    pub fn emit_callable(&mut self, stmt: &ast::Expr, ctx: &mut FunctionCtx) -> Result {}
+    pub fn emit_callable(&mut self, stmt: &ast::Expr, ctx: &mut FunctionCtx) -> Result<Callable> {}
 
     pub fn store(&mut self, lvalue: &LValue, rvalue: RValue, ctx: &mut FunctionCtx) -> Result<()> {
         match &lvalue {
@@ -214,6 +215,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 }
                 RValue::Enum(data, variant, ty) => {
                     let layout = ty.layout(&ctx.mod_ctx.module)?;
+                    /// emit map statment
                     if let Some(data) = data {
                         // This is technically reliant on us not typechecking store...
                         self.store(lvalue, data.as_ref().clone(), ctx);
@@ -271,7 +273,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         ptr: variant_index_ptr,
                         ty: layout.index_ty,
                     })?;
-
+                    /// emit map statment
                     let data = match &variant.ty {
                         Some(data_ty) => {
                             let field_lvalue = LValue::Ptr(*ptr, data_ty.clone());
@@ -736,42 +738,6 @@ impl<'mc> FunctionCtx<'mc> {
                         RValue::Value(_, _) => bail!("Expected struct but found value"),
                     }
                 }
-                VariablePathSegment::EnumData => {
-                    let Some(root) = current_root else {
-                        bail!(
-                            "could not resolve variable path {:?}, must have label as root",
-                            path
-                        );
-                    };
-                    match root {
-                        RValue::Enum(data, _variant, _) => {
-                            if data.is_none() {
-                                bail!("tried to get data for a variant without data");
-                            }
-                            current_root = Some(data.as_ref().unwrap().as_ref().clone());
-                        }
-                        RValue::Struct(_, _) => bail!("Expected enum but found struct"),
-                        RValue::Value(_, _) => bail!("Expected enum but found value"),
-                    }
-                }
-                VariablePathSegment::EnumVariant => {
-                    let Some(root) = &mut current_root else {
-                        bail!(
-                            "could not resolve variable path {:?}, must have label as root",
-                            path
-                        );
-                    };
-                    match root {
-                        RValue::Enum(_data, variant, ty) => {
-                            current_root = Some(RValue::Value(
-                                *variant,
-                                ir::Ty::Native(ty.layout(&self.mod_ctx.module)?.index_ty),
-                            ));
-                        }
-                        RValue::Struct(_, _) => bail!("Expected enum but found struct"),
-                        RValue::Value(_, _) => bail!("Expected enum but found value"),
-                    }
-                }
             }
         }
         Ok(current_root.unwrap())
@@ -822,45 +788,6 @@ impl<'mc> FunctionCtx<'mc> {
                         RValue::Value(_, _) => bail!("Expected struct but found value"),
                     }
                 }
-                VariablePathSegment::EnumData => {
-                    let Some(root) = dest else {
-                        bail!(
-                            "could not resolve variable path {:?}, must have label as root",
-                            path
-                        );
-                    };
-                    match root {
-                        RValue::Enum(data, _variant, _) => {
-                            if data.is_none() {
-                                bail!("tried to get data for a variant without data");
-                            }
-                            dest = Some(data.as_mut().unwrap());
-                        }
-                        RValue::Struct(_, _) => bail!("Expected enum but found struct"),
-                        RValue::Value(_, _) => bail!("Expected enum but found value"),
-                    }
-                }
-                VariablePathSegment::EnumVariant => {
-                    let Some(root) = &mut dest else {
-                        bail!(
-                            "could not resolve variable path {:?}, must have label as root",
-                            path
-                        );
-                    };
-                    match root {
-                        RValue::Enum(_data, variant, _) => {
-                            if let RValue::Value(new_variant, _ty) = variable {
-                                // TODO validate variant type
-                                *variant = new_variant;
-                                return Ok(());
-                            } else {
-                                bail!("Tried to set enum variant index to non value variable type");
-                            }
-                        }
-                        RValue::Struct(_, _) => bail!("Expected enum but found struct"),
-                        RValue::Value(_, _) => bail!("Expected enum but found value"),
-                    }
-                }
             }
         }
         *dest.unwrap() = variable;
@@ -873,8 +800,13 @@ impl<'mc> FunctionCtx<'mc> {
 enum RValue {
     Value(ir::Value, ir::Ty),
     Struct(Vec<(String, Box<RValue>)>, ir::Struct),
+    /// enum data contains SSA values for all variants. All variants must be defined even if only some variants
+    /// contain actual values. Non-defined variants will contain default values. Load instructions
+    /// will be emitted as if all variants were defined simaltaniously.
+    /// Then eliminated by dead code evaluation.
+    /// TODO also have a optimization pass that moves values only used once into the blocks
     /// (enum data, variant index, enum def)
-    EnumVariant(Option<Box<RValue>>, ir::Value, ir::Enum),
+    Enum(Vec<RValue>, ir::Value, ir::Enum),
 }
 
 /// Values with a memory address or settable value
@@ -890,8 +822,6 @@ enum LValue {
 enum VariablePathSegment {
     Label(String),
     StructField(String),
-    EnumData,
-    EnumVariant,
 }
 
 #[derive(Clone)]
