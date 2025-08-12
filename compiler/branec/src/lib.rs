@@ -3,9 +3,8 @@ use brane_core::ir::{self, Value};
 use branec_emitter::{self as emt, Diagnostic, DiagnosticEmitter};
 use branec_parser::ast::{self, Ty};
 use branec_source::{SourceManager, Span, Uri};
-use chumsky::input::Input;
 use chumsky::span::Span as _;
-use chumsky::Parser;
+use chumsky::{IterParser, Parser};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -28,8 +27,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             self.sources.refresh(module_uri.clone())?;
             let source = self.sources.get(module_uri)?;
             let uri = Arc::new(module_uri.clone());
-            let source =
-                source.map_span(move |span| Span::new(uri.clone(), span.start()..span.end()));
+            let source = <_ as chumsky::input::Input>::map_span(source.as_str(), move |span| {
+                Span::new(uri.clone(), span.start()..span.end())
+            });
             match branec_parser::parser().parse(source).into_result() {
                 Ok(defs) => defs,
                 Err(errors) => {
@@ -112,10 +112,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
         }
 
-        Err(anyhow!(
-            "Failed to resolve path: {}",
-            path.span.source.to_string()
-        ))
+        Err(anyhow!("Failed to resolve path: {}", path))
     }
 
     pub fn emit_fn(&mut self, function: &ast::Function, module: &mut ModuleCtx) -> Result<u32> {
@@ -136,24 +133,34 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     id: function.ident.text.clone(),
                     input: params.iter().map(|(_, v)| v.clone()).collect(),
                     output: return_ty.clone(),
-                    blocks: vec![ir::Block {
-                        ops: Vec::new(),
-                        phi: Vec::new(),
-                    }],
+                    blocks: vec![],
                 },
                 current_block: 0,
-                variables: HashMap::new(),
+                variables: Vec::new(),
                 mod_ctx: module,
+                block_phi_mappings: Vec::new(),
+                scopes: Vec::new(),
             };
 
+            let entry = fn_ctx.create_block()?;
+            fn_ctx.start_block(entry)?;
+
+            fn_ctx.start_scope();
             for (index, (ident, ty)) in params.iter().enumerate() {
-                fn_ctx.variables.insert(
-                    ident.text.clone(),
-                    RValue::Value(ir::Value::FnArg(index as u32), ty.clone()),
-                );
+                if let ir::Ty::Native(nt) = ty {
+                    fn_ctx.define_variable(
+                        ident.text.clone(),
+                        RValue::Value(ir::Value::FnArg(index as u32), nt.clone()),
+                    );
+                } else {
+                    bail!("Functions do not support enum or struct args yet! Use poiners.");
+                    todo!("Need to flatten function parameters");
+                }
             }
 
             self.emit_block(&function.body, &mut fn_ctx)?;
+
+            fn_ctx.end_scope();
 
             fn_ctx.function
         };
@@ -178,56 +185,387 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::StmtKind::Assign(dest, src) => {
                 let d = self.emit_l_value(dest, ctx)?;
-                let src = self.emit_r_value(src, ctx)?;
-                self.store(d, src, ctx)?;
+                let src = self
+                    .emit_r_value(src, ctx)?
+                    .ok_or_else(|| anyhow!("Expression does not return value!"))?;
+                self.store(&d, src, ctx)?;
             }
-            ast::StmtKind::VariableDef(ty, ident, expr) => todo!(),
-            ast::StmtKind::If(expr, stmt, stmt1) => todo!(),
-            ast::StmtKind::While(expr, stmt) => todo!(),
-            ast::StmtKind::Match(span, expr, match_branchs) => todo!(),
-            ast::StmtKind::Block(block) => todo!(),
+            ast::StmtKind::VariableDef(ty, ident, expr) => {
+                let src = self
+                    .emit_r_value(expr, ctx)?
+                    .ok_or_else(|| anyhow!("Expression does not return value!"))?;
+                let ty = self.emit_ty(ty, &mut ctx.mod_ctx)?;
+                if ty != src.ty() {
+                    bail!("expected type {} but found {}", ty, src.ty());
+                }
+                ctx.define_variable(ident.text.clone(), src);
+            }
+            ast::StmtKind::If(cond, body, else_stmt) => {
+                let cond = self
+                    .emit_r_value(cond, ctx)?
+                    .ok_or_else(|| anyhow!("Expression does not return value!"))?;
+                let RValue::Value(cond, ir::NativeType::Bool) = cond else {
+                    bail!("If condition must be a bool, but was {}", cond.ty());
+                };
+                let body_block = ctx.create_block()?;
+                let else_block = match else_stmt {
+                    Some(_) => Some(ctx.create_block()?),
+                    None => None,
+                };
+                let join_block = ctx.create_block()?;
+                ctx.emit_jump_if(body_block, cond)?;
+                if let Some(else_block) = else_block {
+                    ctx.emit_jump(else_block)?;
+                } else {
+                    ctx.emit_jump(join_block)?;
+                }
+                ctx.start_block(body_block)?;
+                self.emit_stmt(&body, ctx)?;
+                ctx.emit_jump(join_block)?;
+                if let (Some(else_block), Some(else_stmt)) = (else_block, else_stmt) {
+                    ctx.start_block(else_block)?;
+                    self.emit_stmt(&else_stmt, ctx)?;
+                    ctx.emit_jump(join_block)?;
+                }
+                ctx.start_block(join_block)?;
+            }
+            ast::StmtKind::While(cond, body) => {
+                let cond_block = ctx.create_block()?;
+                let body_block = ctx.create_block()?;
+                let finally_block = ctx.create_block()?;
+                ctx.emit_jump(cond_block)?;
+                ctx.start_block(cond_block)?;
+                let cond = self
+                    .emit_r_value(cond, ctx)?
+                    .ok_or_else(|| anyhow!("Expression does not return value!"))?;
+                let RValue::Value(cond, ir::NativeType::Bool) = cond else {
+                    bail!("While condition must be a bool, but was {}", cond.ty());
+                };
+                ctx.emit_jump_if(body_block, cond)?;
+                ctx.emit_jump(finally_block)?;
+                ctx.start_block(body_block)?;
+                self.emit_stmt(body, ctx)?;
+                ctx.emit_jump(cond_block)?;
+
+                ctx.start_block(finally_block)?;
+            }
+            ast::StmtKind::Match(_span, expr, match_branches) => {
+                let cond = self
+                    .emit_r_value(expr, ctx)?
+                    .ok_or_else(|| anyhow!("Expression does not return value!"))?;
+                match cond {
+                    RValue::Value(index, ty) => {
+                        let indices =
+                            match_branches
+                                .iter()
+                                .try_fold(Vec::new(), |mut indices, b| {
+                                    let ast::CaseKind::Int(v) = &b.case else {
+                                        bail!("Match cases must be int values!");
+                                    };
+
+                                    indices.push(ir::ConstValue::index_of_ty(*v, &ty)?);
+                                    Ok(indices)
+                                })?;
+
+                        let variables = ctx.record_variables();
+                        let branch_blocks = ctx.emit_jump_map(&ty, index, indices)?;
+                        let join_block = ctx.create_block()?;
+                        for (block, match_branch) in branch_blocks.into_iter().zip(match_branches) {
+                            ctx.start_block(block)?;
+                            ctx.set_variables(variables.clone());
+                            ctx.start_scope();
+
+                            self.emit_stmt(&match_branch.body, ctx)?;
+
+                            ctx.end_scope();
+                            ctx.emit_jump(join_block)?;
+                        }
+                        ctx.start_block(join_block)?;
+                    }
+                    RValue::Enum(SSAEnum {
+                        variants,
+                        index,
+                        def_id,
+                    }) => {
+                        let enum_def = ctx
+                            .mod_ctx
+                            .module
+                            .get_enum(def_id)
+                            .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
+                        let layout = enum_def.layout(&ctx.mod_ctx.module)?;
+
+                        let (indices, variants) = match_branches.iter().try_fold(
+                            (Vec::new(), Vec::new()),
+                            |(mut indices, mut inner_data), b| {
+                                let ast::CaseKind::EnumVariant(v_id, data_label) = &b.case else {
+                                    bail!("Match cases must be enum variants!");
+                                };
+
+                                let Some(index) =
+                                    enum_def.variants.iter().enumerate().find_map(|(i, v)| {
+                                        if v.id == v_id.text {
+                                            Some(i)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                else {
+                                    bail!(
+                                        "Enum {} does not have a variant {}",
+                                        enum_def.id.clone().unwrap_or_default(),
+                                        v_id.text
+                                    );
+                                };
+
+                                indices.push(ir::ConstValue::index_of_ty(index, &layout.index_ty)?);
+                                inner_data.push((data_label.clone(), variants[index].clone()));
+                                Ok((indices, inner_data))
+                            },
+                        )?;
+
+                        let variables = ctx.record_variables();
+                        let branch_blocks = ctx.emit_jump_map(&layout.index_ty, index, indices)?;
+                        let join_block = ctx.create_block()?;
+                        for ((block, match_branch), variant) in
+                            branch_blocks.into_iter().zip(match_branches).zip(variants)
+                        {
+                            ctx.start_block(block)?;
+                            ctx.set_variables(variables.clone());
+                            ctx.start_scope();
+                            if let (Some(data_label), Some(variant_data)) = variant {
+                                ctx.define_variable(data_label.text, variant_data);
+                            }
+
+                            self.emit_stmt(&match_branch.body, ctx)?;
+
+                            ctx.end_scope();
+                            ctx.emit_jump(join_block)?;
+                        }
+                        ctx.start_block(join_block)?;
+                    }
+                    RValue::Struct(_) => bail!("Cannot match on structs!"),
+                }
+            }
+            ast::StmtKind::Block(block) => {
+                ctx.start_scope();
+                for stmt in block.statements.iter() {
+                    self.emit_stmt(stmt, ctx)?;
+                }
+                ctx.end_scope();
+            }
             ast::StmtKind::Return(expr) => {
-                todo!()
+                let body = match expr {
+                    Some(expr) => Some(
+                        match self
+                            .emit_r_value(expr, ctx)?
+                            .ok_or_else(|| anyhow!("Expression does not return value!"))?
+                        {
+                            RValue::Value(value, native_type) => {
+                                (ir::Ty::Native(native_type), value)
+                            }
+                            _ => {
+                                bail!("We don't support returning structs or enums yet! Use pointers.")
+                            }
+                        },
+                    ),
+                    None => None,
+                };
+                ctx.emit_op(ir::Op::Ret(body))?;
             }
         };
         Ok(())
     }
 
     /// Emit a temporary value possibly representing the current value of an lvalue
-    pub fn emit_r_value(&mut self, stmt: &ast::Expr, ctx: &mut FunctionCtx) -> Result<RValue> {}
+    pub fn emit_r_value(
+        &mut self,
+        expr: &ast::Expr,
+        ctx: &mut FunctionCtx,
+    ) -> Result<Option<RValue>> {
+        match &expr.kind {
+            ast::ExprKind::Struct(_, _) | ast::ExprKind::Array(_) | ast::ExprKind::Tuple(_) => {
+                todo!()
+            }
+            ast::ExprKind::Literal(lit) => Ok(Some(match &lit.kind {
+                ast::LiteralKind::Float(v) => {
+                    RValue::Value(ir::Value::const_f64(*v as f64), ir::NativeType::F64)
+                }
+                ast::LiteralKind::Int(v) => {
+                    RValue::Value(ir::Value::const_i64(*v as i64), ir::NativeType::I64)
+                }
+                ast::LiteralKind::String(_) => bail!("string literals not implemented yet!"),
+            })),
+            ast::ExprKind::Path(path) => {
+                if path.segments.len() == 1 {
+                    let ident = &path.segments.first().unwrap().ident;
+                    let v_path = vec![VariablePathSegment::Label(ident.text.clone())];
+                    if let Ok(var) = ctx.get_variable_at_path(&v_path) {
+                        return Ok(Some(var));
+                    }
+                }
+                bail!("path {} not found!", path);
+            }
+            ast::ExprKind::Ref(expr) => todo!(),
+            ast::ExprKind::Deref(expr) => todo!(),
+            ast::ExprKind::Field(expr, path_segment) => todo!(),
+            ast::ExprKind::Call(callable, args) => {
+                let callable = self.emit_callable(&callable, ctx)?;
+                let args: Vec<RValue> =
+                    args.iter()
+                        .try_fold(Vec::new(), |mut args, arg| -> Result<Vec<_>> {
+                            args.push(
+                                self.emit_r_value(arg, ctx)?
+                                    .ok_or_else(|| anyhow!("Expression does not return value!"))?,
+                            );
+                            Ok(args)
+                        })?;
+
+                match callable {
+                    Callable::IntrinsicFn(callback) => (*callback)(args, ctx),
+                }
+            }
+        }
+    }
 
     /// Emit a value coresponding to the location of a value or variable
-    pub fn emit_l_value(&mut self, stmt: &ast::Expr, ctx: &mut FunctionCtx) -> Result<LValue> {}
+    pub fn emit_l_value(&mut self, expr: &ast::Expr, ctx: &mut FunctionCtx) -> Result<LValue> {
+        match &expr.kind {
+            ast::ExprKind::Struct(_, _)
+            | ast::ExprKind::Literal(_)
+            | ast::ExprKind::Array(_)
+            | ast::ExprKind::Tuple(_) => {
+                bail!("Temporary value does not have a memory address")
+            }
+            ast::ExprKind::Path(path) => {
+                if path.segments.len() == 1 {
+                    let ident = &path.segments.first().unwrap().ident;
+                    let v_path = vec![VariablePathSegment::Label(ident.text.clone())];
+                    if ctx.get_variable_at_path(&v_path).is_ok() {
+                        return Ok(LValue::Variable(v_path));
+                    }
+                }
+                bail!("path {} not found!", path);
+            }
+            ast::ExprKind::Ref(expr) => todo!(),
+            ast::ExprKind::Deref(expr) => todo!(),
+            ast::ExprKind::Field(expr, path_segment) => todo!(),
+            ast::ExprKind::Call(expr, exprs) => todo!(),
+        }
+    }
 
-    pub fn emit_callable(&mut self, stmt: &ast::Expr, ctx: &mut FunctionCtx) -> Result<Callable> {}
+    pub fn emit_callable(&mut self, expr: &ast::Expr, ctx: &mut FunctionCtx) -> Result<Callable> {
+        match &expr.kind {
+            ast::ExprKind::Path(path) => {
+                // Technically this should emit intrinsic functions too
+                if path.segments.len() == 1 {
+                    let path = path.segments.first().unwrap();
+                    match path.ident.text.as_str() {
+                        "add" => {
+                            return Ok(Callable::IntrinsicFn(Rc::new(|args, ctx| {
+                                Ok(match args.as_slice() {
+                                    [RValue::Value(left, ir::NativeType::I32), RValue::Value(right, ir::NativeType::I32)] => {
+                                        Some(RValue::Value(
+                                            ctx.emit_op(ir::Op::IAdd {
+                                                left: *left,
+                                                right: *right,
+                                            })?,
+                                            ir::NativeType::I32,
+                                        ))
+                                    }
+                                    [RValue::Value(left, ir::NativeType::I64), RValue::Value(right, ir::NativeType::I64)] => {
+                                        Some(RValue::Value(
+                                            ctx.emit_op(ir::Op::IAdd {
+                                                left: *left,
+                                                right: *right,
+                                            })?,
+                                            ir::NativeType::I64,
+                                        ))
+                                    }
+                                    _ => bail!("Invalid args"),
+                                })
+                            })))
+                        }
+                        "cmp_gt" => {
+                            return Ok(Callable::IntrinsicFn(Rc::new(|args, ctx| {
+                                Ok(match args.as_slice() {
+                                    [RValue::Value(left, ir::NativeType::I32), RValue::Value(right, ir::NativeType::I32)] => {
+                                        Some(RValue::Value(
+                                            ctx.emit_op(ir::Op::CmpGt {
+                                                left: *left,
+                                                right: *right,
+                                            })?,
+                                            ir::NativeType::Bool,
+                                        ))
+                                    }
+                                    [RValue::Value(left, ir::NativeType::I64), RValue::Value(right, ir::NativeType::I64)] => {
+                                        Some(RValue::Value(
+                                            ctx.emit_op(ir::Op::CmpGt {
+                                                left: *left,
+                                                right: *right,
+                                            })?,
+                                            ir::NativeType::Bool,
+                                        ))
+                                    }
+                                    _ => bail!("Invalid args"),
+                                })
+                            })))
+                        }
+                        name => bail!("Unknown intrinsic {}", name),
+                    }
+                }
+                bail!("Unable to find {}", path)
+            }
+            _ => bail!("expression is not callable!"),
+        }
+    }
 
     pub fn store(&mut self, lvalue: &LValue, rvalue: RValue, ctx: &mut FunctionCtx) -> Result<()> {
         match &lvalue {
             LValue::Ptr(ptr, _ty) => match rvalue {
                 RValue::Value(src, _ty) => {
-                    ctx.emit(ir::Op::Store { src, ptr: *ptr })?;
+                    ctx.emit_op(ir::Op::Store { src, ptr: *ptr })?;
                 }
-                RValue::Struct(fields, ty) => {
+                RValue::Struct(SSAStruct { fields, def_id: _ }) => {
                     for (i, (_, value)) in fields.iter().enumerate() {
                         let dest = self.get_struct_field(&lvalue, i, ctx)?;
                         self.store(&dest, value.as_ref().clone(), ctx)?;
                     }
                 }
-                RValue::Enum(data, variant, ty) => {
-                    let layout = ty.layout(&ctx.mod_ctx.module)?;
-                    /// emit map statment
-                    if let Some(data) = data {
-                        // This is technically reliant on us not typechecking store...
-                        self.store(lvalue, data.as_ref().clone(), ctx);
-                    }
-                    let variant_ptr = ctx.emit(ir::Op::IAdd {
+                RValue::Enum(SSAEnum {
+                    variants,
+                    index,
+                    def_id,
+                }) => {
+                    let enum_def = ctx
+                        .mod_ctx
+                        .module
+                        .get_enum(def_id)
+                        .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
+                    let layout = enum_def.layout(&ctx.mod_ctx.module)?;
+                    let variant_ptr = ctx.emit_op(ir::Op::IAdd {
                         left: *ptr,
-                        right: ir::Value::ConstI32(layout.index_offset as i32),
+                        right: ir::Value::const_u32(layout.index_offset as u32),
                     })?;
-                    ctx.emit(ir::Op::Store {
-                        src: variant,
+                    ctx.emit_op(ir::Op::Store {
+                        src: index,
                         ptr: variant_ptr,
                     })?;
+
+                    let indices = (0..variants.len())
+                        .into_iter()
+                        .map(|i| ir::ConstValue::index_of_ty(i, &layout.index_ty))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let branch_blocks = ctx.emit_jump_map(&layout.index_ty, index, indices)?;
+                    let join_block = ctx.create_block()?;
+                    for (block, inner) in branch_blocks.into_iter().zip(variants) {
+                        ctx.start_block(block)?;
+                        if let Some(inner) = inner {
+                            self.store(&LValue::Ptr(*ptr, inner.ty()), inner, ctx)?;
+                        }
+                        ctx.emit_jump(join_block)?;
+                    }
+                    ctx.start_block(join_block)?;
                 }
             },
             LValue::Variable(items) => {
@@ -240,12 +578,14 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     pub fn load(&mut self, lvalue: &LValue, ctx: &mut FunctionCtx) -> Result<RValue> {
         match lvalue {
             LValue::Ptr(ptr, ty) => match ty {
-                ir::Ty::Struct(struct_id) => {
+                ir::Ty::Struct(def_id) => {
+                    let def_id = *def_id as usize;
                     let struct_def = ctx
                         .mod_ctx
                         .module
-                        .get_struct(*struct_id)
-                        .ok_or_else(|| anyhow!("Invalid struct ID: {}", struct_id))?;
+                        .get_struct(def_id)
+                        .cloned()
+                        .ok_or_else(|| anyhow!("Invalid struct ID: {}", def_id))?;
                     let fields = struct_def
                         .members
                         .iter()
@@ -256,48 +596,60 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             Ok((member.id.clone().unwrap_or_default(), Box::new(field_value)))
                         })
                         .collect::<Result<Vec<_>>>()?;
-                    Ok(RValue::Struct(fields, struct_def.clone()))
+                    Ok(RValue::Struct(SSAStruct { fields, def_id }))
                 }
-                ir::Ty::Enum(enum_id) => {
+                ir::Ty::Enum(def_id) => {
+                    let def_id = *def_id as usize;
                     let enum_def = ctx
                         .mod_ctx
                         .module
-                        .get_enum(*enum_id)
-                        .ok_or_else(|| anyhow!("Invalid enum ID: {}", enum_id))?;
+                        .get_enum(def_id)
+                        .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
+                    let variant_tys = enum_def
+                        .variants
+                        .iter()
+                        .map(|v| v.ty.clone())
+                        .collect::<Vec<_>>();
                     let layout = enum_def.layout(&ctx.mod_ctx.module)?;
-                    let variant_index_ptr = ctx.emit(ir::Op::IAdd {
+                    let variant_ptr = ctx.emit_op(ir::Op::IAdd {
                         left: *ptr,
-                        right: ir::Value::ConstI32(layout.index_offset as i32),
+                        right: ir::Value::const_u32(layout.index_offset as u32),
                     })?;
-                    let variant_index = ctx.emit(ir::Op::Load {
-                        ptr: variant_index_ptr,
-                        ty: layout.index_ty,
+                    let index = ctx.emit_op(ir::Op::Load {
+                        ptr: variant_ptr,
+                        ty: layout.index_ty.clone(),
                     })?;
-                    /// emit map statment
-                    let data = match &variant.ty {
-                        Some(data_ty) => {
-                            let field_lvalue = LValue::Ptr(*ptr, data_ty.clone());
-                            Some(Box::new(self.load(&field_lvalue, ctx)?))
-                        }
-                        None => None,
-                    };
 
-                    Ok(RValue::Enum(*ptr, variant_index, enum_def.clone()))
+                    let indices = (0..variant_tys.len())
+                        .into_iter()
+                        .map(|i| ir::ConstValue::index_of_ty(i, &layout.index_ty))
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let branch_blocks = ctx.emit_jump_map(&layout.index_ty, index, indices)?;
+                    let join_block = ctx.create_block()?;
+                    let mut variants = Vec::new();
+                    for (block, variant) in branch_blocks.into_iter().zip(variant_tys) {
+                        ctx.start_block(block)?;
+                        variants.push(match &variant {
+                            Some(inner) => Some(self.load(&LValue::Ptr(*ptr, inner.clone()), ctx)?),
+                            None => None,
+                        });
+                        ctx.emit_jump(join_block)?;
+                    }
+                    ctx.start_block(join_block)?;
+
+                    Ok(RValue::Enum(SSAEnum {
+                        variants,
+                        index,
+                        def_id,
+                    }))
                 }
                 ir::Ty::Native(nt) => {
-                    let value = ctx.emit(ir::Op::Load {
+                    let value = ctx.emit_op(ir::Op::Load {
                         ptr: *ptr,
                         ty: nt.clone(),
                     })?;
-                    Ok(RValue::Value(value, ty.clone()))
-                }
-                ir::Ty::Ptr(_, _) => {
-                    let value = ctx.emit(ir::Op::Load {
-                        ptr: *ptr,
-                        // This needs to change with ptr bit size
-                        ty: ir::NativeType::U32,
-                    })?;
-                    Ok(RValue::Value(value, ty.clone()))
+                    Ok(RValue::Value(value, nt.clone()))
                 }
             },
             LValue::Variable(path) => ctx.get_variable_at_path(path),
@@ -318,7 +670,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let s_ty = ctx
                     .mod_ctx
                     .module
-                    .get_struct(*ty)
+                    .get_struct(*ty as usize)
                     .ok_or_else(|| anyhow!("invalid struct"))?;
                 let layout = s_ty.layout(&ctx.mod_ctx.module)?;
                 let offset = layout
@@ -327,15 +679,15 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .ok_or_else(|| anyhow!("Struct did not have {} field", index))?;
                 let field_ty = s_ty.members[index].ty.clone();
                 Ok(LValue::Ptr(
-                    ctx.emit(ir::Op::IAdd {
+                    ctx.emit_op(ir::Op::IAdd {
                         left: *ptr,
-                        right: ir::Value::ConstI32(*offset as i32),
+                        right: ir::Value::const_u32(*offset as u32),
                     })?,
                     field_ty,
                 ))
             }
             LValue::Variable(items) => match ctx.get_variable_at_path(&items)? {
-                RValue::Struct(fields, _) => {
+                RValue::Struct(SSAStruct { fields, def_id: _ }) => {
                     if let Some((ident, _)) = fields.get(index) {
                         let mut field_path = items.clone();
                         field_path.push(VariablePathSegment::StructField(ident.clone()));
@@ -365,8 +717,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 ast::NativeTy::Bool => ir::Ty::Native(ir::NativeType::Bool),
                 ast::NativeTy::Char => ir::Ty::Native(ir::NativeType::U32),
                 ast::NativeTy::String => {
-                    let emitted_ptr_ty =
-                        ir::Ty::Ptr(true, Some(Box::new(ir::Ty::Native(ir::NativeType::U32))));
+                    let emitted_ptr_ty = ir::Ty::Native(ir::NativeType::Ptr(
+                        true,
+                        Some(Box::new(ir::Ty::Native(ir::NativeType::U32))),
+                    ));
                     let emitted_len_ty = ir::Ty::Native(ir::NativeType::U32);
 
                     let emitted_fields = vec![
@@ -380,14 +734,14 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         },
                     ];
 
-                    let struct_index = ctx.module.structs.len() as i32;
+                    let struct_index = ctx.module.structs.len();
                     ctx.module.structs.push(ir::Struct {
                         id: None,
                         members: emitted_fields,
                         packed: false,
                     });
 
-                    ir::Ty::Struct(struct_index)
+                    ir::Ty::Struct(struct_index as u64)
                 }
             }),
             ast::TyKind::Ptr(is_mut, inner_ty) => {
@@ -395,7 +749,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     Some(inner) => Some(Box::new(self.emit_ty(inner.as_ref(), ctx)?)),
                     None => None,
                 };
-                Ok(ir::Ty::Ptr(*is_mut, emitted_inner_ty))
+                Ok(ir::Ty::Native(ir::NativeType::Ptr(
+                    *is_mut,
+                    emitted_inner_ty,
+                )))
             }
             ast::TyKind::Tuple(elements) => {
                 let emitted_fields = elements
@@ -417,17 +774,17 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .enumerate()
                     .find(|(_, s)| s.members == emitted_fields && s.id.is_none())
                 {
-                    return Ok(ir::Ty::Struct(existing_index as i32));
+                    return Ok(ir::Ty::Struct(existing_index as u64));
                 }
 
-                let struct_index = ctx.module.structs.len() as i32;
+                let struct_index = ctx.module.structs.len();
                 ctx.module.structs.push(ir::Struct {
                     id: None,
                     members: emitted_fields,
                     packed: false,
                 });
 
-                Ok(ir::Ty::Struct(struct_index))
+                Ok(ir::Ty::Struct(struct_index as u64))
             }
             ast::TyKind::Struct(fields) => {
                 let emitted_fields = fields
@@ -448,17 +805,17 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .enumerate()
                     .find(|(_, s)| s.members == emitted_fields && s.id.is_none())
                 {
-                    return Ok(ir::Ty::Struct(existing_index as i32));
+                    return Ok(ir::Ty::Struct(existing_index as u64));
                 }
 
-                let struct_index = ctx.module.structs.len() as i32;
+                let struct_index = ctx.module.structs.len();
                 ctx.module.structs.push(ir::Struct {
                     id: None,
                     members: emitted_fields,
                     packed: false,
                 });
 
-                Ok(ir::Ty::Struct(struct_index))
+                Ok(ir::Ty::Struct(struct_index as u64))
             }
             ast::TyKind::Slice(is_mut, inner_ty) => {
                 let inner_ty = match inner_ty {
@@ -466,7 +823,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     None => None,
                 };
 
-                let emitted_ptr_ty = ir::Ty::Ptr(true, inner_ty);
+                let emitted_ptr_ty = ir::Ty::Native(ir::NativeType::Ptr(true, inner_ty));
                 let emitted_len_ty = ir::Ty::Native(ir::NativeType::U32);
 
                 let emitted_fields = vec![
@@ -487,17 +844,17 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .enumerate()
                     .find(|(_, s)| s.members == emitted_fields && s.id.is_none())
                 {
-                    return Ok(ir::Ty::Struct(existing_index as i32));
+                    return Ok(ir::Ty::Struct(existing_index as u64));
                 }
 
-                let struct_index = ctx.module.structs.len() as i32;
+                let struct_index = ctx.module.structs.len();
                 ctx.module.structs.push(ir::Struct {
                     id: None,
                     members: emitted_fields,
                     packed: false,
                 });
 
-                Ok(ir::Ty::Struct(struct_index))
+                Ok(ir::Ty::Struct(struct_index as u64))
             }
             ast::TyKind::Path(path) => {
                 if let Some(def) = self.resolve_def(&path, ctx)? {
@@ -524,17 +881,17 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 .enumerate()
                                 .find(|(_, s)| s.members == emitted_fields && s.id == id)
                             {
-                                return Ok(ir::Ty::Struct(existing_index as i32));
+                                return Ok(ir::Ty::Struct(existing_index as u64));
                             }
 
-                            let struct_index = ctx.module.structs.len() as i32;
+                            let struct_index = ctx.module.structs.len();
                             ctx.module.structs.push(ir::Struct {
                                 id,
                                 members: emitted_fields,
                                 packed: false,
                             });
 
-                            Ok(ir::Ty::Struct(struct_index))
+                            Ok(ir::Ty::Struct(struct_index as u64))
                         }
                         ast::DefKind::Enum(e) => {
                             let emitted_varaints = e
@@ -560,7 +917,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 .enumerate()
                                 .find(|(_, s)| s.variants == emitted_varaints && s.id == id)
                             {
-                                return Ok(ir::Ty::Enum(existing_index as i32));
+                                return Ok(ir::Ty::Enum(existing_index as u64));
                             }
 
                             let enum_index = ctx.module.structs.len() as i32;
@@ -570,7 +927,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 packed: false,
                             });
 
-                            Ok(ir::Ty::Enum(enum_index))
+                            Ok(ir::Ty::Enum(enum_index as u64))
                         }
                         _ => bail!("Path does not reference a valid type"),
                     }
@@ -578,81 +935,6 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     bail!("Type not found: {}", path.span.source.to_string());
                 }
             }
-        }
-    }
-
-    pub fn mutated_value_labels(
-        &mut self,
-        stmt: &ast::Stmt,
-        ctx: &mut FunctionCtx,
-    ) -> Result<Vec<String>> {
-        let mut mutated = Vec::new();
-        match &stmt.kind {
-            ast::StmtKind::Expression(expr) => {}
-            ast::StmtKind::Assign(expr, expr1) => self.evalutate_expression(expr, ctx)?.as_ssa_id(),
-            ast::StmtKind::VariableDef(ty, ident, expr) => todo!(),
-            ast::StmtKind::If(expr, stmt, stmt1) => todo!(),
-            ast::StmtKind::While(expr, stmt) => todo!(),
-            ast::StmtKind::Match(span, expr, match_branchs) => todo!(),
-            ast::StmtKind::Block(block) => todo!(),
-            ast::StmtKind::Return(expr) => todo!(),
-        }
-        Ok(mutated)
-    }
-
-    pub fn evalutate_expression(
-        &mut self,
-        expr: &ast::Expr,
-        ctx: &mut FunctionCtx,
-    ) -> Result<Value> {
-        match &expr.kind {
-            ast::ExprKind::Literal(literal) => todo!(),
-            ast::ExprKind::Array(exprs) => todo!(),
-            ast::ExprKind::Tuple(exprs) => todo!(),
-            ast::ExprKind::Struct(path, items) => todo!(),
-            ast::ExprKind::Path(path) => {
-                // Technically this should emit intrinsic functions too
-                if path.segments.len() == 1 {
-                    let ident = &path.segments.first().unwrap().ident;
-                    if let Some(var) = ctx.variables.get(&ident.text) {
-                        return Ok(var.clone());
-                    }
-                }
-                bail!("Unable to find {}", path)
-            }
-            ast::ExprKind::Ref(expr) => todo!(),
-            ast::ExprKind::Deref(expr) => todo!(),
-            ast::ExprKind::Field(expr, path_segment) => todo!(),
-            ast::ExprKind::Call(expr, exprs) => match &expr.kind {
-                ast::ExprKind::Path(path) => {
-                    if path.segments.len() == 1 {
-                        let path = path.segments.first().unwrap();
-                        match path.ident.text.as_str() {
-                            "add" => {
-                                let a = self.evalutate_expression(&exprs[0], ctx)?;
-                                let b = self.evalutate_expression(&exprs[1], ctx)?;
-                                return Ok(ctx.expr(
-                                    Some(Ty::Native(ast::NativeTy::I32)),
-                                    move |function, cache| {
-                                        let a = a.value(function, cache)?.unwrap();
-                                        let b = b.value(function, cache)?.unwrap();
-                                        let lb = function.blocks.last_mut().unwrap();
-                                        let op_id = lb.ops.len() as u32;
-                                        lb.ops.push(ir::Op::IAdd { left: a, right: b });
-                                        Ok(Some(ir::Value::BlockOp {
-                                            block: (function.blocks.len() - 1) as u32,
-                                            op: op_id,
-                                        }))
-                                    },
-                                ));
-                            }
-                            name => bail!("Unknown intrinsic {}", name),
-                        }
-                    }
-                    bail!("calls not implemented yet lol")
-                }
-                _ => todo!(),
-            },
         }
     }
 }
@@ -669,11 +951,51 @@ pub struct FunctionCtx<'mc> {
     pub mod_ctx: &'mc mut ModuleCtx,
     pub function: ir::Function,
     pub current_block: usize,
-    pub variables: HashMap<String, RValue>,
+    /// Map ranges of block phi nodes, to the variables that they grab values from
+    /// if a variable represents a flattened structs or enum, it's ID will be placed in multiple
+    /// indices. This will be contigous and repeated the variable's "width" times
+    pub block_phi_mappings: Vec<Vec<usize>>,
+    /// Stack of a map from string labels in our document to actual variable ids.
+    /// This allows scopes to share the same label for multiple values in ways that
+    /// make sense in the document.
+    pub scopes: Vec<HashMap<String, usize>>,
+    /// SSA LValues
+    pub variables: Vec<RValue>,
 }
 
 impl<'mc> FunctionCtx<'mc> {
-    pub fn emit(&mut self, op: ir::Op) -> Result<ir::Value> {
+    pub fn start_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    pub fn end_scope(&mut self) {
+        self.scopes.pop().expect("Tried to pop nonexistant stack!");
+    }
+
+    pub fn define_variable(&mut self, label: impl Into<String>, value: RValue) {
+        let new_id = self.variables.len();
+        self.variables.push(value);
+
+        let scope = self
+            .scopes
+            .last_mut()
+            .expect("Tried to define variable with empty stack!");
+
+        scope.insert(label.into(), new_id);
+    }
+
+    pub fn record_variables(&self) -> Vec<HashMap<String, usize>> {
+        self.scopes.clone()
+    }
+
+    pub fn set_variables(
+        &mut self,
+        mut variables: Vec<HashMap<String, usize>>,
+    ) -> Vec<HashMap<String, usize>> {
+        std::mem::swap(&mut variables, &mut self.scopes);
+        variables
+    }
+    pub fn emit_op(&mut self, op: ir::Op) -> Result<ir::Value> {
         let b = self
             .function
             .blocks
@@ -691,6 +1013,182 @@ impl<'mc> FunctionCtx<'mc> {
             block: self.current_block as u32,
             op: op_id,
         })
+    }
+
+    pub fn emit_jump(&mut self, block: usize) -> Result<()> {
+        // TODO handle SSA values and whatnot
+        self.emit_op(ir::Op::Jump {
+            block: block as u32,
+        })?;
+        self.map_jump_vars(block);
+        Ok(())
+    }
+
+    pub fn emit_jump_if(&mut self, block: usize, cond: ir::Value) -> Result<()> {
+        // TODO handle SSA values and whatnot
+        self.emit_op(ir::Op::JumpIf {
+            cond,
+            block: block as u32,
+        })?;
+        self.map_jump_vars(block);
+        Ok(())
+    }
+
+    /// Emit a jump instruction that jumps based on an int value
+    /// first branch is the default jump target
+    pub fn emit_jump_map(
+        &mut self,
+        cond_ty: &ir::NativeType,
+        cond: ir::Value,
+        branches: Vec<ir::ConstValue>,
+    ) -> Result<Range<usize>> {
+        if !cond_ty.is_int() {
+            bail!("condition must be an integer ty");
+        }
+        for v in branches.iter() {
+            if !v.is_ty(cond_ty) {
+                bail!(
+                    "all branch condition for this jump map must be {} but was {}",
+                    cond_ty,
+                    v
+                );
+            }
+        }
+
+        let block_range = self.create_blocks(branches.len())?;
+        for branch in block_range.clone() {
+            self.map_jump_vars(branch);
+        }
+        let branches = block_range
+            .clone()
+            .into_iter()
+            .zip(branches)
+            .map(|(br, cond)| (cond, br as u32))
+            .collect();
+
+        self.emit_op(ir::Op::JumpMap {
+            cond: cond,
+            branches,
+        })?;
+
+        Ok(block_range)
+    }
+
+    /// Takes the current stack frame and unions it with a block's current set of phi nodes
+    fn map_jump_vars(&mut self, block: usize) {
+        assert!(block < self.function.blocks.len());
+        let vars = self
+            .scopes
+            .iter()
+            .map(|s| s.iter())
+            .flatten()
+            .map(|(_, id)| *id)
+            .collect::<Vec<_>>();
+        for var in vars {
+            let flattened = self.variables[var].flattened();
+            let phis = self.block_phis_for_var(block, var, flattened.len());
+            for (phi, value) in phis.iter_mut().zip(flattened) {
+                if !phi.contains(&value) {
+                    phi.push(value)
+                }
+            }
+        }
+    }
+
+    /// Get a mutable list to the phi inputs for a certain variable on a block.
+    /// If there is not currently a phi node for this variable, this will init a new one
+    /// width is the size of the flattened type that the variable represents
+    fn block_phis_for_var(
+        &mut self,
+        block: usize,
+        var_id: usize,
+        width: usize,
+    ) -> &mut [Vec<Value>] {
+        assert!(block < self.function.blocks.len());
+        assert!(block < self.block_phi_mappings.len());
+        let mappings = &mut self.block_phi_mappings[block];
+        let phi_indices = match mappings.iter().enumerate().find_map(|(index, var)| {
+            if *var == var_id {
+                Some(index)
+            } else {
+                None
+            }
+        }) {
+            Some(index) => index..(index + width),
+            None => {
+                let new_index = mappings.len();
+                assert_eq!(self.function.blocks[block].phi.len(), new_index);
+                for _ in 0..width {
+                    self.function.blocks[block].phi.push(Vec::new());
+                    mappings.push(var_id);
+                }
+                new_index..(new_index + width)
+            }
+        };
+        &mut self.function.blocks[block].phi[phi_indices]
+    }
+
+    /// Get a list of IR values representing a flattened representation of a variable
+    fn block_phi_values_for_var(
+        block_phi_mappings: &Vec<Vec<usize>>,
+        block: usize,
+        var_id: usize,
+        width: usize,
+    ) -> Option<Vec<ir::Value>> {
+        assert!(block < block_phi_mappings.len());
+        block_phi_mappings[block]
+            .iter()
+            .enumerate()
+            .find_map(|(index, var)| if *var == var_id { Some(index) } else { None })
+            .map(|index| {
+                (index..(index + width))
+                    .into_iter()
+                    .map(|i| ir::Value::PhiArg {
+                        block: block as u32,
+                        arg: i as u32,
+                    })
+                    .collect()
+            })
+    }
+
+    pub fn create_block(&mut self) -> Result<usize> {
+        Ok(self.create_blocks(1)?.start)
+    }
+
+    pub fn create_blocks(&mut self, count: usize) -> Result<Range<usize>> {
+        let start = self.function.blocks.len();
+        for _ in 0..count {
+            self.function.blocks.push(ir::Block {
+                phi: Vec::new(),
+                ops: Vec::new(),
+            });
+            self.block_phi_mappings.push(Vec::new());
+        }
+        Ok(start..(start + count))
+    }
+
+    /// Call this when we first start emitting to a certain block to set up variables and whatnot
+    pub fn start_block(&mut self, block: usize) -> Result<()> {
+        assert!(block < self.function.blocks.len());
+        self.current_block = block;
+
+        // Search the current scope of exposed values for any values that are mapped to a phi node
+        // of this block, and if so, make our labels point to that.
+        for scope in self.scopes.iter_mut() {
+            for (_, var_id) in scope.iter_mut() {
+                let var = &self.variables[*var_id];
+                let ty = var.ty();
+                let width = var.width();
+                if let Some(phis) =
+                    Self::block_phi_values_for_var(&self.block_phi_mappings, block, *var_id, width)
+                {
+                    *var_id = self.variables.len();
+                    self.variables
+                        .push(RValue::from_flattened(&phis, &ty, &self.mod_ctx.module)?);
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn get_variable_at_path(&mut self, path: &Vec<VariablePathSegment>) -> Result<RValue> {
@@ -711,10 +1209,17 @@ impl<'mc> FunctionCtx<'mc> {
                     if current_root.is_some() {
                         bail!("Label must only root value, but found path: {:?}", path)
                     }
-                    current_root =
-                        Some(self.variables.get(label).cloned().ok_or_else(|| {
-                            anyhow!("could not resolve variable path {:?}", path)
-                        })?);
+                    current_root = Some(
+                        self.variables[self
+                            .scopes
+                            .iter()
+                            .rev()
+                            .find_map(|scope| scope.get(label).cloned())
+                            .ok_or_else(|| {
+                                anyhow!("could not resolve variable path {:?}", path)
+                            })?]
+                        .clone(),
+                    );
                 }
                 VariablePathSegment::StructField(field) => {
                     let Some(root) = current_root else {
@@ -724,7 +1229,7 @@ impl<'mc> FunctionCtx<'mc> {
                         );
                     };
                     match root {
-                        RValue::Struct(fields, _) => {
+                        RValue::Struct(SSAStruct { fields, def_id: _ }) => {
                             let new_root = fields.iter().find_map(|(label, value)| {
                                 if label == field {
                                     Some(value.as_ref().clone())
@@ -734,7 +1239,7 @@ impl<'mc> FunctionCtx<'mc> {
                             });
                             current_root = new_root;
                         }
-                        RValue::Enum(_, _, _) => bail!("Expected struct but found enum"),
+                        RValue::Enum(_) => bail!("Expected struct but found enum"),
                         RValue::Value(_, _) => bail!("Expected struct but found value"),
                     }
                 }
@@ -761,10 +1266,16 @@ impl<'mc> FunctionCtx<'mc> {
                     if dest.is_some() {
                         bail!("Label must only root value, but found path: {:?}", path)
                     }
-                    dest =
-                        Some(self.variables.get_mut(label).ok_or_else(|| {
-                            anyhow!("could not resolve variable path {:?}", path)
-                        })?);
+                    dest = Some(
+                        &mut self.variables[self
+                            .scopes
+                            .iter()
+                            .rev()
+                            .find_map(|scope| scope.get(label).cloned())
+                            .ok_or_else(|| {
+                                anyhow!("could not resolve variable path {:?}", path)
+                            })?],
+                    );
                 }
                 VariablePathSegment::StructField(field) => {
                     let Some(root) = dest else {
@@ -774,7 +1285,7 @@ impl<'mc> FunctionCtx<'mc> {
                         );
                     };
                     match root {
-                        RValue::Struct(fields, _) => {
+                        RValue::Struct(SSAStruct { fields, def_id: _ }) => {
                             let new_root = fields.iter_mut().find_map(|(label, value)| {
                                 if label == field {
                                     Some(value.as_mut())
@@ -784,7 +1295,7 @@ impl<'mc> FunctionCtx<'mc> {
                             });
                             dest = new_root;
                         }
-                        RValue::Enum(_, _, _) => bail!("Expected struct but found enum"),
+                        RValue::Enum(_) => bail!("Expected struct but found enum"),
                         RValue::Value(_, _) => bail!("Expected struct but found value"),
                     }
                 }
@@ -797,16 +1308,204 @@ impl<'mc> FunctionCtx<'mc> {
 
 /// Values without a memory address
 #[derive(Clone)]
-enum RValue {
-    Value(ir::Value, ir::Ty),
-    Struct(Vec<(String, Box<RValue>)>, ir::Struct),
+pub enum RValue {
+    Value(ir::Value, ir::NativeType),
+    Struct(SSAStruct),
     /// enum data contains SSA values for all variants. All variants must be defined even if only some variants
     /// contain actual values. Non-defined variants will contain default values. Load instructions
     /// will be emitted as if all variants were defined simaltaniously.
     /// Then eliminated by dead code evaluation.
     /// TODO also have a optimization pass that moves values only used once into the blocks
     /// (enum data, variant index, enum def)
-    Enum(Vec<RValue>, ir::Value, ir::Enum),
+    Enum(SSAEnum),
+}
+
+impl RValue {
+    pub fn width(&self) -> usize {
+        match self {
+            RValue::Value(_, _) => 1,
+            RValue::Struct(ssa_struct) => ssa_struct.width(),
+            RValue::Enum(ssa_enum) => ssa_enum.width(),
+        }
+    }
+
+    pub fn ty(&self) -> ir::Ty {
+        match self {
+            RValue::Value(_, ty) => ir::Ty::Native(ty.clone()),
+            RValue::Struct(v) => ir::Ty::Struct(v.def_id as u64),
+            RValue::Enum(v) => ir::Ty::Enum(v.def_id as u64),
+        }
+    }
+
+    pub fn flattened(&self) -> Vec<ir::Value> {
+        let mut values = Vec::new();
+        self.flatten_internal(&mut values);
+        values
+    }
+
+    fn flatten_internal(&self, values: &mut Vec<ir::Value>) {
+        match self {
+            RValue::Value(val, _) => values.push(*val),
+            RValue::Struct(ssa_struct) => ssa_struct.flatten_internal(values),
+            RValue::Enum(ssa_enum) => ssa_enum.flatten_internal(values),
+        }
+    }
+
+    pub fn ty_width(ty: &ir::Ty, module: &ir::Module) -> Result<usize> {
+        match ty {
+            ir::Ty::Native(_) => Ok(1usize),
+            ir::Ty::Struct(id) => {
+                let struct_def = module
+                    .get_struct(*id as usize)
+                    .ok_or_else(|| anyhow!("Invalid struct ID: {}", id))?;
+                let mut count = 0;
+                for member in struct_def.members.iter() {
+                    count += Self::ty_width(&member.ty, module)?;
+                }
+                Ok(count)
+            }
+            ir::Ty::Enum(id) => {
+                let enum_def = module
+                    .get_enum(*id as usize)
+                    .ok_or_else(|| anyhow!("Invalid enum ID: {}", id))?;
+                let mut count = 1;
+                for variant in enum_def.variants.iter() {
+                    if let Some(ty) = &variant.ty {
+                        count += Self::ty_width(&ty, module)?;
+                    }
+                }
+                Ok(count)
+            }
+        }
+    }
+
+    pub fn from_flattened(value: &[ir::Value], ty: &ir::Ty, module: &ir::Module) -> Result<RValue> {
+        match ty {
+            ir::Ty::Native(native_ty) => {
+                if value.len() != 1 {
+                    bail!(
+                        "Expected a single value for native type {:?}, but got {} values",
+                        native_ty,
+                        value.len()
+                    );
+                }
+                Ok(RValue::Value(value[0], native_ty.clone()))
+            }
+            ir::Ty::Struct(def_id) => {
+                let struct_def = module
+                    .get_struct(*def_id as usize)
+                    .ok_or_else(|| anyhow!("Invalid struct ID: {}", def_id))?;
+                let mut fields = Vec::new();
+                let mut offset = 0;
+
+                for member in &struct_def.members {
+                    let member_width = Self::ty_width(&member.ty, module)?;
+                    let member_values = &value[offset..(offset + member_width)];
+                    let member_rvalue = Self::from_flattened(member_values, &member.ty, module)?;
+                    fields.push((
+                        member.id.clone().unwrap_or_default(),
+                        Box::new(member_rvalue),
+                    ));
+                    offset += member_width;
+                }
+
+                Ok(RValue::Struct(SSAStruct {
+                    fields,
+                    def_id: *def_id as usize,
+                }))
+            }
+            ir::Ty::Enum(def_id) => {
+                let enum_def = module
+                    .get_enum(*def_id as usize)
+                    .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
+
+                if value.len() < 1 {
+                    bail!(
+                        "Expected at least one value for enum {:?}, but got {} values",
+                        def_id,
+                        value.len()
+                    );
+                }
+
+                let index = value[0];
+                let mut variants = Vec::new();
+                let mut offset = 1;
+
+                for variant in &enum_def.variants {
+                    let variant_width = variant
+                        .ty
+                        .as_ref()
+                        .map_or(Ok(0), |ty| Self::ty_width(ty, module))?;
+                    let variant_values = &value[offset..(offset + variant_width)];
+                    let variant_rvalue = if let Some(ty) = &variant.ty {
+                        Some(Self::from_flattened(variant_values, ty, module)?)
+                    } else {
+                        None
+                    };
+                    variants.push(variant_rvalue);
+                    offset += variant_width;
+                }
+
+                Ok(RValue::Enum(SSAEnum {
+                    variants,
+                    index,
+                    def_id: *def_id as usize,
+                }))
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SSAStruct {
+    pub fields: Vec<(String, Box<RValue>)>,
+    pub def_id: usize,
+}
+
+impl SSAStruct {
+    pub fn def<'m>(&self, ctx: &'m ModuleCtx) -> &'m ir::Struct {
+        ctx.module
+            .get_struct(self.def_id)
+            .expect("invalid struct id")
+    }
+
+    pub fn width(&self) -> usize {
+        self.fields.len()
+    }
+
+    fn flatten_internal(&self, values: &mut Vec<ir::Value>) {
+        for (_, rvalue) in &self.fields {
+            rvalue.flatten_internal(values);
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SSAEnum {
+    /// Represents a 1-1 mapping with all variants of the enum, with non values representing
+    /// variants with no data
+    variants: Vec<Option<RValue>>,
+    index: ir::Value,
+    def_id: usize,
+}
+
+impl SSAEnum {
+    pub fn def<'m>(&self, ctx: &'m ModuleCtx) -> &'m ir::Enum {
+        ctx.module.get_enum(self.def_id).expect("invalid struct id")
+    }
+
+    pub fn width(&self) -> usize {
+        self.variants.len() + 1 // +1 for the index
+    }
+
+    fn flatten_internal(&self, values: &mut Vec<ir::Value>) {
+        values.push(self.index);
+        for variant in &self.variants {
+            if let Some(rvalue) = variant {
+                rvalue.flatten_internal(values);
+            }
+        }
+    }
 }
 
 /// Values with a memory address or settable value
@@ -826,5 +1525,5 @@ enum VariablePathSegment {
 
 #[derive(Clone)]
 enum Callable {
-    IntrinsicFn(Rc<dyn Fn(Vec<RValue>) -> Result<Option<RValue>>>),
+    IntrinsicFn(Rc<dyn Fn(Vec<RValue>, &mut FunctionCtx) -> Result<Option<RValue>>>),
 }

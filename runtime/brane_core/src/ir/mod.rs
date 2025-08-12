@@ -2,13 +2,13 @@ use anyhow::{anyhow, bail};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Ref {
-    Struct(i32),
-    Enum(i32),
-    Function(i32),
-    Pipeline(i32),
+    Struct(u64),
+    Enum(u64),
+    Function(i64),
+    Pipeline(i64),
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum NativeType {
     Bool,
     U8,
@@ -23,54 +23,17 @@ pub enum NativeType {
     F64,
     U128,
     I128,
+    /// (is mutable, inner ty)
+    Ptr(bool, Option<Box<Ty>>),
 }
 
 impl NativeType {
-    pub fn to_str(&self) -> &'static str {
-        use NativeType::*;
-        match self {
-            Bool => "bool",
-            U8 => "u8",
-            I8 => "i8",
-            U16 => "u16",
-            I16 => "i16",
-            U32 => "u32",
-            I32 => "i32",
-            F32 => "f32",
-            U64 => "u64",
-            I64 => "i64",
-            F64 => "f64",
-            U128 => "u128",
-            I128 => "i128",
-        }
-    }
-
-    pub fn from_str(text: &str) -> Result<NativeType, ()> {
-        use NativeType::*;
-        match text {
-            "bool" => Ok(Bool),
-            "u8" => Ok(U8),
-            "i8" => Ok(I8),
-            "u16" => Ok(U16),
-            "i16" => Ok(I16),
-            "u32" => Ok(U32),
-            "i32" => Ok(I32),
-            "f32" => Ok(F32),
-            "u64" => Ok(U64),
-            "i64" => Ok(I64),
-            "f64" => Ok(F64),
-            "u128" => Ok(U128),
-            "i128" => Ok(I128),
-            _ => Err(()),
-        }
-    }
-
     pub fn size(&self) -> usize {
         use NativeType::*;
         match self {
             Bool | I8 | U8 => 1,
             I16 | U16 => 2,
-            I32 | U32 | F32 => 4,
+            I32 | U32 | F32 | Ptr(_, _) => 4,
             I64 | U64 | F64 => 8,
             U128 | I128 => 16,
         }
@@ -79,15 +42,67 @@ impl NativeType {
     pub fn alignment(&self) -> usize {
         self.size()
     }
+
+    pub fn is_int(&self) -> bool {
+        matches!(
+            self,
+            NativeType::I8
+                | NativeType::I16
+                | NativeType::I32
+                | NativeType::I64
+                | NativeType::I128
+                | NativeType::U8
+                | NativeType::U16
+                | NativeType::U32
+                | NativeType::U64
+                | NativeType::U128
+        )
+    }
+
+    pub fn is_float(&self) -> bool {
+        matches!(self, NativeType::F32 | NativeType::F64)
+    }
+
+    pub fn is_unsigned(&self) -> bool {
+        matches!(
+            self,
+            NativeType::U8 | NativeType::U16 | NativeType::U32 | NativeType::U64 | NativeType::U128
+        )
+    }
+}
+
+impl Display for NativeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NativeType::Bool => write!(f, "bool"),
+            NativeType::U8 => write!(f, "u8"),
+            NativeType::I8 => write!(f, "i8"),
+            NativeType::U16 => write!(f, "u16"),
+            NativeType::I16 => write!(f, "i16"),
+            NativeType::U32 => write!(f, "u32"),
+            NativeType::I32 => write!(f, "i32"),
+            NativeType::F32 => write!(f, "f32"),
+            NativeType::U64 => write!(f, "u64"),
+            NativeType::I64 => write!(f, "i64"),
+            NativeType::F64 => write!(f, "f64"),
+            NativeType::U128 => write!(f, "u128"),
+            NativeType::I128 => write!(f, "i128"),
+            NativeType::Ptr(is_mut, inner_ty) => {
+                if let Some(ty) = inner_ty {
+                    write!(f, "*{}{}", if *is_mut { "mut " } else { "" }, ty)
+                } else {
+                    write!(f, "*{}", if *is_mut { "mut " } else { "" })
+                }
+            }
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub enum Ty {
     Native(NativeType),
-    Struct(i32),
-    Enum(i32),
-    /// (is mutable, inner ty)
-    Ptr(bool, Option<Box<Ty>>),
+    Struct(u64),
+    Enum(u64),
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -95,10 +110,100 @@ pub enum Value {
     PhiArg { block: u32, arg: u32 },
     FnArg(u32),
     BlockOp { block: u32, op: u32 },
-    ConstI32(i32),
-    ConstI64(i64),
-    ConstF32(f32),
-    ConstF64(f64),
+    Const(ConstValue),
+}
+
+impl Value {
+    pub fn const_bool(value: bool) -> Self {
+        Value::Const(ConstValue::Bool(value))
+    }
+
+    pub fn const_u8(value: u8) -> Self {
+        Value::Const(ConstValue::U8(value))
+    }
+
+    pub fn const_i8(value: i8) -> Self {
+        Value::Const(ConstValue::I8(value))
+    }
+
+    pub fn const_u16(value: u16) -> Self {
+        Value::Const(ConstValue::U16(value))
+    }
+
+    pub fn const_i16(value: i16) -> Self {
+        Value::Const(ConstValue::I16(value))
+    }
+
+    pub fn const_u32(value: u32) -> Self {
+        Value::Const(ConstValue::U32(value))
+    }
+
+    pub fn const_f32(value: f32) -> Self {
+        Value::Const(ConstValue::F32(value))
+    }
+
+    pub fn const_u64(value: u64) -> Self {
+        Value::Const(ConstValue::U64(value))
+    }
+
+    pub fn const_i64(value: i64) -> Self {
+        Value::Const(ConstValue::I64(value))
+    }
+
+    pub fn const_f64(value: f64) -> Self {
+        Value::Const(ConstValue::F64(value))
+    }
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum ConstValue {
+    Bool(bool),
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    F32(f32),
+    U64(u64),
+    I64(i64),
+    F64(f64),
+}
+
+impl ConstValue {
+    pub fn is_ty(&self, nativetype: &NativeType) -> bool {
+        match (self, nativetype) {
+            (ConstValue::Bool(_), NativeType::Bool) => true,
+            (ConstValue::U8(_), NativeType::U8) => true,
+            (ConstValue::I8(_), NativeType::I8) => true,
+            (ConstValue::U16(_), NativeType::U16) => true,
+            (ConstValue::I16(_), NativeType::I16) => true,
+            (ConstValue::U32(_), NativeType::U32) => true,
+            (ConstValue::I32(_), NativeType::I32) => true,
+            (ConstValue::F32(_), NativeType::F32) => true,
+            (ConstValue::U64(_), NativeType::U64) => true,
+            (ConstValue::I64(_), NativeType::I64) => true,
+            (ConstValue::F64(_), NativeType::F64) => true,
+            _ => false,
+        }
+    }
+
+    pub fn index_of_ty(value: usize, ty: &NativeType) -> anyhow::Result<Self> {
+        Ok(match ty {
+            NativeType::Bool => ConstValue::Bool(value != 0),
+            NativeType::U8 => ConstValue::U8(value as u8),
+            NativeType::I8 => ConstValue::I8(value as i8),
+            NativeType::U16 => ConstValue::U16(value as u16),
+            NativeType::I16 => ConstValue::I16(value as i16),
+            NativeType::U32 => ConstValue::U32(value as u32),
+            NativeType::I32 => ConstValue::I32(value as i32),
+            NativeType::F32 => ConstValue::F32(value as f32),
+            NativeType::U64 => ConstValue::U64(value as u64),
+            NativeType::I64 => ConstValue::I64(value as i64),
+            NativeType::F64 => ConstValue::F64(value as f64),
+            _ => bail!("Unsupported type for index_of_ty"),
+        })
+    }
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -216,15 +321,15 @@ pub enum Op {
         output: Value,
     },
     Jump {
-        block: i32,
+        block: u32,
     },
     JumpIf {
         cond: Value,
-        block: i32,
+        block: u32,
     },
-    JumpTable {
+    JumpMap {
         cond: Value,
-        block: i32,
+        branches: Vec<(ConstValue, u32)>,
     },
     Ret(Option<(Ty, Value)>),
 }
@@ -411,40 +516,39 @@ impl Module {
             Ty::Native(ty) => (ty.size(), ty.alignment()),
             Ty::Struct(ty) => {
                 let s = self
-                    .get_struct(*ty)
+                    .get_struct(*ty as usize)
                     .ok_or_else(|| anyhow!("couldn't find struct {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
             }
             Ty::Enum(ty) => {
                 let s = self
-                    .get_enum(*ty)
+                    .get_enum(*ty as usize)
                     .ok_or_else(|| anyhow!("couldn't find enum {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
             }
-            Ty::Ptr(_, _) => (4, 4),
         })
     }
 
-    pub fn get_struct(&self, id: i32) -> Option<&Struct> {
-        self.structs.get(id as usize)
+    pub fn get_struct(&self, id: usize) -> Option<&Struct> {
+        self.structs.get(id)
     }
 
-    pub fn get_function(&self, id: i32) -> Option<&Function> {
-        self.functions.get(id as usize)
+    pub fn get_function(&self, id: usize) -> Option<&Function> {
+        self.functions.get(id)
     }
 
-    pub fn get_pipeline(&self, id: i32) -> Option<&IRPipeline> {
+    pub fn get_pipeline(&self, id: usize) -> Option<&IRPipeline> {
         self.pipelines.get(id as usize)
     }
 
-    pub fn get_enum(&self, id: i32) -> Option<&Enum> {
-        self.enums.get(id as usize)
+    pub fn get_enum(&self, id: usize) -> Option<&Enum> {
+        self.enums.get(id)
     }
 }
 
-use std::fmt;
+use std::fmt::{self, Display};
 impl fmt::Display for Ref {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -456,25 +560,29 @@ impl fmt::Display for Ref {
     }
 }
 
-impl fmt::Display for NativeType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.to_str())
-    }
-}
-
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Ty::Native(native) => write!(f, "{}", native),
             Ty::Struct(id) => write!(f, "struct({})", id),
             Ty::Enum(id) => write!(f, "enum({})", id),
-            Ty::Ptr(mutable, ty) => {
-                write!(f, "{}", if *mutable { "ptr" } else { "mut_ptr" })?;
-                if let Some(ty) = ty {
-                    write!(f, "{}", ty)?;
-                }
-                Ok(())
-            }
+        }
+    }
+}
+impl fmt::Display for ConstValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ConstValue::Bool(val) => write!(f, "{}", val),
+            ConstValue::U8(val) => write!(f, "{}u8", val),
+            ConstValue::I8(val) => write!(f, "{}i8", val),
+            ConstValue::U16(val) => write!(f, "{}u16", val),
+            ConstValue::I16(val) => write!(f, "{}i16", val),
+            ConstValue::U32(val) => write!(f, "{}u32", val),
+            ConstValue::I32(val) => write!(f, "{}i32", val),
+            ConstValue::F32(val) => write!(f, "{}f32", val),
+            ConstValue::U64(val) => write!(f, "{}u64", val),
+            ConstValue::I64(val) => write!(f, "{}i64", val),
+            ConstValue::F64(val) => write!(f, "{}f64", val),
         }
     }
 }
@@ -487,10 +595,7 @@ impl fmt::Display for Value {
             }
             Value::FnArg(arg) => write!(f, "$FnArg({})", arg),
             Value::BlockOp { block, op } => write!(f, "$BlockOp(block: {}, op: {})", block, op),
-            Value::ConstI32(val) => write!(f, "$ConstI32({})", val),
-            Value::ConstI64(val) => write!(f, "$ConstI64({})", val),
-            Value::ConstF32(val) => write!(f, "$ConstF32({})", val),
-            Value::ConstF64(val) => write!(f, "$ConstF64({})", val),
+            Value::Const(val) => write!(f, "$Const({})", val),
         }
     }
 }
@@ -499,7 +604,7 @@ impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Op::AllocA { ty } => write!(f, "(alloc {})", ty),
-            Op::Load { ty, ptr } => write!(f, "(load {} {})", ty.to_str(), ptr),
+            Op::Load { ty, ptr } => write!(f, "(load {} {})", ty, ptr),
             Op::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
             Op::INeg { arg } => write!(f, "(i_neg {})", arg),
             Op::FNeg { arg } => write!(f, "(f_neg {})", arg),
@@ -548,7 +653,18 @@ impl fmt::Display for Op {
             }
             Op::Jump { block } => write!(f, "(jump {})", block),
             Op::JumpIf { cond, block } => write!(f, "(jump_if {} {})", cond, block),
-            Op::JumpTable { cond, block } => write!(f, "(jump_table {} {})", cond, block),
+            Op::JumpMap { cond, branches } => {
+                write!(
+                    f,
+                    "(jump_table {} branches: [{}])",
+                    cond,
+                    branches
+                        .iter()
+                        .map(|(val, blk)| format!("({}, {})", val, blk))
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            }
         }
     }
 }
