@@ -9,13 +9,32 @@ struct MyStruct {
     b: MyEnum
 }
 
-fn add_test(a: i32, b: i32) -> i32 {
-    return add(a, b);
-}
+fn add_test(a: i64, b: i64) -> i64 {
+    i64 ret_val = 0;
+    match (a) {
+        1 => match (b) {
+            1 => return 2;
+            2 => return 3;
+        }
+        2 => match (b) {
+            1 => ret_val = 3;
+            2 => {
+                ret_val = 4;
+            }
+        }
+    }
 
-pipe add_structs(a: MyStruct, b: MyStruct) -> MyStruct [{
-    return MyStruct {
-        a: add_enums(a.a, b.a),
-        b: add_enums(a.b, b.b)
-    };
-}]
+    i64 five = 5;
+    while(cmp_gt(10, five)) {
+        five = add(five, 1);
+    }
+
+    if (cmp_gt(five, 5)) {
+        five = 5;
+    } else {
+        five = -1;
+    }
+
+
+    return add(ret_val, five);
+}

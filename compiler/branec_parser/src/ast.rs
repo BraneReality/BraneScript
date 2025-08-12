@@ -150,7 +150,7 @@ pub struct Function {
 
 #[derive(Clone)]
 pub enum CaseKind {
-    Int(i128),
+    Int(usize),
     EnumVariant(Ident, Option<Ident>),
 }
 

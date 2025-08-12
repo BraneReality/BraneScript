@@ -373,6 +373,7 @@ where
         .clone()
         .then_ignore(token("="))
         .then(expr.clone())
+        .then_ignore(token(";"))
         .map(|(dest, src)| StmtKind::Assign(dest, src));
 
     let variable_def = ty
@@ -380,6 +381,7 @@ where
         .then(ident.clone())
         .then_ignore(token("="))
         .then(expr.clone())
+        .then_ignore(token(";"))
         .map(|((ty, ident), expr)| StmtKind::VariableDef(ty, ident, expr));
 
     let if_stmt = token("if")
