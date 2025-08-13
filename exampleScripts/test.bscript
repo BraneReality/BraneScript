@@ -1,3 +1,4 @@
+
 enum MyEnum {
     None,
     Float(f32),
@@ -10,13 +11,13 @@ struct MyStruct {
 }
 
 fn add_test(a: i64, b: i64) -> i64 {
-    i64 ret_val = 0;
-    match (a) {
-        1 => match (b) {
+    let ret_val: i64 = 0;
+    match a {
+        1 => match b {
             1 => return 2;
             2 => return 3;
         }
-        2 => match (b) {
+        2 => match b {
             1 => ret_val = 3;
             2 => {
                 ret_val = 4;
@@ -24,15 +25,26 @@ fn add_test(a: i64, b: i64) -> i64 {
         }
     }
 
-    i64 five = 5;
+    let five: i64 = 5;
     while(cmp_gt(10, five)) {
         five = add(five, 1);
     }
 
+    /* block comments 
+    line
+    another line
+    */
     if (cmp_gt(five, 5)) {
         five = 5;
     } else {
-        five = -1;
+        five = 1;
+    }
+
+    // Just testing syntax
+    if cmp_gt(5, 5) {
+        
+    } else if cmp_gt(2, 4) {
+
     }
 
 

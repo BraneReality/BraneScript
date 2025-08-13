@@ -9,10 +9,10 @@ struct MyStruct {
     b: MyEnum
 }
 
-fn add_enums(a: *MyEnum, b: MyEnum) -> MyEnum {
-    match(a) {
+fn add_enums(a: MyEnum, b: MyEnum) -> MyEnum {
+    match a {
         None => return None;
-        Float(a) => match(b) {
+        Float(a) => match b {
             None => return None;
             Float(b) => return MyEnum.Float(add(a, b));
             Int(b) => return MyEnum.Float(add(a, Float(b)));
@@ -26,7 +26,7 @@ fn add_enums(a: *MyEnum, b: MyEnum) -> MyEnum {
 }
 
 pipe add_structs(a: MyStruct, b: MyStruct) -> MyStruct [{
-    return new MyStruct {
+    return MyStruct {
         a: add_enums(a.a, b.a),
         b: add_enums(a.b, b.b)
     };
