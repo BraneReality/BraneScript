@@ -384,7 +384,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     ) -> Result<Option<RValue>> {
         match &expr.kind {
             ast::ExprKind::Struct(_, _) | ast::ExprKind::Array(_) | ast::ExprKind::Tuple(_) => {
-                todo!()
+                todo!("struct, array, and tuple not implemented yet!");
             }
             ast::ExprKind::Literal(lit) => Ok(Some(match &lit.kind {
                 ast::LiteralKind::Float(v) => {
