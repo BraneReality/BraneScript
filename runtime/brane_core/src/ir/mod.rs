@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail};
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Ref {
     Struct(u64),
     Enum(u64),
@@ -8,7 +8,7 @@ pub enum Ref {
     Pipeline(i64),
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum NativeType {
     Bool,
     U8,
@@ -98,14 +98,14 @@ impl Display for NativeType {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum Ty {
     Native(NativeType),
     Struct(u64),
     Enum(u64),
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Value {
     PhiArg { block: u32, arg: u32 },
     FnArg(u32),
@@ -206,132 +206,77 @@ impl ConstValue {
     }
 }
 
+impl std::hash::Hash for ConstValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ConstValue::Bool(v) => v.hash(state),
+            ConstValue::U8(v) => v.hash(state),
+            ConstValue::I8(v) => v.hash(state),
+            ConstValue::U16(v) => v.hash(state),
+            ConstValue::I16(v) => v.hash(state),
+            ConstValue::U32(v) => v.hash(state),
+            ConstValue::I32(v) => v.hash(state),
+            ConstValue::U64(v) => v.hash(state),
+            ConstValue::I64(v) => v.hash(state),
+            ConstValue::F32(v) => (*v as i64).hash(state),
+            ConstValue::F64(v) => (*v as i64).hash(state),
+        }
+    }
+}
+
+impl Eq for ConstValue {}
+
 #[derive(PartialEq, Clone, Debug)]
 pub enum Op {
-    AllocA {
-        ty: Ty,
-    },
-    Load {
-        ty: NativeType,
-        ptr: Value,
-    },
-    Store {
-        src: Value,
-        ptr: Value,
-    },
+    AllocA { ty: Ty },
+    Load { ty: NativeType, ptr: Value },
+    Store { src: Value, ptr: Value },
     // Unary ops
-    INeg {
-        arg: Value,
-    },
-    FNeg {
-        arg: Value,
-    },
+    INeg { arg: Value },
+    FNeg { arg: Value },
     // Binary ops
-    IAdd {
-        left: Value,
-        right: Value,
-    },
-    FAdd {
-        left: Value,
-        right: Value,
-    },
-    ISub {
-        left: Value,
-        right: Value,
-    },
-    FSub {
-        left: Value,
-        right: Value,
-    },
-    IMul {
-        left: Value,
-        right: Value,
-    },
-    FMul {
-        left: Value,
-        right: Value,
-    },
-    SDiv {
-        left: Value,
-        right: Value,
-    },
-    UDiv {
-        left: Value,
-        right: Value,
-    },
-    FDiv {
-        left: Value,
-        right: Value,
-    },
-    URem {
-        left: Value,
-        right: Value,
-    },
-    SRem {
-        left: Value,
-        right: Value,
-    },
-    FRem {
-        left: Value,
-        right: Value,
-    },
-    CmpEq {
-        left: Value,
-        right: Value,
-    },
-    CmpNe {
-        left: Value,
-        right: Value,
-    },
-    CmpGt {
-        left: Value,
-        right: Value,
-    },
-    CmpGe {
-        left: Value,
-        right: Value,
-    },
-    And {
-        left: Value,
-        right: Value,
-    },
-    Or {
-        left: Value,
-        right: Value,
-    },
-    Xor {
-        left: Value,
-        right: Value,
-    },
-    ShiftL {
-        left: Value,
-        right: Value,
-    },
-    IShiftR {
-        left: Value,
-        right: Value,
-    },
-    UShiftR {
-        left: Value,
-        right: Value,
-    },
-    Call {
-        func: i32,
-        input: Vec<Value>,
-        output: Value,
-    },
+    IAdd { left: Value, right: Value },
+    FAdd { left: Value, right: Value },
+    ISub { left: Value, right: Value },
+    FSub { left: Value, right: Value },
+    IMul { left: Value, right: Value },
+    FMul { left: Value, right: Value },
+    SDiv { left: Value, right: Value },
+    UDiv { left: Value, right: Value },
+    FDiv { left: Value, right: Value },
+    URem { left: Value, right: Value },
+    SRem { left: Value, right: Value },
+    FRem { left: Value, right: Value },
+    CmpEq { left: Value, right: Value },
+    CmpNe { left: Value, right: Value },
+    CmpGt { left: Value, right: Value },
+    CmpGe { left: Value, right: Value },
+    And { left: Value, right: Value },
+    Or { left: Value, right: Value },
+    Xor { left: Value, right: Value },
+    ShiftL { left: Value, right: Value },
+    IShiftR { left: Value, right: Value },
+    UShiftR { left: Value, right: Value },
+    Call { func: i32, input: Vec<Value> },
+}
+
+/// Block terminating operator
+#[derive(Clone, PartialEq)]
+pub enum TermOp {
     Jump {
         block: u32,
     },
     JumpIf {
         cond: Value,
-        block: u32,
+        then: u32,
+        else_: u32,
     },
     JumpMap {
         cond: Value,
-        branches: Vec<(ConstValue, u32)>,
+        branches: Vec<(u128, u32)>,
+        default: u32,
     },
-    Ret(Option<(Ty, Value)>),
+    Ret(Option<Value>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -471,10 +416,23 @@ impl Enum {
     }
 }
 
+#[derive(PartialEq, Clone)]
+pub struct PhiValue {
+    pub block: u32,
+    pub value: Value,
+}
+
+#[derive(Clone)]
+pub struct PhiNode {
+    pub ty: NativeType,
+    pub variants: Vec<PhiValue>,
+}
+
 pub struct Block {
     /// Phi nodes all declared at the "beginning" of blocks for eazy analysis
-    pub phi: Vec<Vec<Value>>,
+    pub phi_nodes: Vec<PhiNode>,
     pub ops: Vec<Op>,
+    pub terminator: TermOp,
 }
 
 pub struct Function {
@@ -630,34 +588,43 @@ impl fmt::Display for Op {
             Op::ShiftL { left, right } => write!(f, "(shl {} {})", left, right),
             Op::IShiftR { left, right } => write!(f, "(i_shr {} {})", left, right),
             Op::UShiftR { left, right } => write!(f, "(u_shr {} {})", left, right),
-            Op::Call {
-                func,
-                input,
-                output,
-            } => write!(
+            Op::Call { func, input } => write!(
                 f,
-                "(call {} [{}] {})",
+                "(call {} [{}])",
                 func,
                 input
                     .iter()
                     .map(|v| v.to_string())
                     .collect::<Vec<_>>()
                     .join(", "),
-                output
             ),
-            Op::Ret(Some((out_t, out_v))) => {
-                write!(f, "(ret {} {})", out_t, out_v)
+        }
+    }
+}
+
+impl Display for TermOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TermOp::Ret(Some(out_v)) => {
+                write!(f, "(ret {})", out_v)
             }
-            Op::Ret(None) => {
+            TermOp::Ret(None) => {
                 write!(f, "ret")
             }
-            Op::Jump { block } => write!(f, "(jump {})", block),
-            Op::JumpIf { cond, block } => write!(f, "(jump_if {} {})", cond, block),
-            Op::JumpMap { cond, branches } => {
+            TermOp::Jump { block } => write!(f, "(jump {})", block),
+            TermOp::JumpIf { cond, then, else_ } => {
+                write!(f, "(jump_if {} then {} else {})", cond, then, else_)
+            }
+            TermOp::JumpMap {
+                cond,
+                branches,
+                default,
+            } => {
                 write!(
                     f,
-                    "(jump_table {} branches: [{}])",
+                    "(jump_map {} default: {} branches: [{}])",
                     cond,
+                    default,
                     branches
                         .iter()
                         .map(|(val, blk)| format!("({}, {})", val, blk))
@@ -668,6 +635,7 @@ impl fmt::Display for Op {
         }
     }
 }
+
 impl fmt::Display for Function {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(func \"{}\" ", self.id)?;
@@ -685,9 +653,16 @@ impl fmt::Display for Function {
         }
         for (i, block) in self.blocks.iter().enumerate() {
             write!(f, "\n   Block {}:", i)?;
+            for (i, phi) in block.phi_nodes.iter().enumerate() {
+                write!(f, "\n    ϕ{}({}): ", i, phi.ty)?;
+                for phi_source in &phi.variants {
+                    write!(f, "(src: {} val: {})", phi_source.block, phi_source.value)?;
+                }
+            }
             for (j, op) in block.ops.iter().enumerate() {
                 write!(f, "\n      {:4} <- {}", j, op)?;
             }
+            write!(f, "\n      Term: {}", block.terminator)?;
         }
         write!(f, ")")
     }
