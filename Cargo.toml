@@ -11,7 +11,7 @@ members = [
     "compiler/branec_parser", 
     "compiler/branec_emitter",
     "compiler/branec_source"
-]
+, "runtime/brane_backend_cranelift"]
 
 [workspace.dependencies]
 anyhow = "1"

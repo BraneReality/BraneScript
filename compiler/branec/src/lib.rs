@@ -1,14 +1,16 @@
 use anyhow::{anyhow, bail, Result};
-use brane_core::ir::{self, Value};
+use brane_core::ir;
 use branec_emitter::{self as emt, Diagnostic, DiagnosticEmitter};
 use branec_parser::ast::{self, Ty};
 use branec_source::{SourceManager, Span, Uri};
 use chumsky::span::Span as _;
-use chumsky::{IterParser, Parser};
+use chumsky::Parser;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
+
+mod passes;
 
 /// Information about how to compile brane script projects
 pub struct CompileContext<E: DiagnosticEmitter> {
@@ -85,6 +87,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
         }
 
+        println!("pre-prune:\n{}", module_ctx.module);
+        passes::prune_phi_nodes(&mut module_ctx.module)?;
+        println!("post-prune:\n{}", module_ctx.module);
+
         Ok(module_ctx.module)
     }
 
@@ -135,7 +141,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     output: return_ty.clone(),
                     blocks: vec![],
                 },
-                current_block: 0,
+                current_block: None,
                 variables: Vec::new(),
                 mod_ctx: module,
                 block_phi_mappings: Vec::new(),
@@ -179,9 +185,18 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     }
 
     pub fn emit_stmt(&mut self, stmt: &ast::Stmt, ctx: &mut FunctionCtx) -> Result<()> {
+        if ctx.current_block.is_none() {
+            emt::warning("Dead code", &self.sources)
+                .warning_at(
+                    stmt.span.clone(),
+                    "Code after return, break, or continue won't be evaluated",
+                )
+                .emit(&self.emitter)?;
+        }
+
         match &stmt.kind {
             ast::StmtKind::Expression(expr) => {
-                self.emit_r_value(expr, ctx);
+                self.emit_r_value(expr, ctx)?;
             }
             ast::StmtKind::Assign(dest, src) => {
                 let d = self.emit_l_value(dest, ctx)?;
@@ -213,19 +228,18 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     None => None,
                 };
                 let join_block = ctx.create_block()?;
-                ctx.emit_jump_if(body_block, cond)?;
-                if let Some(else_block) = else_block {
-                    ctx.emit_jump(else_block)?;
-                } else {
-                    ctx.emit_jump(join_block)?;
-                }
+                ctx.end_block_jump_if(cond, body_block, else_block.unwrap_or(join_block));
                 ctx.start_block(body_block)?;
                 self.emit_stmt(&body, ctx)?;
-                ctx.emit_jump(join_block)?;
+                if ctx.current_block.is_some() {
+                    ctx.end_block_jump(join_block);
+                }
                 if let (Some(else_block), Some(else_stmt)) = (else_block, else_stmt) {
                     ctx.start_block(else_block)?;
                     self.emit_stmt(&else_stmt, ctx)?;
-                    ctx.emit_jump(join_block)?;
+                    if ctx.current_block.is_some() {
+                        ctx.end_block_jump(join_block);
+                    }
                 }
                 ctx.start_block(join_block)?;
             }
@@ -233,7 +247,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let cond_block = ctx.create_block()?;
                 let body_block = ctx.create_block()?;
                 let finally_block = ctx.create_block()?;
-                ctx.emit_jump(cond_block)?;
+                ctx.end_block_jump(cond_block);
                 ctx.start_block(cond_block)?;
                 let cond = self
                     .emit_r_value(cond, ctx)?
@@ -241,12 +255,12 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let RValue::Value(cond, ir::NativeType::Bool) = cond else {
                     bail!("While condition must be a bool, but was {}", cond.ty());
                 };
-                ctx.emit_jump_if(body_block, cond)?;
-                ctx.emit_jump(finally_block)?;
+                ctx.end_block_jump_if(cond, body_block, finally_block);
                 ctx.start_block(body_block)?;
                 self.emit_stmt(body, ctx)?;
-                ctx.emit_jump(cond_block)?;
-
+                if ctx.current_block.is_some() {
+                    ctx.end_block_jump(cond_block);
+                }
                 ctx.start_block(finally_block)?;
             }
             ast::StmtKind::Match(_span, expr, match_branches) => {
@@ -255,7 +269,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                 match cond {
                     RValue::Value(index, ty) => {
-                        let indices =
+                        let branches =
                             match_branches
                                 .iter()
                                 .try_fold(Vec::new(), |mut indices, b| {
@@ -263,28 +277,36 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                         bail!("Match cases must be int values!");
                                     };
 
-                                    indices.push(ir::ConstValue::index_of_ty(*v, &ty)?);
+                                    indices.push((*v as u128, ctx.create_block()?));
                                     Ok(indices)
                                 })?;
 
                         let variables = ctx.record_variables();
-                        let branch_blocks = ctx.emit_jump_map(&ty, index, indices)?;
                         let join_block = ctx.create_block()?;
-                        for (block, match_branch) in branch_blocks.into_iter().zip(match_branches) {
-                            ctx.start_block(block)?;
+                        let default_block = ctx.create_block()?;
+                        ctx.end_block_jump_map(&ty, index, default_block, branches.clone())?;
+                        for ((_cond, block), match_branch) in
+                            branches.into_iter().zip(match_branches)
+                        {
                             ctx.set_variables(variables.clone());
+                            ctx.start_block(block)?;
                             ctx.start_scope();
 
                             self.emit_stmt(&match_branch.body, ctx)?;
-
                             ctx.end_scope();
-                            ctx.emit_jump(join_block)?;
+                            if ctx.current_block.is_some() {
+                                ctx.end_block_jump(join_block);
+                            }
                         }
+                        ctx.set_variables(variables.clone());
+                        ctx.start_block(default_block)?;
+                        ctx.end_block_jump(join_block);
                         ctx.start_block(join_block)?;
                     }
                     RValue::Enum(SSAEnum {
                         variants,
                         index,
+                        index_ty: _,
                         def_id,
                     }) => {
                         let enum_def = ctx
@@ -293,16 +315,17 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             .get_enum(def_id)
                             .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
                         let layout = enum_def.layout(&ctx.mod_ctx.module)?;
+                        let def_clone = enum_def.clone();
 
-                        let (indices, variants) = match_branches.iter().try_fold(
+                        let (branches, variants) = match_branches.iter().try_fold(
                             (Vec::new(), Vec::new()),
-                            |(mut indices, mut inner_data), b| {
+                            |(mut branches, mut inner_data), b| {
                                 let ast::CaseKind::EnumVariant(v_id, data_label) = &b.case else {
                                     bail!("Match cases must be enum variants!");
                                 };
 
                                 let Some(index) =
-                                    enum_def.variants.iter().enumerate().find_map(|(i, v)| {
+                                    def_clone.variants.iter().enumerate().find_map(|(i, v)| {
                                         if v.id == v_id.text {
                                             Some(i)
                                         } else {
@@ -312,25 +335,34 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 else {
                                     bail!(
                                         "Enum {} does not have a variant {}",
-                                        enum_def.id.clone().unwrap_or_default(),
+                                        def_clone.id.clone().unwrap_or_default(),
                                         v_id.text
                                     );
                                 };
 
-                                indices.push(ir::ConstValue::index_of_ty(index, &layout.index_ty)?);
+                                branches.push((index as u128, ctx.create_block()?));
                                 inner_data.push((data_label.clone(), variants[index].clone()));
-                                Ok((indices, inner_data))
+                                Ok((branches, inner_data))
                             },
                         )?;
 
-                        let variables = ctx.record_variables();
-                        let branch_blocks = ctx.emit_jump_map(&layout.index_ty, index, indices)?;
                         let join_block = ctx.create_block()?;
-                        for ((block, match_branch), variant) in
-                            branch_blocks.into_iter().zip(match_branches).zip(variants)
+                        let default_block = ctx.create_block()?;
+                        let variables = ctx.record_variables();
+                        ctx.end_block_jump_map(
+                            &layout.index_ty,
+                            index,
+                            default_block,
+                            branches.clone(),
+                        )?;
+
+                        ctx.start_block(default_block)?;
+                        ctx.end_block_jump(join_block);
+                        for (((_cond, block), match_branch), variant) in
+                            branches.into_iter().zip(match_branches).zip(variants)
                         {
-                            ctx.start_block(block)?;
                             ctx.set_variables(variables.clone());
+                            ctx.start_block(block)?;
                             ctx.start_scope();
                             if let (Some(data_label), Some(variant_data)) = variant {
                                 ctx.define_variable(data_label.text, variant_data);
@@ -339,7 +371,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             self.emit_stmt(&match_branch.body, ctx)?;
 
                             ctx.end_scope();
-                            ctx.emit_jump(join_block)?;
+                            ctx.end_block_jump(join_block);
                         }
                         ctx.start_block(join_block)?;
                     }
@@ -360,8 +392,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             .emit_r_value(expr, ctx)?
                             .ok_or_else(|| anyhow!("Expression does not return value!"))?
                         {
-                            RValue::Value(value, native_type) => {
-                                (ir::Ty::Native(native_type), value)
+                            RValue::Value(value, _) => {
+                                //TODO typecheck
+                                value
                             }
                             _ => {
                                 bail!("We don't support returning structs or enums yet! Use pointers.")
@@ -370,7 +403,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     ),
                     None => None,
                 };
-                ctx.emit_op(ir::Op::Ret(body))?;
+                ctx.end_block_ret(body);
             }
         };
         Ok(())
@@ -428,7 +461,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     }
 
     /// Emit a value coresponding to the location of a value or variable
-    pub fn emit_l_value(&mut self, expr: &ast::Expr, ctx: &mut FunctionCtx) -> Result<LValue> {
+    fn emit_l_value(&mut self, expr: &ast::Expr, ctx: &mut FunctionCtx) -> Result<LValue> {
         match &expr.kind {
             ast::ExprKind::Struct(_, _)
             | ast::ExprKind::Literal(_)
@@ -453,7 +486,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
     }
 
-    pub fn emit_callable(&mut self, expr: &ast::Expr, ctx: &mut FunctionCtx) -> Result<Callable> {
+    fn emit_callable(&mut self, expr: &ast::Expr, _ctx: &mut FunctionCtx) -> Result<Callable> {
         match &expr.kind {
             ast::ExprKind::Path(path) => {
                 // Technically this should emit intrinsic functions too
@@ -519,7 +552,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
     }
 
-    pub fn store(&mut self, lvalue: &LValue, rvalue: RValue, ctx: &mut FunctionCtx) -> Result<()> {
+    fn store(&mut self, lvalue: &LValue, rvalue: RValue, ctx: &mut FunctionCtx) -> Result<()> {
         match &lvalue {
             LValue::Ptr(ptr, _ty) => match rvalue {
                 RValue::Value(src, _ty) => {
@@ -534,6 +567,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 RValue::Enum(SSAEnum {
                     variants,
                     index,
+                    index_ty: _,
                     def_id,
                 }) => {
                     let enum_def = ctx
@@ -551,19 +585,19 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         ptr: variant_ptr,
                     })?;
 
-                    let indices = (0..variants.len())
+                    let branches = (0..variants.len())
                         .into_iter()
-                        .map(|i| ir::ConstValue::index_of_ty(i, &layout.index_ty))
+                        .map(|i| Ok((i as u128, ctx.create_block()?)))
                         .collect::<Result<Vec<_>>>()?;
 
-                    let branch_blocks = ctx.emit_jump_map(&layout.index_ty, index, indices)?;
                     let join_block = ctx.create_block()?;
-                    for (block, inner) in branch_blocks.into_iter().zip(variants) {
+                    ctx.end_block_jump_map(&layout.index_ty, index, join_block, branches.clone())?;
+                    for ((_cond, block), inner) in branches.into_iter().zip(variants) {
                         ctx.start_block(block)?;
                         if let Some(inner) = inner {
                             self.store(&LValue::Ptr(*ptr, inner.ty()), inner, ctx)?;
                         }
-                        ctx.emit_jump(join_block)?;
+                        ctx.end_block_jump(join_block);
                     }
                     ctx.start_block(join_block)?;
                 }
@@ -575,7 +609,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         Ok(())
     }
 
-    pub fn load(&mut self, lvalue: &LValue, ctx: &mut FunctionCtx) -> Result<RValue> {
+    fn load(&mut self, lvalue: &LValue, ctx: &mut FunctionCtx) -> Result<RValue> {
         match lvalue {
             LValue::Ptr(ptr, ty) => match ty {
                 ir::Ty::Struct(def_id) => {
@@ -611,30 +645,31 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         .map(|v| v.ty.clone())
                         .collect::<Vec<_>>();
                     let layout = enum_def.layout(&ctx.mod_ctx.module)?;
+                    let index_ty = layout.index_ty.clone();
                     let variant_ptr = ctx.emit_op(ir::Op::IAdd {
                         left: *ptr,
                         right: ir::Value::const_u32(layout.index_offset as u32),
                     })?;
                     let index = ctx.emit_op(ir::Op::Load {
                         ptr: variant_ptr,
-                        ty: layout.index_ty.clone(),
+                        ty: index_ty.clone(),
                     })?;
 
-                    let indices = (0..variant_tys.len())
+                    let branches = (0..variant_tys.len())
                         .into_iter()
-                        .map(|i| ir::ConstValue::index_of_ty(i, &layout.index_ty))
+                        .map(|i| Ok((i as u128, ctx.create_block()?)))
                         .collect::<Result<Vec<_>>>()?;
 
-                    let branch_blocks = ctx.emit_jump_map(&layout.index_ty, index, indices)?;
                     let join_block = ctx.create_block()?;
+                    ctx.end_block_jump_map(&layout.index_ty, index, join_block, branches.clone())?;
                     let mut variants = Vec::new();
-                    for (block, variant) in branch_blocks.into_iter().zip(variant_tys) {
+                    for ((_cond, block), variant) in branches.into_iter().zip(variant_tys) {
                         ctx.start_block(block)?;
                         variants.push(match &variant {
                             Some(inner) => Some(self.load(&LValue::Ptr(*ptr, inner.clone()), ctx)?),
                             None => None,
                         });
-                        ctx.emit_jump(join_block)?;
+                        ctx.end_block_jump(join_block);
                     }
                     ctx.start_block(join_block)?;
 
@@ -642,6 +677,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         variants,
                         index,
                         def_id,
+                        index_ty,
                     }))
                 }
                 ir::Ty::Native(nt) => {
@@ -656,7 +692,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
     }
 
-    pub fn get_struct_field(
+    fn get_struct_field(
         &mut self,
         lvalue: &LValue,
         index: usize,
@@ -817,7 +853,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
                 Ok(ir::Ty::Struct(struct_index as u64))
             }
-            ast::TyKind::Slice(is_mut, inner_ty) => {
+            ast::TyKind::Slice(_is_mut, inner_ty) => {
                 let inner_ty = match inner_ty {
                     Some(inner_ty) => Some(Box::new(self.emit_ty(&inner_ty, ctx)?)),
                     None => None,
@@ -950,7 +986,7 @@ pub struct ModuleCtx {
 pub struct FunctionCtx<'mc> {
     pub mod_ctx: &'mc mut ModuleCtx,
     pub function: ir::Function,
-    pub current_block: usize,
+    pub current_block: Option<usize>,
     /// Map ranges of block phi nodes, to the variables that they grab values from
     /// if a variable represents a flattened structs or enum, it's ID will be placed in multiple
     /// indices. This will be contigous and repeated the variable's "width" times
@@ -996,87 +1032,91 @@ impl<'mc> FunctionCtx<'mc> {
         variables
     }
     pub fn emit_op(&mut self, op: ir::Op) -> Result<ir::Value> {
-        let b = self
-            .function
-            .blocks
-            .get_mut(self.current_block)
-            .ok_or_else(|| {
-                anyhow!(
-                    "no block at index {} when trying to emit {}",
-                    self.current_block,
-                    op
-                )
-            })?;
+        let current_block = self.current_block.expect("no current block!");
+        let b = self.function.blocks.get_mut(current_block).unwrap();
         let op_id = b.ops.len() as u32;
         b.ops.push(op);
         Ok(ir::Value::BlockOp {
-            block: self.current_block as u32,
+            block: current_block as u32,
             op: op_id,
         })
     }
 
-    pub fn emit_jump(&mut self, block: usize) -> Result<()> {
-        // TODO handle SSA values and whatnot
-        self.emit_op(ir::Op::Jump {
-            block: block as u32,
-        })?;
-        self.map_jump_vars(block);
-        Ok(())
+    pub fn end_block(&mut self, term: ir::TermOp) {
+        match &term {
+            ir::TermOp::Jump { block } => self.map_jump_vars(*block),
+            ir::TermOp::JumpIf {
+                cond: _,
+                then,
+                else_,
+            } => {
+                self.map_jump_vars(*then);
+                self.map_jump_vars(*else_);
+            }
+            ir::TermOp::JumpMap {
+                cond: _,
+                default,
+                branches,
+            } => {
+                for (_, b) in branches {
+                    self.map_jump_vars(*b);
+                }
+                self.map_jump_vars(*default);
+            }
+            ir::TermOp::Ret(_) => {}
+        }
+        let current_block = self.current_block.expect("no current block!");
+        self.function.blocks[current_block].terminator = term;
+        /*
+        let btrace = std::backtrace::Backtrace::capture();
+        println!(
+            "Closing block {}, with path {}",
+            self.current_block.unwrap(),
+            btrace
+        );*/
+        self.current_block = None;
     }
 
-    pub fn emit_jump_if(&mut self, block: usize, cond: ir::Value) -> Result<()> {
-        // TODO handle SSA values and whatnot
-        self.emit_op(ir::Op::JumpIf {
-            cond,
-            block: block as u32,
-        })?;
-        self.map_jump_vars(block);
-        Ok(())
+    pub fn end_block_ret(&mut self, value: Option<ir::Value>) {
+        self.end_block(ir::TermOp::Ret(value));
     }
 
-    /// Emit a jump instruction that jumps based on an int value
+    pub fn end_block_jump(&mut self, block: u32) {
+        // TODO handle SSA values and whatnot
+        self.end_block(ir::TermOp::Jump {
+            block: block as u32,
+        });
+    }
+
+    pub fn end_block_jump_if(&mut self, cond: ir::Value, then: u32, else_: u32) {
+        // TODO handle SSA values and whatnot
+        self.end_block(ir::TermOp::JumpIf { cond, then, else_ });
+    }
+
+    /// Set the current block to terminate in a jump instruction that jumps based on an int value
     /// first branch is the default jump target
-    pub fn emit_jump_map(
+    pub fn end_block_jump_map(
         &mut self,
         cond_ty: &ir::NativeType,
         cond: ir::Value,
-        branches: Vec<ir::ConstValue>,
-    ) -> Result<Range<usize>> {
+        default: u32,
+        branches: Vec<(u128, u32)>,
+    ) -> Result<()> {
         if !cond_ty.is_int() {
             bail!("condition must be an integer ty");
         }
-        for v in branches.iter() {
-            if !v.is_ty(cond_ty) {
-                bail!(
-                    "all branch condition for this jump map must be {} but was {}",
-                    cond_ty,
-                    v
-                );
-            }
-        }
-
-        let block_range = self.create_blocks(branches.len())?;
-        for branch in block_range.clone() {
-            self.map_jump_vars(branch);
-        }
-        let branches = block_range
-            .clone()
-            .into_iter()
-            .zip(branches)
-            .map(|(br, cond)| (cond, br as u32))
-            .collect();
-
-        self.emit_op(ir::Op::JumpMap {
-            cond: cond,
+        self.end_block(ir::TermOp::JumpMap {
+            cond,
             branches,
-        })?;
-
-        Ok(block_range)
+            default,
+        });
+        Ok(())
     }
 
     /// Takes the current stack frame and unions it with a block's current set of phi nodes
-    fn map_jump_vars(&mut self, block: usize) {
-        assert!(block < self.function.blocks.len());
+    fn map_jump_vars(&mut self, block: u32) {
+        assert!(block < self.function.blocks.len() as u32);
+        let current_block = self.current_block.unwrap();
         let vars = self
             .scopes
             .iter()
@@ -1085,12 +1125,15 @@ impl<'mc> FunctionCtx<'mc> {
             .map(|(_, id)| *id)
             .collect::<Vec<_>>();
         for var in vars {
-            let flattened = self.variables[var].flattened();
-            let phis = self.block_phis_for_var(block, var, flattened.len());
+            let v = &self.variables[var];
+            let flattened = v.flattened();
+            let phis = self.block_phis_for_var(block, var, &v.flattened_tys());
             for (phi, value) in phis.iter_mut().zip(flattened) {
-                if !phi.contains(&value) {
-                    phi.push(value)
-                }
+                // TODO typecheck to make sure type stays the same
+                phi.variants.push(ir::PhiValue {
+                    block: current_block as u32,
+                    value,
+                })
             }
         }
     }
@@ -1100,12 +1143,14 @@ impl<'mc> FunctionCtx<'mc> {
     /// width is the size of the flattened type that the variable represents
     fn block_phis_for_var(
         &mut self,
-        block: usize,
+        block: u32,
         var_id: usize,
-        width: usize,
-    ) -> &mut [Vec<Value>] {
+        types: &[ir::NativeType],
+    ) -> &mut [ir::PhiNode] {
+        let block = block as usize;
         assert!(block < self.function.blocks.len());
         assert!(block < self.block_phi_mappings.len());
+        let width = types.len();
         let mappings = &mut self.block_phi_mappings[block];
         let phi_indices = match mappings.iter().enumerate().find_map(|(index, var)| {
             if *var == var_id {
@@ -1117,15 +1162,18 @@ impl<'mc> FunctionCtx<'mc> {
             Some(index) => index..(index + width),
             None => {
                 let new_index = mappings.len();
-                assert_eq!(self.function.blocks[block].phi.len(), new_index);
-                for _ in 0..width {
-                    self.function.blocks[block].phi.push(Vec::new());
+                assert_eq!(self.function.blocks[block].phi_nodes.len(), new_index);
+                for ty in types {
+                    self.function.blocks[block].phi_nodes.push(ir::PhiNode {
+                        ty: ty.clone(),
+                        variants: Vec::new(),
+                    });
                     mappings.push(var_id);
                 }
                 new_index..(new_index + width)
             }
         };
-        &mut self.function.blocks[block].phi[phi_indices]
+        &mut self.function.blocks[block].phi_nodes[phi_indices]
     }
 
     /// Get a list of IR values representing a flattened representation of a variable
@@ -1151,47 +1199,52 @@ impl<'mc> FunctionCtx<'mc> {
             })
     }
 
-    pub fn create_block(&mut self) -> Result<usize> {
+    pub fn create_block(&mut self) -> Result<u32> {
         Ok(self.create_blocks(1)?.start)
     }
 
-    pub fn create_blocks(&mut self, count: usize) -> Result<Range<usize>> {
-        let start = self.function.blocks.len();
+    pub fn create_blocks(&mut self, count: usize) -> Result<Range<u32>> {
+        let start = self.function.blocks.len() as u32;
         for _ in 0..count {
             self.function.blocks.push(ir::Block {
-                phi: Vec::new(),
+                phi_nodes: Vec::new(),
                 ops: Vec::new(),
+                terminator: ir::TermOp::Ret(None),
             });
             self.block_phi_mappings.push(Vec::new());
         }
-        Ok(start..(start + count))
+        Ok(start..(start + count as u32))
     }
 
     /// Call this when we first start emitting to a certain block to set up variables and whatnot
-    pub fn start_block(&mut self, block: usize) -> Result<()> {
+    pub fn start_block(&mut self, block: u32) -> Result<()> {
+        let block = block as usize;
         assert!(block < self.function.blocks.len());
-        self.current_block = block;
+        assert!(
+            self.current_block.is_none(),
+            "Previous block must be be finished before starting a new one!"
+        );
+        self.current_block = Some(block);
 
         // Search the current scope of exposed values for any values that are mapped to a phi node
         // of this block, and if so, make our labels point to that.
         for scope in self.scopes.iter_mut() {
-            for (_, var_id) in scope.iter_mut() {
+            for (_, var_id) in scope.iter() {
                 let var = &self.variables[*var_id];
                 let ty = var.ty();
                 let width = var.width();
                 if let Some(phis) =
                     Self::block_phi_values_for_var(&self.block_phi_mappings, block, *var_id, width)
                 {
-                    *var_id = self.variables.len();
-                    self.variables
-                        .push(RValue::from_flattened(&phis, &ty, &self.mod_ctx.module)?);
+                    self.variables[*var_id] =
+                        RValue::from_flattened(&phis, &ty, &self.mod_ctx.module)?;
                 }
             }
         }
         Ok(())
     }
 
-    pub fn get_variable_at_path(&mut self, path: &Vec<VariablePathSegment>) -> Result<RValue> {
+    fn get_variable_at_path(&mut self, path: &Vec<VariablePathSegment>) -> Result<RValue> {
         if path.is_empty() {
             bail!("variable path was empty");
         }
@@ -1248,7 +1301,7 @@ impl<'mc> FunctionCtx<'mc> {
         Ok(current_root.unwrap())
     }
 
-    pub fn set_at_path(&mut self, path: &Vec<VariablePathSegment>, variable: RValue) -> Result<()> {
+    fn set_at_path(&mut self, path: &Vec<VariablePathSegment>, variable: RValue) -> Result<()> {
         if path.is_empty() {
             bail!("variable path was empty");
         }
@@ -1351,6 +1404,20 @@ impl RValue {
         }
     }
 
+    pub fn flattened_tys(&self) -> Vec<ir::NativeType> {
+        let mut values = Vec::new();
+        self.flatten_tys_internal(&mut values);
+        values
+    }
+
+    fn flatten_tys_internal(&self, values: &mut Vec<ir::NativeType>) {
+        match self {
+            RValue::Value(_, nt) => values.push(nt.clone()),
+            RValue::Struct(ssa_struct) => ssa_struct.flatten_tys_internal(values),
+            RValue::Enum(ssa_enum) => ssa_enum.flatten_tys_internal(values),
+        }
+    }
+
     pub fn ty_width(ty: &ir::Ty, module: &ir::Module) -> Result<usize> {
         match ty {
             ir::Ty::Native(_) => Ok(1usize),
@@ -1418,6 +1485,7 @@ impl RValue {
                 let enum_def = module
                     .get_enum(*def_id as usize)
                     .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
+                let index_ty = enum_def.layout(module)?.index_ty;
 
                 if value.len() < 1 {
                     bail!(
@@ -1449,6 +1517,7 @@ impl RValue {
                 Ok(RValue::Enum(SSAEnum {
                     variants,
                     index,
+                    index_ty,
                     def_id: *def_id as usize,
                 }))
             }
@@ -1478,6 +1547,12 @@ impl SSAStruct {
             rvalue.flatten_internal(values);
         }
     }
+
+    fn flatten_tys_internal(&self, values: &mut Vec<ir::NativeType>) {
+        for (_, rvalue) in &self.fields {
+            rvalue.flatten_tys_internal(values);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1486,6 +1561,7 @@ pub struct SSAEnum {
     /// variants with no data
     variants: Vec<Option<RValue>>,
     index: ir::Value,
+    index_ty: ir::NativeType,
     def_id: usize,
 }
 
@@ -1503,6 +1579,15 @@ impl SSAEnum {
         for variant in &self.variants {
             if let Some(rvalue) = variant {
                 rvalue.flatten_internal(values);
+            }
+        }
+    }
+
+    fn flatten_tys_internal(&self, values: &mut Vec<ir::NativeType>) {
+        values.push(self.index_ty.clone());
+        for variant in &self.variants {
+            if let Some(rvalue) = variant {
+                rvalue.flatten_tys_internal(values);
             }
         }
     }

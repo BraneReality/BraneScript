@@ -34,11 +34,13 @@ fn add_test(a: i64, b: i64) -> i64 {
     line
     another line
     */
+    /*
     if (cmp_gt(five, 5)) {
         five = 5;
     } else {
         five = 1;
     }
+    */
 
     // Just testing syntax
     if cmp_gt(5, 5) {

@@ -1,0 +1,13 @@
+[package]
+name = "brane_backend_cranelift"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cranelift = "0.122.0"
+brane_backend = { path = "../brane_backend/" }
+brane_core = { path = "../brane_core/" }
+anyhow.workspace = true
+cranelift-jit = "0.122.0"
+cranelift-module = "0.122.0"
+cranelift-native = "0.122.0"
