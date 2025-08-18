@@ -25,8 +25,8 @@ fn add_test(a: i64, b: i64) -> i64 {
         }
     }
 
-    let five: i64 = 5;
-    while(cmp_gt(10, five)) {
+    let five: i64 = 0;
+    while(cmp_gt(1000000000, five)) {
         five = add(five, 1);
     }
 

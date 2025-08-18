@@ -1,11 +1,16 @@
 use anyhow::{anyhow, bail};
 
+pub type StructId = u64;
+pub type EnumId = u64;
+pub type FnId = i64;
+pub type PipeId = i64;
+
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Ref {
-    Struct(u64),
-    Enum(u64),
-    Function(i64),
-    Pipeline(i64),
+    Struct(StructId),
+    Enum(EnumId),
+    Function(FnId),
+    Pipeline(PipeId),
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
@@ -101,8 +106,8 @@ impl Display for NativeType {
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 pub enum Ty {
     Native(NativeType),
-    Struct(u64),
-    Enum(u64),
+    Struct(StructId),
+    Enum(EnumId),
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
@@ -132,6 +137,10 @@ impl Value {
 
     pub fn const_i16(value: i16) -> Self {
         Value::Const(ConstValue::I16(value))
+    }
+
+    pub fn const_i32(value: i32) -> Self {
+        Value::Const(ConstValue::I32(value))
     }
 
     pub fn const_u32(value: u32) -> Self {
@@ -228,36 +237,67 @@ impl Eq for ConstValue {}
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum Op {
-    AllocA { ty: Ty },
-    Load { ty: NativeType, ptr: Value },
-    Store { src: Value, ptr: Value },
-    // Unary ops
-    INeg { arg: Value },
-    FNeg { arg: Value },
-    // Binary ops
-    IAdd { left: Value, right: Value },
-    FAdd { left: Value, right: Value },
-    ISub { left: Value, right: Value },
-    FSub { left: Value, right: Value },
-    IMul { left: Value, right: Value },
-    FMul { left: Value, right: Value },
-    SDiv { left: Value, right: Value },
-    UDiv { left: Value, right: Value },
-    FDiv { left: Value, right: Value },
-    URem { left: Value, right: Value },
-    SRem { left: Value, right: Value },
-    FRem { left: Value, right: Value },
-    CmpEq { left: Value, right: Value },
-    CmpNe { left: Value, right: Value },
-    CmpGt { left: Value, right: Value },
-    CmpGe { left: Value, right: Value },
-    And { left: Value, right: Value },
-    Or { left: Value, right: Value },
-    Xor { left: Value, right: Value },
-    ShiftL { left: Value, right: Value },
-    IShiftR { left: Value, right: Value },
-    UShiftR { left: Value, right: Value },
-    Call { func: i32, input: Vec<Value> },
+    Load {
+        ty: NativeType,
+        ptr: Value,
+    },
+    Store {
+        src: Value,
+        ptr: Value,
+    },
+    Unary {
+        op: UnaryOp,
+        value: Value,
+    },
+    Binary {
+        op: BinaryOp,
+        left: Value,
+        right: Value,
+    },
+    // Function calls
+    Call {
+        func: i32,
+        input: Vec<Value>,
+    },
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum UnaryOp {
+    INeg,
+    FNeg,
+    Alloc,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum BinaryOp {
+    IAdd,
+    FAdd,
+    ISub,
+    FSub,
+    IMul,
+    FMul,
+    SDiv,
+    UDiv,
+    FDiv,
+    URem,
+    SRem,
+    SCmp(CmpTy),
+    UCmp(CmpTy),
+    FCmp(CmpTy),
+    And,
+    Or,
+    Xor,
+    ShiftL,
+    IShiftR,
+    UShiftR,
+}
+
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum CmpTy {
+    Eq,
+    Ne,
+    Gt,
+    Ge,
 }
 
 /// Block terminating operator
@@ -474,14 +514,14 @@ impl Module {
             Ty::Native(ty) => (ty.size(), ty.alignment()),
             Ty::Struct(ty) => {
                 let s = self
-                    .get_struct(*ty as usize)
+                    .get_struct(*ty)
                     .ok_or_else(|| anyhow!("couldn't find struct {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
             }
             Ty::Enum(ty) => {
                 let s = self
-                    .get_enum(*ty as usize)
+                    .get_enum(*ty)
                     .ok_or_else(|| anyhow!("couldn't find enum {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
@@ -489,20 +529,20 @@ impl Module {
         })
     }
 
-    pub fn get_struct(&self, id: usize) -> Option<&Struct> {
-        self.structs.get(id)
+    pub fn get_struct(&self, id: StructId) -> Option<&Struct> {
+        self.structs.get(id as usize)
     }
 
-    pub fn get_function(&self, id: usize) -> Option<&Function> {
-        self.functions.get(id)
+    pub fn get_enum(&self, id: EnumId) -> Option<&Enum> {
+        self.enums.get(id as usize)
     }
 
-    pub fn get_pipeline(&self, id: usize) -> Option<&IRPipeline> {
+    pub fn get_function(&self, id: FnId) -> Option<&Function> {
+        self.functions.get(id as usize)
+    }
+
+    pub fn get_pipeline(&self, id: PipeId) -> Option<&IRPipeline> {
         self.pipelines.get(id as usize)
-    }
-
-    pub fn get_enum(&self, id: usize) -> Option<&Enum> {
-        self.enums.get(id)
     }
 }
 
@@ -557,37 +597,61 @@ impl fmt::Display for Value {
         }
     }
 }
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            UnaryOp::INeg => write!(f, "ineg"),
+            UnaryOp::FNeg => write!(f, "fneg"),
+            UnaryOp::Alloc => write!(f, "alloc"),
+        }
+    }
+}
+
+impl fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BinaryOp::IAdd => write!(f, "iadd"),
+            BinaryOp::FAdd => write!(f, "fadd"),
+            BinaryOp::ISub => write!(f, "isub"),
+            BinaryOp::FSub => write!(f, "fsub"),
+            BinaryOp::IMul => write!(f, "imul"),
+            BinaryOp::FMul => write!(f, "fmul"),
+            BinaryOp::SDiv => write!(f, "sdiv"),
+            BinaryOp::UDiv => write!(f, "udiv"),
+            BinaryOp::FDiv => write!(f, "fdiv"),
+            BinaryOp::SRem => write!(f, "srem"),
+            BinaryOp::URem => write!(f, "urem"),
+            BinaryOp::SCmp(cty) => write!(f, "s{}", cty),
+            BinaryOp::UCmp(cty) => write!(f, "u{}", cty),
+            BinaryOp::FCmp(cty) => write!(f, "f{}", cty),
+            BinaryOp::And => write!(f, "and"),
+            BinaryOp::Or => write!(f, "or"),
+            BinaryOp::Xor => write!(f, "xor"),
+            BinaryOp::ShiftL => write!(f, "shl"),
+            BinaryOp::IShiftR => write!(f, "ishr"),
+            BinaryOp::UShiftR => write!(f, "ushr"),
+        }
+    }
+}
+
+impl fmt::Display for CmpTy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            CmpTy::Eq => write!(f, "eq"),
+            CmpTy::Ne => write!(f, "ne"),
+            CmpTy::Gt => write!(f, "gt"),
+            CmpTy::Ge => write!(f, "ge"),
+        }
+    }
+}
 
 impl fmt::Display for Op {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Op::AllocA { ty } => write!(f, "(alloc {})", ty),
             Op::Load { ty, ptr } => write!(f, "(load {} {})", ty, ptr),
             Op::Store { src, ptr } => write!(f, "(store {} {})", src, ptr),
-            Op::INeg { arg } => write!(f, "(i_neg {})", arg),
-            Op::FNeg { arg } => write!(f, "(f_neg {})", arg),
-            Op::IAdd { left, right } => write!(f, "(i_add {} {})", left, right),
-            Op::FAdd { left, right } => write!(f, "(s_add {} {})", left, right),
-            Op::ISub { left, right } => write!(f, "(i_sub {} {})", left, right),
-            Op::FSub { left, right } => write!(f, "(f_sub {} {})", left, right),
-            Op::IMul { left, right } => write!(f, "(i_mul {} {})", left, right),
-            Op::FMul { left, right } => write!(f, "(f_mul {} {})", left, right),
-            Op::SDiv { left, right } => write!(f, "(s_div {} {})", left, right),
-            Op::UDiv { left, right } => write!(f, "(u_div {} {})", left, right),
-            Op::FDiv { left, right } => write!(f, "(f_div {} {})", left, right),
-            Op::SRem { left, right } => write!(f, "(s_rem {} {})", left, right),
-            Op::URem { left, right } => write!(f, "(u_rem {} {})", left, right),
-            Op::FRem { left, right } => write!(f, "(f_rem {} {})", left, right),
-            Op::CmpEq { left, right } => write!(f, "(eq {} {})", left, right),
-            Op::CmpNe { left, right } => write!(f, "(ne {} {})", left, right),
-            Op::CmpGt { left, right } => write!(f, "(gt {} {})", left, right),
-            Op::CmpGe { left, right } => write!(f, "(ge {} {})", left, right),
-            Op::And { left, right } => write!(f, "(and {} {})", left, right),
-            Op::Or { left, right } => write!(f, "(or {} {})", left, right),
-            Op::Xor { left, right } => write!(f, "(xor {} {})", left, right),
-            Op::ShiftL { left, right } => write!(f, "(shl {} {})", left, right),
-            Op::IShiftR { left, right } => write!(f, "(i_shr {} {})", left, right),
-            Op::UShiftR { left, right } => write!(f, "(u_shr {} {})", left, right),
+            Op::Unary { op, value } => write!(f, "({} {})", op, value),
+            Op::Binary { op, left, right } => write!(f, "({} {} {})", op, left, right),
             Op::Call { func, input } => write!(
                 f,
                 "(call {} [{}])",

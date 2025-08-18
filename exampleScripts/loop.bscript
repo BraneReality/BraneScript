@@ -1,0 +1,21 @@
+fn add_test(u: u32, r: u32) -> u32 {
+
+    let a: [u32] = slice<u32>(10000u32);
+
+    let i: u32 = 0u32;
+    let iter: u32 = 0u32;
+    while gt(10000u32, i) {
+        let j: u32 = 0u32;
+        while gt(100000u32, j) {
+
+            *index(a, i) = add(*index(a, i), rem(j, u));
+
+            j = add(j, 1u32);
+            iter = add(iter, 1u32);
+        }
+        
+        i = add(i, 1u32);
+    }
+    //return *index(a, r);
+    return iter;
+}
