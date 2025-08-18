@@ -53,15 +53,20 @@ where
     I: StrInput<'src, Token = char, Span = Span, Slice = &'src str>,
 {
     just('"')
-        .ignore_then(
-            choice((
-                escape_sequence(),
-                none_of("\"\\").map(|c| c), // Any character except quote and backslash
-            ))
-            .repeated()
-            .collect(),
-        )
+        .ignore_then(escapeable_char().repeated().collect())
         .then_ignore(just('"'))
+        .padded_by(ws_or_comment())
+}
+
+pub fn escapeable_char<'src, I>()
+-> impl Parser<'src, I, char, extra::Full<Rich<'src, char, Span>, (), ()>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = Span, Slice = &'src str>,
+{
+    choice((
+        escape_sequence(),
+        none_of("\"\\").map(|c| c), // Any character except quote and backslash
+    ))
 }
 
 /// Parse all types of escape sequences
@@ -179,29 +184,117 @@ where
         })
         .padded_by(ws_or_comment());
 
-    let number = text::digits(10)
-        .then(just(".").ignore_then(text::digits(10)).or_not())
+    let int = text::digits(10)
         .to_slice()
-        .try_map(|s: &str, span| match s.parse() {
-            Ok(f) => Ok(Literal {
-                kind: LiteralKind::Int(f),
+        .then(
+            choice((
+                just("u8"),
+                just("u16"),
+                just("u32"),
+                just("u64"),
+                just("i8"),
+                just("i16"),
+                just("i32"),
+                just("i64"),
+                just("f32"),
+                just("f64"),
+            ))
+            .to_slice()
+            .or_not(),
+        )
+        .try_map(|(digits, suffix): (&str, Option<&str>), span: Span| {
+            Ok(Literal {
+                kind: match suffix.unwrap_or("i64") {
+                    "u8" => digits
+                        .parse()
+                        .map(|v| LiteralKind::U8(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "u16" => digits
+                        .parse()
+                        .map(|v| LiteralKind::U16(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "u32" => digits
+                        .parse()
+                        .map(|v| LiteralKind::U32(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "u64" => digits
+                        .parse()
+                        .map(|v| LiteralKind::U64(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "i8" => digits
+                        .parse()
+                        .map(|v| LiteralKind::I8(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "i16" => digits
+                        .parse()
+                        .map(|v| LiteralKind::I16(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "i32" => digits
+                        .parse()
+                        .map(|v| LiteralKind::I32(v))
+                        .clone()
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "i64" => digits
+                        .parse()
+                        .map(|v| LiteralKind::I64(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "f32" => digits
+                        .parse()
+                        .map(|v| LiteralKind::F32(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "f64" => digits
+                        .parse()
+                        .map(|v| LiteralKind::F64(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    t => panic!("not expecting {}", t),
+                },
                 span,
-            }),
-            Err(_) => match s.parse() {
-                Ok(f) => Ok(Literal {
-                    kind: LiteralKind::Float(f),
-                    span,
-                }),
-                Err(e) => Err(Rich::custom(span, e)),
-            },
+            })
         })
         .labelled("number")
         .padded_by(ws_or_comment());
 
-    let literal = number.or(string_literal().map_with(|value, e| Literal {
-        kind: LiteralKind::String(value),
-        span: e.span(),
-    }));
+    let float = text::digits(10)
+        .then_ignore(just("."))
+        .then(text::digits(10))
+        .to_slice()
+        .then(choice((just("f32"), just("f64"))).to_slice().or_not())
+        .try_map(|(digits, suffix): (&str, Option<&str>), span: Span| {
+            Ok(Literal {
+                kind: match suffix.unwrap_or("f32") {
+                    "f32" => digits
+                        .parse()
+                        .map(|v| LiteralKind::F32(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    "f64" => digits
+                        .parse()
+                        .map(|v| LiteralKind::F64(v))
+                        .map_err(|e| Rich::custom(span.clone(), e))?,
+                    t => panic!("not expecting {}", t),
+                },
+                span,
+            })
+        })
+        .labelled("number")
+        .padded_by(ws_or_comment());
+
+    let literal = choice((
+        float,
+        int,
+        choice((
+            escapeable_char()
+                .padded_by(just("\'"))
+                .padded_by(ws_or_comment())
+                .map(|v| LiteralKind::Char(v)),
+            string_literal().map(|v| LiteralKind::String(v)),
+            token("true").to(LiteralKind::Bool(true)),
+            token("false").to(LiteralKind::Bool(false)),
+        ))
+        .map_with(|kind, e| Literal {
+            kind,
+            span: e.span(),
+        }),
+    ));
 
     let template_param = ident.clone().map(|ident| TemplateParam(ident));
     let template_arg = ty.clone().map(|t| TemplateArg(t));
@@ -211,7 +304,7 @@ where
         .then(
             template_arg
                 .clone()
-                .repeated()
+                .separated_by(token(","))
                 .collect()
                 .delimited_by(token("<"), token(">"))
                 .or_not(),
@@ -250,8 +343,6 @@ where
 
     ty.define(
         choice((
-            native_ty.map(TyKind::Native),
-            path.clone().map(|path| TyKind::Path(path)),
             token("*")
                 .ignore_then(token("mut").or_not())
                 .then(choice((
@@ -259,14 +350,12 @@ where
                     token("void").map(|_| None),
                 )))
                 .map(|(is_mut, ty)| TyKind::Ptr(is_mut.is_some(), ty)),
-            token("mut")
-                .or_not()
-                .then(choice((
-                    ty.clone().map(|ty| Some(Box::new(ty))),
-                    token("void").map(|_| None),
-                )))
-                .delimited_by(token("["), token("]"))
-                .map(|(is_mut, ty)| TyKind::Slice(is_mut.is_some(), ty)),
+            choice((
+                ty.clone().map(|ty| Some(Box::new(ty))),
+                token("void").map(|_| None),
+            ))
+            .delimited_by(token("["), token("]"))
+            .map(|ty| TyKind::Slice(true, ty)),
             ty.clone()
                 .map(|ty| Box::new(ty))
                 .separated_by(token(","))
@@ -280,6 +369,8 @@ where
                 .collect()
                 .delimited_by(token("{"), token("}"))
                 .map(|fields| TyKind::Struct(fields)),
+            native_ty.map(TyKind::Native),
+            path.clone().map(|path| TyKind::Path(path)),
         ))
         .map_with(|kind, e| Ty {
             kind,
@@ -323,17 +414,17 @@ where
         .clone()
         .delimited_by(token("("), token(")"))
         .or(choice((
+            token("*")
+                .ignore_then(expr.clone())
+                .map(|expr| ExprKind::Deref(Box::new(expr))),
+            token("&")
+                .ignore_then(expr.clone())
+                .map(|expr| ExprKind::Ref(Box::new(expr))),
             literal.map(|l| ExprKind::Literal(l)),
             array_expr,
             tuple_expr,
             struct_expr,
             path.clone().map(|p| ExprKind::Path(p)),
-            token("&")
-                .ignore_then(expr.clone())
-                .map(|expr| ExprKind::Ref(Box::new(expr))),
-            token("*")
-                .ignore_then(expr.clone())
-                .map(|expr| ExprKind::Deref(Box::new(expr))),
         ))
         .map_with(|kind: ExprKind, e| Expr {
             span: e.span(),
@@ -364,7 +455,7 @@ where
         ),
     );
 
-    expr.define(call.labelled("expression"));
+    expr.define(call);
 
     let mut stmt = Recursive::declare();
     let block = stmt
@@ -391,7 +482,8 @@ where
 
     let variable_def = token("let")
         .ignore_then(ident.clone())
-        .then(token(":").ignore_then(ty.clone()))
+        .then_ignore(token(":"))
+        .then(ty.clone())
         .then_ignore(token("="))
         .then(expr.clone())
         .then_ignore(token(";"))
@@ -416,7 +508,7 @@ where
 
     let while_stmt = token("while")
         .ignore_then(expr.clone())
-        .then(stmt.clone().delimited_by(token("{"), token("}")))
+        .then(block_stmt.clone())
         .map(|(cond, body)| StmtKind::While(cond, Box::new(body)));
 
     let match_branch = choice((
@@ -448,18 +540,18 @@ where
 
     stmt.define(
         choice((
-            expr.clone()
-                .then_ignore(token(";"))
-                .map(|expr| StmtKind::Expression(expr)),
             assign,
             variable_def,
             if_stmt,
             token("return")
-                .ignore_then(expr.or_not())
+                .ignore_then(expr.clone().or_not())
                 .then_ignore(token(";"))
                 .map(|expr| StmtKind::Return(expr)),
             while_stmt,
             match_stmt,
+            expr.clone()
+                .then_ignore(token(";"))
+                .map(|expr| StmtKind::Expression(expr)),
         ))
         .map_with(|kind, e| Stmt {
             kind,

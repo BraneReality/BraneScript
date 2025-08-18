@@ -34,6 +34,8 @@ impl CraneliftJitBackend {
         ));
         let mut ctx = ModuleCtx {
             ctx: jit_module.make_context(),
+            ptr_ty: jit_module.target_config().pointer_type(),
+            ptr_bytes: jit_module.target_config().pointer_bytes(),
             module: jit_module,
             data_desc: DataDescription::new(),
             function_builder_ctx: FunctionBuilderContext::new(),
@@ -77,7 +79,12 @@ impl CraneliftJitBackend {
     }
 
     fn jit_fn(&mut self, func: &ir::Function, module: &mut ModuleCtx) -> Result<()> {
+        let ptr_ty = module.ptr_ty;
+        let ptr_bytes = module.ptr_bytes;
         let fn_ctx = &mut module.ctx.func;
+        let ptr_ty = module.module.target_config().pointer_type();
+        // add memory binding table
+        fn_ctx.signature.params.push(AbiParam::new(ptr_ty));
         for p in &func.input {
             let p = match p {
                 ir::Ty::Native(nt) => AbiParam::new(self.jit_ty(nt)),
@@ -121,60 +128,78 @@ impl CraneliftJitBackend {
             builder,
             block_values: Default::default(),
             blocks: blocks.clone(),
+            ptr_ty,
+            ptr_bytes,
         };
 
         for (block_id, (jit_block, ir_block)) in blocks.iter().zip(func.blocks.iter()).enumerate() {
             ctx.block_values.insert(block_id, Vec::new());
             ctx.builder.switch_to_block(*jit_block);
             for op in &ir_block.ops {
-                let new_value = match op {
-                    ir::Op::AllocA { ty } => todo!(),
-                    ir::Op::Load { ty, ptr } => todo!(),
-                    ir::Op::Store { src, ptr } => todo!(),
-                    ir::Op::INeg { arg } => todo!(),
-                    ir::Op::FNeg { arg } => todo!(),
-                    ir::Op::IAdd { left, right } => {
+                let new_value: Option<Value> = match op {
+                    ir::Op::Unary { op, value } => {
+                        let value = self.jit_value(value, &mut ctx)?; /*TODO make this actually call an allocation callback*/
+                        match op {
+                            ir::UnaryOp::INeg => todo!(),
+                            ir::UnaryOp::FNeg => todo!(),
+                            ir::UnaryOp::Alloc => Some(ctx.builder.ins().iconst(types::I32, 0)),
+                        }
+                    }
+                    ir::Op::Binary { op, left, right } => {
                         let left = self.jit_value(left, &mut ctx)?;
                         let right = self.jit_value(right, &mut ctx)?;
-                        Some(ctx.builder.ins().iadd(left, right))
+                        match op {
+                            ir::BinaryOp::IAdd => Some(ctx.builder.ins().iadd(left, right)),
+                            ir::BinaryOp::FAdd => todo!(),
+                            ir::BinaryOp::ISub => todo!(),
+                            ir::BinaryOp::FSub => todo!(),
+                            ir::BinaryOp::IMul => Some(ctx.builder.ins().imul(left, right)),
+                            ir::BinaryOp::FMul => todo!(),
+                            ir::BinaryOp::SDiv => todo!(),
+                            ir::BinaryOp::UDiv => todo!(),
+                            ir::BinaryOp::FDiv => todo!(),
+                            ir::BinaryOp::URem => Some(ctx.builder.ins().urem(left, right)),
+                            ir::BinaryOp::SRem => Some(ctx.builder.ins().srem(left, right)),
+                            ir::BinaryOp::SCmp(cmp_ty) => Some(ctx.builder.ins().icmp(
+                                match cmp_ty {
+                                    ir::CmpTy::Eq => IntCC::Equal,
+                                    ir::CmpTy::Ne => IntCC::NotEqual,
+                                    ir::CmpTy::Gt => IntCC::SignedGreaterThan,
+                                    ir::CmpTy::Ge => IntCC::SignedGreaterThanOrEqual,
+                                },
+                                left,
+                                right,
+                            )),
+                            ir::BinaryOp::UCmp(cmp_ty) => Some(ctx.builder.ins().icmp(
+                                match cmp_ty {
+                                    ir::CmpTy::Eq => IntCC::Equal,
+                                    ir::CmpTy::Ne => IntCC::NotEqual,
+                                    ir::CmpTy::Gt => IntCC::UnsignedGreaterThan,
+                                    ir::CmpTy::Ge => IntCC::UnsignedGreaterThanOrEqual,
+                                },
+                                left,
+                                right,
+                            )),
+                            ir::BinaryOp::FCmp(cmp_ty) => todo!(),
+                            ir::BinaryOp::And => todo!(),
+                            ir::BinaryOp::Or => todo!(),
+                            ir::BinaryOp::Xor => todo!(),
+                            ir::BinaryOp::ShiftL => todo!(),
+                            ir::BinaryOp::IShiftR => todo!(),
+                            ir::BinaryOp::UShiftR => todo!(),
+                        }
                     }
-                    ir::Op::FAdd { left, right } => todo!(),
-                    ir::Op::ISub { left, right } => todo!(),
-                    ir::Op::FSub { left, right } => todo!(),
-                    ir::Op::IMul { left, right } => todo!(),
-                    ir::Op::FMul { left, right } => todo!(),
-                    ir::Op::SDiv { left, right } => todo!(),
-                    ir::Op::UDiv { left, right } => todo!(),
-                    ir::Op::FDiv { left, right } => todo!(),
-                    ir::Op::URem { left, right } => todo!(),
-                    ir::Op::SRem { left, right } => todo!(),
-                    ir::Op::FRem { left, right } => todo!(),
-                    ir::Op::CmpEq { left, right } => todo!(),
-                    ir::Op::CmpNe { left, right } => todo!(),
-                    ir::Op::CmpGt { left, right } => {
-                        let left = self.jit_value(left, &mut ctx)?;
-                        let right = self.jit_value(right, &mut ctx)?;
-                        Some(
-                            ctx.builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThan, left, right),
-                        )
+                    ir::Op::Load { ty, ptr } => {
+                        let jit_ty = self.jit_ty(ty);
+                        let ptr = self.jit_value(ptr, &mut ctx)?;
+                        Some(Self::load(ptr, jit_ty, &mut ctx))
                     }
-                    ir::Op::CmpGe { left, right } => {
-                        let left = self.jit_value(left, &mut ctx)?;
-                        let right = self.jit_value(right, &mut ctx)?;
-                        Some(
-                            ctx.builder
-                                .ins()
-                                .icmp(IntCC::SignedGreaterThanOrEqual, left, right),
-                        )
+                    ir::Op::Store { src, ptr } => {
+                        let src = self.jit_value(src, &mut ctx)?;
+                        let ptr = self.jit_value(ptr, &mut ctx)?;
+                        Self::store(ptr, src, &mut ctx);
+                        None
                     }
-                    ir::Op::And { left, right } => todo!(),
-                    ir::Op::Or { left, right } => todo!(),
-                    ir::Op::Xor { left, right } => todo!(),
-                    ir::Op::ShiftL { left, right } => todo!(),
-                    ir::Op::IShiftR { left, right } => todo!(),
-                    ir::Op::UShiftR { left, right } => todo!(),
                     ir::Op::Call { func, input } => todo!(),
                 };
                 ctx.block_values.get_mut(&block_id).unwrap().push(new_value);
@@ -229,6 +254,48 @@ impl CraneliftJitBackend {
         Ok(())
     }
 
+    fn load(int_ptr: Value, ty: Type, ctx: &mut FunctionCtx) -> Value {
+        let binding = ctx.builder.ins().ushr_imm(int_ptr, 16);
+        let offset = ctx.builder.ins().band_imm(int_ptr, 0x0000FFFF);
+
+        let entry = ctx.blocks[0];
+        let bindings = ctx.builder.block_params(entry)[0];
+        let binding_offset = ctx.builder.ins().imul_imm(binding, ctx.ptr_bytes as i64);
+        let binding_offset = ctx.builder.ins().uextend(types::I64, binding_offset);
+        let binding_ptr = ctx.builder.ins().iadd(bindings, binding_offset);
+
+        let page_ptr =
+            ctx.builder
+                .ins()
+                .load(ctx.ptr_ty, MemFlags::new().with_aligned(), binding_ptr, 0);
+        let offset = ctx.builder.ins().uextend(types::I64, offset);
+        let value_ptr = ctx.builder.ins().iadd(page_ptr, offset);
+        ctx.builder
+            .ins()
+            .load(ty, MemFlags::new().with_aligned(), value_ptr, 0)
+    }
+
+    fn store(int_ptr: Value, value: Value, ctx: &mut FunctionCtx) {
+        let binding = ctx.builder.ins().ushr_imm(int_ptr, 16);
+        let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
+
+        let entry = ctx.blocks[0];
+        let bindings = ctx.builder.block_params(entry)[0];
+        let binding_offset = ctx.builder.ins().imul_imm(binding, ctx.ptr_bytes as i64);
+        let binding_offset = ctx.builder.ins().uextend(types::I64, binding_offset);
+        let binding_ptr = ctx.builder.ins().iadd(bindings, binding_offset);
+
+        let page_ptr =
+            ctx.builder
+                .ins()
+                .load(ctx.ptr_ty, MemFlags::new().with_aligned(), binding_ptr, 0);
+        let offset = ctx.builder.ins().uextend(types::I64, offset);
+        let value_ptr = ctx.builder.ins().iadd(page_ptr, offset);
+        ctx.builder
+            .ins()
+            .store(MemFlags::new().with_aligned(), value, value_ptr, 0);
+    }
+
     fn jump_args(
         &self,
         from: u32,
@@ -268,7 +335,7 @@ impl CraneliftJitBackend {
                 let b = ctx.blocks[0];
                 ctx.builder
                     .block_params(b)
-                    .get(*arg as usize)
+                    .get(*arg as usize + 1)
                     .ok_or_else(|| anyhow!("invalid function arg {}", arg))
                     .cloned()
             }
@@ -313,12 +380,16 @@ struct ModuleCtx {
     data_desc: DataDescription,
     ctx: codegen::Context,
     function_builder_ctx: FunctionBuilderContext,
+    ptr_ty: Type,
+    ptr_bytes: u8,
 }
 
 struct FunctionCtx<'a> {
     builder: FunctionBuilder<'a>,
     blocks: Vec<Block>,
     block_values: HashMap<usize, Vec<Option<Value>>>,
+    ptr_ty: Type,
+    ptr_bytes: u8,
 }
 
 impl<'a> FunctionCtx<'a> {

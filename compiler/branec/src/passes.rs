@@ -104,39 +104,17 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
     // 2. Map values inside ops
     for op in &mut block.ops {
         match op {
-            Op::AllocA { .. } => {}
-            Op::Load { ptr, .. } => replace(ptr, map),
+            Op::Load { ty: _, ptr } => replace(ptr, map),
             Op::Store { src, ptr } => {
                 replace(src, map);
                 replace(ptr, map);
             }
-            Op::INeg { arg } | Op::FNeg { arg } => replace(arg, map),
-            Op::IAdd { left, right }
-            | Op::FAdd { left, right }
-            | Op::ISub { left, right }
-            | Op::FSub { left, right }
-            | Op::IMul { left, right }
-            | Op::FMul { left, right }
-            | Op::SDiv { left, right }
-            | Op::UDiv { left, right }
-            | Op::FDiv { left, right }
-            | Op::SRem { left, right }
-            | Op::URem { left, right }
-            | Op::FRem { left, right }
-            | Op::CmpEq { left, right }
-            | Op::CmpNe { left, right }
-            | Op::CmpGt { left, right }
-            | Op::CmpGe { left, right }
-            | Op::And { left, right }
-            | Op::Or { left, right }
-            | Op::Xor { left, right }
-            | Op::ShiftL { left, right }
-            | Op::IShiftR { left, right }
-            | Op::UShiftR { left, right } => {
+            Op::Unary { op: _, value } => replace(value, map),
+            Op::Binary { op: _, left, right } => {
                 replace(left, map);
                 replace(right, map);
             }
-            Op::Call { input, .. } => {
+            Op::Call { func: _, input } => {
                 for v in input.iter_mut() {
                     replace(v, map);
                 }
