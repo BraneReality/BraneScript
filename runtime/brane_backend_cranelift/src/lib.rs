@@ -2,9 +2,19 @@ use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, bail};
 use brane_core::ir;
-use cranelift::{codegen::ir::BlockArg, frontend::Switch, prelude::*};
+use cranelift_codegen::ir::BlockArg;
+use cranelift_codegen::{
+    isa,
+    settings::{self, Configurable},
+};
+use cranelift_frontend::Switch;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module, ModuleError};
+
+use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::types;
+use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlags, Type, Value};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 
 pub struct CraneliftJitBackend {
     pub isa: isa::OwnedTargetIsa,
@@ -13,8 +23,8 @@ pub struct CraneliftJitBackend {
 impl Default for CraneliftJitBackend {
     fn default() -> Self {
         let mut flag_builder = settings::builder();
-        flag_builder.set("use_colocated_libcalls", "false").unwrap();
-        flag_builder.set("is_pic", "false").unwrap();
+        //flag_builder.set("use_colocated_libcalls", "false").unwrap();
+        //flag_builder.set("is_pic", "true").unwrap();
         let isa_builder = cranelift_native::builder().unwrap_or_else(|msg| {
             panic!("host machine is not supported: {}", msg);
         });
@@ -52,7 +62,7 @@ impl CraneliftJitBackend {
                 .map_err(|e: ModuleError| {
                     match e {
                         ModuleError::Compilation(ce) => match ce {
-                            codegen::CodegenError::Verifier(verifier_errors) => {
+                            cranelift_codegen::CodegenError::Verifier(verifier_errors) => {
                                 anyhow!(
                                     "Verifier errors:\n{}",
                                     verifier_errors
@@ -69,6 +79,15 @@ impl CraneliftJitBackend {
                     }
                     .context(ctx.ctx.func.clone())
                 })?;
+            let cs = self.isa.to_capstone()?;
+            println!(
+                "Emitted function {}:\n{}",
+                func.id,
+                ctx.ctx
+                    .compiled_code()
+                    .unwrap()
+                    .disassemble(Some(&ctx.ctx.func.params), &cs)?
+            );
             ctx.module.clear_context(&mut ctx.ctx);
             fn_map.push((func.id.clone(), fn_id));
         }
@@ -378,7 +397,7 @@ impl CraneliftJitBackend {
 struct ModuleCtx {
     module: JITModule,
     data_desc: DataDescription,
-    ctx: codegen::Context,
+    ctx: cranelift_codegen::Context,
     function_builder_ctx: FunctionBuilderContext,
     ptr_ty: Type,
     ptr_bytes: u8,

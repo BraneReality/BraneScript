@@ -1,0 +1,24 @@
+fn add_test(u: u32, r: u32) -> u32 {
+
+    let a: [u32] = slice<u32>(10000u32);
+
+    let i: u32 = 0u32;
+    let iter: u32 = 0u32;
+    while gt(10000u32, i) {
+        let j: u32 = 0u32;
+        while gt(100000u32, j) {
+            *index(a, add(i, 0u32)) = add(*index(a, add(i, 0u32)), rem(j, u));
+            *index(a, add(i, 1u32)) = add(*index(a, add(i, 1u32)), rem(j, u));
+            *index(a, add(i, 2u32)) = add(*index(a, add(i, 2u32)), rem(j, u));
+            *index(a, add(i, 3u32)) = add(*index(a, add(i, 3u32)), rem(j, u));
+
+            // Vectorized version has a stride of 4
+            j = add(j, 4u32);
+            iter = add(iter, 4u32);
+        }
+        
+        i = add(i, 1u32);
+    }
+    //return *index(a, r);
+    return iter;
+}
