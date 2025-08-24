@@ -51,12 +51,16 @@ fn main() -> anyhow::Result<()> {
         test_alloc_page.as_mut_ptr() as *mut u8,
     );
 
+    let a = cli.func_arg_a.unwrap_or(40u32);
+    let b = cli.func_arg_b.unwrap_or(40u32);
+    println!("warming function");
+    let mut r = add_test(bindings_page.as_ptr(), a, b);
+    r += add_test(bindings_page.as_ptr(), a, b);
+    r += add_test(bindings_page.as_ptr(), a, b);
+    println!("profiling function (res {})", r);
+
     let start = std::time::Instant::now();
-    let res = add_test(
-        bindings_page.as_ptr(),
-        cli.func_arg_a.unwrap_or(42u32),
-        cli.func_arg_b.unwrap_or(42u32),
-    );
+    let res = add_test(bindings_page.as_ptr(), a, b);
     let fn_end = std::time::Instant::now();
 
     println!("Add test result: {}", res);

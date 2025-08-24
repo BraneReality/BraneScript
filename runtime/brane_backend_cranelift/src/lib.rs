@@ -103,6 +103,7 @@ impl CraneliftJitBackend {
         let fn_ctx = &mut module.ctx.func;
         let ptr_ty = module.module.target_config().pointer_type();
         // add memory binding table
+        fn_ctx.collect_debug_info();
         fn_ctx.signature.params.push(AbiParam::new(ptr_ty));
         for p in &func.input {
             let p = match p {
@@ -275,44 +276,60 @@ impl CraneliftJitBackend {
 
     fn load(int_ptr: Value, ty: Type, ctx: &mut FunctionCtx) -> Value {
         let binding = ctx.builder.ins().ushr_imm(int_ptr, 16);
-        let offset = ctx.builder.ins().band_imm(int_ptr, 0x0000FFFF);
+        let binding = ctx.builder.ins().uextend(ctx.ptr_ty, binding);
+        let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
+        let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
         let entry = ctx.blocks[0];
         let bindings = ctx.builder.block_params(entry)[0];
-        let binding_offset = ctx.builder.ins().imul_imm(binding, ctx.ptr_bytes as i64);
-        let binding_offset = ctx.builder.ins().uextend(types::I64, binding_offset);
+
+        let mul_shift = match ctx.ptr_bytes {
+            1 => 0,
+            2 => 1,
+            4 => 2,
+            8 => 3,
+            _ => unreachable!(),
+        };
+        let binding_offset = ctx.builder.ins().ishl_imm(binding, mul_shift);
         let binding_ptr = ctx.builder.ins().iadd(bindings, binding_offset);
 
-        let page_ptr =
-            ctx.builder
-                .ins()
-                .load(ctx.ptr_ty, MemFlags::new().with_aligned(), binding_ptr, 0);
-        let offset = ctx.builder.ins().uextend(types::I64, offset);
+        let page_ptr = ctx
+            .builder
+            .ins()
+            .load(ctx.ptr_ty, MemFlags::trusted(), binding_ptr, 0);
         let value_ptr = ctx.builder.ins().iadd(page_ptr, offset);
         ctx.builder
             .ins()
-            .load(ty, MemFlags::new().with_aligned(), value_ptr, 0)
+            .load(ty, MemFlags::trusted(), value_ptr, 0)
     }
 
     fn store(int_ptr: Value, value: Value, ctx: &mut FunctionCtx) {
         let binding = ctx.builder.ins().ushr_imm(int_ptr, 16);
+        let binding = ctx.builder.ins().uextend(ctx.ptr_ty, binding);
         let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
+        let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
         let entry = ctx.blocks[0];
         let bindings = ctx.builder.block_params(entry)[0];
-        let binding_offset = ctx.builder.ins().imul_imm(binding, ctx.ptr_bytes as i64);
-        let binding_offset = ctx.builder.ins().uextend(types::I64, binding_offset);
+
+        let mul_shift = match ctx.ptr_bytes {
+            1 => 0,
+            2 => 1,
+            4 => 2,
+            8 => 3,
+            _ => unreachable!(),
+        };
+        let binding_offset = ctx.builder.ins().ishl_imm(binding, mul_shift);
         let binding_ptr = ctx.builder.ins().iadd(bindings, binding_offset);
 
-        let page_ptr =
-            ctx.builder
-                .ins()
-                .load(ctx.ptr_ty, MemFlags::new().with_aligned(), binding_ptr, 0);
-        let offset = ctx.builder.ins().uextend(types::I64, offset);
+        let page_ptr = ctx
+            .builder
+            .ins()
+            .load(ctx.ptr_ty, MemFlags::trusted(), binding_ptr, 0);
         let value_ptr = ctx.builder.ins().iadd(page_ptr, offset);
         ctx.builder
             .ins()
-            .store(MemFlags::new().with_aligned(), value, value_ptr, 0);
+            .store(MemFlags::trusted(), value, value_ptr, 0);
     }
 
     fn jump_args(
