@@ -11,7 +11,7 @@ use cranelift_frontend::Switch;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module, ModuleError};
 
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlags, Type, Value};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -170,14 +170,14 @@ impl CraneliftJitBackend {
                         let right = self.jit_value(right, &mut ctx)?;
                         match op {
                             ir::BinaryOp::IAdd => Some(ctx.builder.ins().iadd(left, right)),
-                            ir::BinaryOp::FAdd => todo!(),
-                            ir::BinaryOp::ISub => todo!(),
-                            ir::BinaryOp::FSub => todo!(),
+                            ir::BinaryOp::FAdd => Some(ctx.builder.ins().fadd(left, right)),
+                            ir::BinaryOp::ISub => Some(ctx.builder.ins().isub(left, right)),
+                            ir::BinaryOp::FSub => Some(ctx.builder.ins().fsub(left, right)),
                             ir::BinaryOp::IMul => Some(ctx.builder.ins().imul(left, right)),
-                            ir::BinaryOp::FMul => todo!(),
-                            ir::BinaryOp::SDiv => todo!(),
-                            ir::BinaryOp::UDiv => todo!(),
-                            ir::BinaryOp::FDiv => todo!(),
+                            ir::BinaryOp::FMul => Some(ctx.builder.ins().fmul(left, right)),
+                            ir::BinaryOp::SDiv => Some(ctx.builder.ins().sdiv(left, right)),
+                            ir::BinaryOp::UDiv => Some(ctx.builder.ins().udiv(left, right)),
+                            ir::BinaryOp::FDiv => Some(ctx.builder.ins().fdiv(left, right)),
                             ir::BinaryOp::URem => Some(ctx.builder.ins().urem(left, right)),
                             ir::BinaryOp::SRem => Some(ctx.builder.ins().srem(left, right)),
                             ir::BinaryOp::SCmp(cmp_ty) => Some(ctx.builder.ins().icmp(
@@ -200,13 +200,22 @@ impl CraneliftJitBackend {
                                 left,
                                 right,
                             )),
-                            ir::BinaryOp::FCmp(cmp_ty) => todo!(),
-                            ir::BinaryOp::And => todo!(),
-                            ir::BinaryOp::Or => todo!(),
-                            ir::BinaryOp::Xor => todo!(),
-                            ir::BinaryOp::ShiftL => todo!(),
-                            ir::BinaryOp::IShiftR => todo!(),
-                            ir::BinaryOp::UShiftR => todo!(),
+                            ir::BinaryOp::FCmp(cmp_ty) => Some(ctx.builder.ins().fcmp(
+                                match cmp_ty {
+                                    ir::CmpTy::Eq => FloatCC::Equal,
+                                    ir::CmpTy::Ne => FloatCC::NotEqual,
+                                    ir::CmpTy::Gt => FloatCC::GreaterThan,
+                                    ir::CmpTy::Ge => FloatCC::GreaterThanOrEqual,
+                                },
+                                left,
+                                right,
+                            )),
+                            ir::BinaryOp::And => Some(ctx.builder.ins().band(left, right)),
+                            ir::BinaryOp::Or => Some(ctx.builder.ins().bor(left, right)),
+                            ir::BinaryOp::Xor => Some(ctx.builder.ins().bxor(left, right)),
+                            ir::BinaryOp::ShiftL => Some(ctx.builder.ins().ishl(left, right)),
+                            ir::BinaryOp::IShiftR => Some(ctx.builder.ins().sshr(left, right)),
+                            ir::BinaryOp::UShiftR => Some(ctx.builder.ins().ushr(left, right)),
                         }
                     }
                     ir::Op::Load { ty, ptr } => {
@@ -221,6 +230,7 @@ impl CraneliftJitBackend {
                         None
                     }
                     ir::Op::Call { func, input } => todo!(),
+                    ir::Op::CallIndirect { func_handle, input } => todo!(),
                 };
                 ctx.block_values.get_mut(&block_id).unwrap().push(new_value);
             }
