@@ -147,7 +147,11 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
 
     // 3. Map values inside the terminator
     match &mut block.terminator {
-        TermOp::Ret(Some(v)) => replace(v, map),
+        TermOp::Ret(Some(values)) => {
+            for v in values {
+                replace(v, map)
+            }
+        }
         TermOp::JumpIf { cond, .. } => replace(cond, map),
         TermOp::JumpMap { cond, .. } => replace(cond, map),
         TermOp::Ret(None) | TermOp::Jump { .. } => {}

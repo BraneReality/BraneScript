@@ -333,7 +333,9 @@ pub enum TermOp {
         branches: Vec<(u128, u32)>,
         default: u32,
     },
-    Ret(Option<Value>),
+    /// For regular returns, only return one value. For structs or enums, return a flattened value
+    /// array
+    Ret(Option<Vec<Value>>),
 }
 
 /// Values passed to functions
@@ -606,6 +608,57 @@ impl Module {
             }
         }
     }
+
+    pub fn ty_string(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Native(nt) => match nt {
+                NativeType::Ptr(is_mut, inner_ty) => format!(
+                    "*{} {}",
+                    if *is_mut { "mut" } else { "const" },
+                    if let Some(inner_ty) = inner_ty {
+                        &self.ty_string(inner_ty)
+                    } else {
+                        "()"
+                    }
+                ),
+                nt => nt.to_string(),
+            },
+            Ty::Struct(id) => {
+                let def = self.get_struct(*id).unwrap();
+                def.id.clone().unwrap_or_else(|| {
+                    format!(
+                        "({})",
+                        def.members
+                            .iter()
+                            .map(|m| self.ty_string(&m.ty))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+            }
+            Ty::Enum(id) => {
+                let def = self.get_enum(*id).unwrap();
+                def.id.clone().unwrap_or_else(|| {
+                    format!(
+                        "enum {{{}}}",
+                        def.variants
+                            .iter()
+                            .map(|m| format!(
+                                "{}{}",
+                                m.id,
+                                if let Some(ty) = &m.ty {
+                                    &format!(": {}", self.ty_string(ty))
+                                } else {
+                                    ""
+                                }
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+            }
+        }
+    }
 }
 
 use std::fmt::{self, Display};
@@ -751,7 +804,15 @@ impl Display for TermOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TermOp::Ret(Some(out_v)) => {
-                write!(f, "(ret {})", out_v)
+                write!(
+                    f,
+                    "(ret [{}])",
+                    out_v
+                        .iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
             TermOp::Ret(None) => {
                 write!(f, "ret")

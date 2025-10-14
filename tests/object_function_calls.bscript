@@ -71,8 +71,8 @@ fn pass_large_struct(input: LargeStruct) -> LargeStruct {
 }
 
 // Passing combined structs
-fn pass_combined_structs(small: SmallStruct, medium: MediumStruct, large: LargeStruct) -> (SmallStruct, MediumStruct, LargeStruct) {
-    return (small, medium, large);
+fn pass_combined_structs(small: SmallStruct, medium: MediumStruct, large: LargeStruct) -> LargeStruct {
+    return large;
 }
 
 // Enums without data

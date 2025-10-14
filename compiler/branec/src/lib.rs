@@ -486,20 +486,30 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::StmtKind::Return(expr) => {
                 let body = match expr {
-                    Some(expr) => Some(
-                        match self
+                    Some(expr) => Some({
+                        let value = self
                             .emit_r_value(expr, namespace, ctx)?
-                            .ok_or_else(|| anyhow!("Expression does not return value!"))?
-                        {
-                            RValue::Value(value, _) => {
-                                //TODO typecheck
-                                value
-                            }
-                            _ => {
-                                bail!("We don't support returning structs or enums yet! Use pointers.")
-                            }
-                        },
-                    ),
+                            .ok_or_else(|| anyhow!("Expression does not return value!"))?;
+                        let value_ty = value.ty();
+                        if Some(&value_ty.clone()) != ctx.function.output.as_ref() {
+                            emt::error("incorrect return type", &self.sources)
+                                .err_at(
+                                    expr.span.clone(),
+                                    &format!(
+                                        "Expected {} but found {}",
+                                        if let Some(output) = &ctx.function.output {
+                                            ctx.mod_ctx.module.ty_string(output)
+                                        } else {
+                                            "nothing".into()
+                                        },
+                                        ctx.mod_ctx.module.ty_string(&value_ty),
+                                    ),
+                                )
+                                .emit(&self.emitter)?;
+                            bail!("incorrect return type");
+                        }
+                        value.flattened()
+                    }),
                     None => None,
                 };
                 ctx.end_block_ret(body);
@@ -516,8 +526,11 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         ctx: &mut FunctionCtx,
     ) -> Result<Option<RValue>> {
         match &expr.kind {
-            ast::ExprKind::Struct(_, _) | ast::ExprKind::Array(_) | ast::ExprKind::Tuple(_) => {
-                todo!("struct, array, and tuple not implemented yet!");
+            ast::ExprKind::Struct(path, members) => {
+                todo!("struct constructor grammar not implemented yet");
+            }
+            ast::ExprKind::Array(_) | ast::ExprKind::Tuple(_) => {
+                todo!("array, and tuple not implemented yet!");
             }
             ast::ExprKind::Literal(lit) => Ok(Some(match &lit.kind {
                 ast::LiteralKind::String(_) => bail!("string literals not implemented yet!"),
@@ -1359,7 +1372,7 @@ impl<'mc> FunctionCtx<'mc> {
         self.current_block = None;
     }
 
-    pub fn end_block_ret(&mut self, value: Option<ir::Value>) {
+    pub fn end_block_ret(&mut self, value: Option<Vec<ir::Value>>) {
         self.end_block(ir::TermOp::Ret(value));
     }
 

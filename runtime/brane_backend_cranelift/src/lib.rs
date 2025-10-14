@@ -275,9 +275,13 @@ impl CraneliftJitBackend {
                     switch.emit(&mut ctx.builder, cond, default);
                 }
                 ir::TermOp::Ret(value) => match value {
-                    Some(value) => {
-                        let value = self.jit_value(value, &mut ctx)?;
-                        ctx.builder.ins().return_(&[value]);
+                    Some(values) => {
+                        let values = values
+                            .iter()
+                            .map(|value| self.jit_value(value, &mut ctx))
+                            .collect::<anyhow::Result<Vec<Value>>>()?;
+                        todo!("Implement return ABI");
+                        ctx.builder.ins().return_(&values);
                     }
                     None => {
                         ctx.builder.ins().return_(&[]);
