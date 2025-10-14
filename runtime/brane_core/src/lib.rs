@@ -1,3 +1,5 @@
 pub mod ir;
+pub mod memory;
+pub mod sandbox;
 
-pub static BS_PAGE_SIZE: u32 = u16::MAX as u32;
+pub use memory::BS_PAGE_SIZE;
