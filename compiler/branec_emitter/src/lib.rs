@@ -147,7 +147,7 @@ impl<'src> Diagnostic for DiagnosticBuilder<'src> {
             let cursor = Self::line_of(a.span.range.start, cursor, source_text);
 
             if let Some(s) = current_snippet.as_ref() {
-                if cursor.line - s.end_line > self.max_line_gap {
+                if cursor.line < s.end_line || cursor.line - s.end_line > self.max_line_gap {
                     snippets.push(current_snippet.take().unwrap());
                 }
             }
