@@ -117,6 +117,7 @@ pub enum Value {
         arg: u32,
     },
     FnArg(u32),
+    VecFnArg(u32, u32),
     BlockOp {
         block: u32,
         op: u32,
@@ -366,6 +367,9 @@ pub struct StructLayout {
 
 /// Increase a size or offset so that it alligns properly
 pub fn pad_align(size: usize, align: usize) -> usize {
+    if size == 0 {
+        return size;
+    }
     (size + align - 1) & !(size - 1) // Align offset
 }
 
@@ -426,8 +430,10 @@ pub struct Enum {
 pub struct EnumLayout {
     // total size of the struct
     pub union_size: usize,
-    pub index_offset: usize,
-    pub index_ty: NativeType,
+    pub union_offset: usize,
+    /// The size of the index_ty. For enums with only one or no variants index_ty will be none, and
+    /// the enum will not contain an index_ty. In those cases the enum is a no-op.
+    pub index_ty: Option<NativeType>,
     pub size: usize,
     pub alignment: usize,
 }
@@ -438,9 +444,9 @@ impl Enum {
             return Ok(EnumLayout {
                 alignment: 1,
                 union_size: 0,
-                index_offset: 0,
+                union_offset: 0,
                 size: 1,
-                index_ty: NativeType::U8,
+                index_ty: None,
             });
         }
 
@@ -461,18 +467,20 @@ impl Enum {
                 })?;
 
         let index_ty = match self.variants.len() {
-            0..256 => NativeType::U8,
-            256..65536 => NativeType::U16,
+            0..2 => None,
+            2..256 => Some(NativeType::U8),
+            256..65536 => Some(NativeType::U16),
             _ => bail!("Enum must have less than 65,536 variants"),
         };
 
-        let alignment = index_ty.alignment().max(alignment);
-        let index_offset = pad_align(union_size, index_ty.alignment());
-        let size = pad_align(index_offset + index_ty.size(), alignment);
+        let index_size = index_ty.as_ref().map(|ty| ty.size()).unwrap_or(0);
+        let union_offset = pad_align(index_size, alignment);
+        let alignment = index_size.max(alignment);
+        let size = pad_align(union_size + union_offset, alignment);
 
         Ok(EnumLayout {
             union_size,
-            index_offset,
+            union_offset,
             index_ty,
             size,
             alignment,
@@ -568,6 +576,36 @@ impl Module {
     pub fn get_pipeline(&self, id: PipeId) -> Option<&IRPipeline> {
         self.pipelines.get(id as usize)
     }
+
+    // Recursively convert a type to a vec of every native type value.
+    pub fn flatten(&self, ty: &Ty) -> Vec<NativeType> {
+        let mut values = Vec::new();
+        self.flatten_internal(ty, &mut values);
+        values
+    }
+
+    fn flatten_internal(&self, ty: &Ty, values: &mut Vec<NativeType>) {
+        match ty {
+            Ty::Native(native_type) => values.push(native_type.clone()),
+            Ty::Struct(id) => {
+                let def = self.get_struct(*id).unwrap();
+                for member in &def.members {
+                    self.flatten_internal(&member.ty, values);
+                }
+            }
+            Ty::Enum(id) => {
+                let def = self.get_enum(*id).unwrap();
+                if let Some(index_ty) = def.layout(self).unwrap().index_ty {
+                    values.push(index_ty);
+                }
+                for v in &def.variants {
+                    if let Some(ty) = &v.ty {
+                        self.flatten_internal(ty, values);
+                    }
+                }
+            }
+        }
+    }
 }
 
 use std::fmt::{self, Display};
@@ -616,6 +654,7 @@ impl fmt::Display for Value {
                 write!(f, "$PhiArg(block: {}, arg: {})", block, arg)
             }
             Value::FnArg(arg) => write!(f, "$FnArg({})", arg),
+            Value::VecFnArg(arg, index) => write!(f, "$VecFnArg({}, {})", arg, index),
             Value::BlockOp { block, op } => write!(f, "$BlockOp(block: {}, op: {})", block, op),
             Value::VecBlockOp { block, op, index } => write!(
                 f,

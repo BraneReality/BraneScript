@@ -391,6 +391,7 @@ impl CraneliftJitBackend {
                     .ok_or_else(|| anyhow!("invalid function arg {}", arg))
                     .cloned()
             }
+            ir::Value::VecFnArg(_, _) => todo!(),
             ir::Value::BlockOp { block, op } => ctx
                 .block_values
                 .get(&(*block as usize))

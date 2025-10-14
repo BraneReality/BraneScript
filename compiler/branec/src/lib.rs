@@ -85,6 +85,64 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         let mut namespace = IdentScope::default();
         intrinsics::populate(&mut namespace, &mut module_ctx.template_count);
 
+        let mut registration_error = false;
+        for def in &defs {
+            match &def.kind {
+                ast::DefKind::Link(ident) => todo!("Have not implemented module links yet"),
+                ast::DefKind::Use(path) => todo!("Have not implemented use statements yet"),
+                ast::DefKind::Struct(object) => {
+                    let id = module_ctx.template_count;
+                    module_ctx.template_count += 1;
+
+                    if let Some(existing) = namespace.defs.insert(
+                        object.ident.text.clone(),
+                        Template::Struct(object.clone(), id),
+                    ) {
+                        let message = emt::error("duplicate identifiers", &self.sources)
+                            .err_at(object.ident.span.clone(), "already defined");
+                        if let Some(ext_ident) = existing.first_ident() {
+                            message
+                                .warning_at(ext_ident.span.clone(), "was defined here")
+                                .emit(&self.emitter)?;
+                        } else {
+                            message.emit(&self.emitter)?;
+                        }
+                        registration_error = true;
+                    }
+                }
+                ast::DefKind::Enum(object) => {
+                    let id = module_ctx.template_count;
+                    module_ctx.template_count += 1;
+
+                    if let Some(existing) = namespace.defs.insert(
+                        object.ident.text.clone(),
+                        Template::Enum(object.clone(), id),
+                    ) {
+                        let message = emt::error("duplicate identifiers", &self.sources)
+                            .err_at(object.ident.span.clone(), "already defined");
+                        if let Some(ext_ident) = existing.first_ident() {
+                            message
+                                .info_at(ext_ident.span.clone(), "was defined here")
+                                .emit(&self.emitter)?;
+                        } else {
+                            message.emit(&self.emitter)?;
+                        }
+                        registration_error = true;
+                    }
+                }
+                ast::DefKind::Function(_) | ast::DefKind::Pipeline(_) => {
+                    // Do we want to pre-define these?
+                }
+                ast::DefKind::Namespace(ident, defs) => {
+                    todo!("Haven't implemented namespaces yet")
+                }
+            }
+        }
+
+        if registration_error {
+            bail!("Failed to register names");
+        }
+
         for def in defs {
             match &def.kind {
                 ast::DefKind::Function(function) => {
@@ -124,8 +182,8 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
         let error = "Failed to resolve path";
         emt::error(&error, &self.sources)
-            .err_at(segment.ident.span.clone(), "Could not resolve segment")
-            .emit(&self.emitter);
+            .err_at(segment.ident.span.clone(), "Not found")
+            .emit(&self.emitter)?;
         Err(anyhow!(error))
     }
 
@@ -165,16 +223,23 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             fn_ctx.start_block(entry)?;
 
             fn_ctx.start_scope();
-            for (index, (ident, ty)) in params.iter().enumerate() {
-                if let ir::Ty::Native(nt) = ty {
-                    fn_ctx.define_variable(
-                        ident.text.clone(),
-                        RValue::Value(ir::Value::FnArg(index as u32), nt.clone()),
-                    );
-                } else {
-                    bail!("Functions do not support enum or struct args yet! Use poiners.");
-                    todo!("Need to flatten function parameters");
-                }
+            for (arg_index, (ident, ty)) in params.iter().enumerate() {
+                fn_ctx.define_variable(
+                    ident.text.clone(),
+                    if let ir::Ty::Native(nt) = ty {
+                        RValue::Value(ir::Value::FnArg(arg_index as u32), nt.clone())
+                    } else {
+                        let values = fn_ctx
+                            .mod_ctx
+                            .module
+                            .flatten(&ty)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, _ty)| ir::Value::VecFnArg(arg_index as u32, index as u32))
+                            .collect::<Vec<_>>();
+                        RValue::from_flattened(&values, &ty, &fn_ctx.mod_ctx.module)?
+                    },
+                );
             }
 
             self.emit_block(&function.body, namespace, &mut fn_ctx)?;
@@ -369,34 +434,45 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             },
                         )?;
 
-                        let join_block = ctx.create_block()?;
-                        let default_block = ctx.create_block()?;
-                        let variables = ctx.record_variables();
-                        ctx.end_block_jump_map(
-                            &layout.index_ty,
-                            index,
-                            default_block,
-                            branches.clone(),
-                        )?;
+                        // TODO handle the case for an actual default block (we need new grammar
+                        // for that)
+                        //
+                        if let (Some(index_ty), Some(index)) = (&layout.index_ty, index) {
+                            let join_block = ctx.create_block()?;
+                            let default_block = ctx.create_block()?;
+                            let variables = ctx.record_variables();
+                            ctx.end_block_jump_map(
+                                index_ty,
+                                index,
+                                default_block,
+                                branches.clone(),
+                            )?;
 
-                        ctx.start_block(default_block)?;
-                        ctx.end_block_jump(join_block);
-                        for (((_cond, block), match_branch), variant) in
-                            branches.into_iter().zip(match_branches).zip(variants)
-                        {
-                            ctx.set_variables(variables.clone());
-                            ctx.start_block(block)?;
-                            ctx.start_scope();
-                            if let (Some(data_label), Some(variant_data)) = variant {
-                                ctx.define_variable(data_label.text, variant_data);
-                            }
-
-                            self.emit_stmt(&match_branch.body, namespace, ctx)?;
-
-                            ctx.end_scope();
+                            ctx.start_block(default_block)?;
                             ctx.end_block_jump(join_block);
+
+                            for (((_cond, block), match_branch), variant) in
+                                branches.into_iter().zip(match_branches).zip(variants)
+                            {
+                                ctx.set_variables(variables.clone());
+                                ctx.start_block(block)?;
+                                ctx.start_scope();
+                                if let (Some(data_label), Some(variant_data)) = variant {
+                                    ctx.define_variable(data_label.text, variant_data);
+                                }
+
+                                self.emit_stmt(&match_branch.body, namespace, ctx)?;
+
+                                ctx.end_scope();
+                                ctx.end_block_jump(join_block);
+                            }
+                            ctx.start_block(join_block)?;
+                        } else if branches.len() == 1 {
+                            // No index type, no branching
+                            assert!(layout.index_ty.is_none() && index.is_none());
+                            let match_branch = &match_branches[0];
+                            self.emit_stmt(&match_branch.body, namespace, ctx)?
                         }
-                        ctx.start_block(join_block)?;
                     }
                     RValue::Struct(_) => bail!("Cannot match on structs!"),
                 }
@@ -642,31 +718,56 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         .get_enum(def_id)
                         .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
                     let layout = enum_def.layout(&ctx.mod_ctx.module)?;
-                    let variant_ptr = ctx.emit_op(ir::Op::Binary {
-                        op: ir::BinaryOp::IAdd,
-                        left: *ptr,
-                        right: ir::Value::const_u32(layout.index_offset as u32),
-                    })?;
-                    ctx.emit_op(ir::Op::Store {
-                        src: index,
-                        ptr: variant_ptr,
-                    })?;
 
-                    let branches = (0..variants.len())
-                        .into_iter()
-                        .map(|i| Ok((i as u128, ctx.create_block()?)))
-                        .collect::<Result<Vec<_>>>()?;
-
-                    let join_block = ctx.create_block()?;
-                    ctx.end_block_jump_map(&layout.index_ty, index, join_block, branches.clone())?;
-                    for ((_cond, block), inner) in branches.into_iter().zip(variants) {
-                        ctx.start_block(block)?;
-                        if let Some(inner) = inner {
-                            self.store(&LValue::Ptr(*ptr, inner.ty()), inner, ctx)?;
-                        }
-                        ctx.end_block_jump(join_block);
+                    if let Some(index) = index {
+                        ctx.emit_op(ir::Op::Store {
+                            src: index,
+                            ptr: *ptr,
+                        })?;
                     }
-                    ctx.start_block(join_block)?;
+
+                    if let (Some(index_ty), Some(index)) = (&layout.index_ty, index) {
+                        let mut variant_ptr = None;
+                        let branches = (0..variants.len())
+                            .into_iter()
+                            .map(|i| Ok((i as u128, ctx.create_block()?)))
+                            .collect::<Result<Vec<_>>>()?;
+
+                        let join_block = ctx.create_block()?;
+                        ctx.end_block_jump_map(index_ty, index, join_block, branches.clone())?;
+                        for ((_cond, block), inner) in branches.into_iter().zip(variants) {
+                            ctx.start_block(block)?;
+                            if let Some(inner) = inner {
+                                if variant_ptr.is_none() {
+                                    variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
+                                        op: ir::BinaryOp::IAdd,
+                                        left: *ptr,
+                                        right: ir::Value::const_u32(layout.union_offset as u32),
+                                    })?);
+                                }
+                                self.store(
+                                    &LValue::Ptr(variant_ptr.unwrap(), inner.ty()),
+                                    inner,
+                                    ctx,
+                                )?;
+                            }
+                            ctx.end_block_jump(join_block);
+                        }
+                        ctx.start_block(join_block)?;
+                    } else if variants.len() == 1 {
+                        if let Some(inner) = &variants[0] {
+                            let variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
+                                op: ir::BinaryOp::IAdd,
+                                left: *ptr,
+                                right: ir::Value::const_u32(layout.union_offset as u32),
+                            })?);
+                            self.store(
+                                &LValue::Ptr(variant_ptr.unwrap(), inner.ty()),
+                                inner.clone(),
+                                ctx,
+                            )?;
+                        }
+                    }
                 }
             },
             LValue::Variable(items) => {
@@ -712,40 +813,66 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         .map(|v| v.ty.clone())
                         .collect::<Vec<_>>();
                     let layout = enum_def.layout(&ctx.mod_ctx.module)?;
-                    let index_ty = layout.index_ty.clone();
-                    let variant_ptr = ctx.emit_op(ir::Op::Binary {
-                        op: ir::BinaryOp::IAdd,
-                        left: *ptr,
-                        right: ir::Value::const_u32(layout.index_offset as u32),
-                    })?;
-                    let index = ctx.emit_op(ir::Op::Load {
-                        ptr: variant_ptr,
-                        ty: index_ty.clone(),
-                    })?;
 
-                    let branches = (0..variant_tys.len())
-                        .into_iter()
-                        .map(|i| Ok((i as u128, ctx.create_block()?)))
-                        .collect::<Result<Vec<_>>>()?;
+                    let index = match &layout.index_ty {
+                        Some(index_ty) => Some(ctx.emit_op(ir::Op::Load {
+                            ptr: *ptr,
+                            ty: index_ty.clone(),
+                        })?),
+                        None => None,
+                    };
 
-                    let join_block = ctx.create_block()?;
-                    ctx.end_block_jump_map(&layout.index_ty, index, join_block, branches.clone())?;
                     let mut variants = Vec::new();
-                    for ((_cond, block), variant) in branches.into_iter().zip(variant_tys) {
-                        ctx.start_block(block)?;
-                        variants.push(match &variant {
-                            Some(inner) => Some(self.load(&LValue::Ptr(*ptr, inner.clone()), ctx)?),
+
+                    if let (Some(index_ty), Some(index)) = (&layout.index_ty, &index) {
+                        let mut variant_ptr = None;
+                        let branches = (0..variant_tys.len())
+                            .into_iter()
+                            .map(|i| Ok((i as u128, ctx.create_block()?)))
+                            .collect::<Result<Vec<_>>>()?;
+
+                        let join_block = ctx.create_block()?;
+                        ctx.end_block_jump_map(index_ty, *index, join_block, branches.clone())?;
+                        for ((_cond, block), variant) in branches.into_iter().zip(variant_tys) {
+                            ctx.start_block(block)?;
+                            variants.push(match &variant {
+                                Some(inner) => {
+                                    if variant_ptr.is_none() {
+                                        variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
+                                            op: ir::BinaryOp::IAdd,
+                                            left: *ptr,
+                                            right: ir::Value::const_u32(layout.union_offset as u32),
+                                        })?);
+                                    }
+                                    Some(self.load(
+                                        &LValue::Ptr(variant_ptr.unwrap(), inner.clone()),
+                                        ctx,
+                                    )?)
+                                }
+                                None => None,
+                            });
+                            ctx.end_block_jump(join_block);
+                        }
+                        ctx.start_block(join_block)?;
+                    } else if variant_tys.len() == 1 {
+                        variants.push(match &variant_tys[0] {
+                            Some(inner) => {
+                                let variant_ptr = ctx.emit_op(ir::Op::Binary {
+                                    op: ir::BinaryOp::IAdd,
+                                    left: *ptr,
+                                    right: ir::Value::const_u32(layout.union_offset as u32),
+                                })?;
+                                Some(self.load(&LValue::Ptr(variant_ptr, inner.clone()), ctx)?)
+                            }
                             None => None,
                         });
-                        ctx.end_block_jump(join_block);
                     }
-                    ctx.start_block(join_block)?;
 
                     Ok(RValue::Enum(SSAEnum {
                         variants,
                         index,
                         def_id,
-                        index_ty,
+                        index_ty: layout.index_ty,
                     }))
                 }
                 ir::Ty::Native(nt) => {
@@ -1061,6 +1188,25 @@ pub enum Template {
     Enum(ast::Enum, TemplateId),
     Fn(Vec<FnOverride>),
     Pipeline(ast::Pipeline, TemplateId),
+}
+
+impl Template {
+    /// Returns the ident for this template, or in the case of functions, the first function
+    pub fn first_ident(&self) -> Option<&ast::Ident> {
+        Some(match self {
+            Template::Struct(obj, _) => &obj.ident,
+            Template::Enum(obj, _) => &obj.ident,
+            Template::Fn(fn_overrides) => match &fn_overrides
+                .first()
+                .expect("Expecting function overrides to contain at least one function")
+                .kind
+            {
+                FnOverrideKind::Ast(function) => &function.ident,
+                FnOverrideKind::Intrinsic(_) => return None,
+            },
+            Template::Pipeline(pipeline, _) => &pipeline.ident,
+        })
+    }
 }
 
 pub type TemplateId = usize;
@@ -1582,17 +1728,21 @@ impl RValue {
         }
     }
 
-    pub fn from_flattened(value: &[ir::Value], ty: &ir::Ty, module: &ir::Module) -> Result<RValue> {
+    pub fn from_flattened(
+        values: &[ir::Value],
+        ty: &ir::Ty,
+        module: &ir::Module,
+    ) -> Result<RValue> {
         match ty {
             ir::Ty::Native(native_ty) => {
-                if value.len() != 1 {
+                if values.len() != 1 {
                     bail!(
                         "Expected a single value for native type {:?}, but got {} values",
                         native_ty,
-                        value.len()
+                        values.len()
                     );
                 }
-                Ok(RValue::Value(value[0], native_ty.clone()))
+                Ok(RValue::Value(values[0], native_ty.clone()))
             }
             ir::Ty::Struct(def_id) => {
                 let def_id = *def_id;
@@ -1604,7 +1754,7 @@ impl RValue {
 
                 for member in &struct_def.members {
                     let member_width = Self::ty_width(&member.ty, module)?;
-                    let member_values = &value[offset..(offset + member_width)];
+                    let member_values = &values[offset..(offset + member_width)];
                     let member_rvalue = Self::from_flattened(member_values, &member.ty, module)?;
                     fields.push((
                         member.id.clone().unwrap_or_default(),
@@ -1622,24 +1772,27 @@ impl RValue {
                     .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
                 let index_ty = enum_def.layout(module)?.index_ty;
 
-                if value.len() < 1 {
-                    bail!(
-                        "Expected at least one value for enum {:?}, but got {} values",
-                        def_id,
-                        value.len()
-                    );
-                }
+                let mut offset = 0;
 
-                let index = value[0];
+                let index = if index_ty.is_some() {
+                    offset += 1;
+                    Some(
+                        values
+                            .get(0)
+                            .ok_or(anyhow!("Expected discriminant value for enum"))?
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                };
                 let mut variants = Vec::new();
-                let mut offset = 1;
 
                 for variant in &enum_def.variants {
                     let variant_width = variant
                         .ty
                         .as_ref()
                         .map_or(Ok(0), |ty| Self::ty_width(ty, module))?;
-                    let variant_values = &value[offset..(offset + variant_width)];
+                    let variant_values = &values[offset..(offset + variant_width)];
                     let variant_rvalue = if let Some(ty) = &variant.ty {
                         Some(Self::from_flattened(variant_values, ty, module)?)
                     } else {
@@ -1650,9 +1803,9 @@ impl RValue {
                 }
 
                 Ok(RValue::Enum(SSAEnum {
+                    index_ty,
                     variants,
                     index,
-                    index_ty,
                     def_id,
                 }))
             }
@@ -1766,11 +1919,12 @@ impl SSAStruct {
 
 #[derive(Clone)]
 pub struct SSAEnum {
-    /// Represents a 1-1 mapping with all variants of the enum, with non values representing
+    /// None in the cases of a 0 or 1 variant enum, we don't need a discriminant in those cases
+    index: Option<ir::Value>,
+    /// Represents a 1-1 mapping with all variants of the enum, with none values representing
     /// variants with no data
     variants: Vec<Option<RValue>>,
-    index: ir::Value,
-    index_ty: ir::NativeType,
+    index_ty: Option<ir::NativeType>,
     def_id: ir::EnumId,
 }
 
@@ -1784,7 +1938,9 @@ impl SSAEnum {
     }
 
     fn flatten_internal(&self, values: &mut Vec<ir::Value>) {
-        values.push(self.index);
+        if let Some(index) = self.index {
+            values.push(index);
+        }
         for variant in &self.variants {
             if let Some(rvalue) = variant {
                 rvalue.flatten_internal(values);
@@ -1793,7 +1949,9 @@ impl SSAEnum {
     }
 
     fn flatten_tys_internal(&self, values: &mut Vec<ir::NativeType>) {
-        values.push(self.index_ty.clone());
+        if let Some(index_ty) = &self.index_ty {
+            values.push(index_ty.clone());
+        }
         for variant in &self.variants {
             if let Some(rvalue) = variant {
                 rvalue.flatten_tys_internal(values);
