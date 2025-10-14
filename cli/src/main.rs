@@ -36,31 +36,35 @@ fn main() -> anyhow::Result<()> {
         println!("{}: {}", id, label);
     }
 
-    let add_test = module.get_finalized_function(fn_map.first().unwrap().1);
+    let add_test = module.get_finalized_function(fn_map["add_test"]);
     let jit_end = Instant::now();
     println!("Add test data: {:?}", add_test);
 
     let add_test =
         unsafe { std::mem::transmute::<_, fn(*const *mut u8, u32, u32) -> u32>(add_test) };
 
-    let mut test_alloc_page = Vec::<u32>::with_capacity(brane_core::BS_PAGE_SIZE as usize / 4);
-    test_alloc_page.resize(brane_core::BS_PAGE_SIZE as usize / 4, 0u32);
-    let mut bindings_page = Vec::with_capacity(brane_core::BS_PAGE_SIZE as usize);
-    bindings_page.resize(
-        brane_core::BS_PAGE_SIZE as usize,
-        test_alloc_page.as_mut_ptr() as *mut u8,
-    );
+    let store = brane_core::memory::Store::new();
+    println!("store initialized");
+    let mut bindings = brane_core::memory::BindingSet::new();
+    println!("bindings created");
+
+    //let test_page = store.alloc_page();
+    //println!("test page allocated");
+
+    //let binding = bindings.bind_page_mutable(test_page).unwrap();
+    //assert_eq!(binding, 0, "Our jank solution only works if this is 0");
+    //println!("test page bound");
 
     let a = cli.func_arg_a.unwrap_or(40u32);
     let b = cli.func_arg_b.unwrap_or(40u32);
     println!("warming function");
-    let mut r = add_test(bindings_page.as_ptr(), a, b);
-    r += add_test(bindings_page.as_ptr(), a, b);
-    r += add_test(bindings_page.as_ptr(), a, b);
+    let mut r = add_test(bindings.bindings_ptr(), a, b);
+    r += add_test(bindings.bindings_ptr(), a, b);
+    r += add_test(bindings.bindings_ptr(), a, b);
     println!("profiling function (res {})", r);
 
     let start = std::time::Instant::now();
-    let res = add_test(bindings_page.as_ptr(), a, b);
+    let res = add_test(bindings.bindings_ptr(), a, b);
     let fn_end = std::time::Instant::now();
 
     println!("Add test result: {}", res);

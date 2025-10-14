@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use brane_core::ir::*;
 
-pub fn fold_constants(module: &mut Module) -> Result<usize> {
+pub fn _fold_constants(_module: &mut Module) -> Result<usize> {
     todo!()
 }
 
@@ -116,7 +116,30 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
             }
             Op::Call { func: _, input } => {
                 for v in input.iter_mut() {
-                    replace(v, map);
+                    match v {
+                        FnArg::Value(value) => replace(value, map),
+                        FnArg::Obj(values) => {
+                            for v in values.iter_mut() {
+                                replace(v, map);
+                            }
+                        }
+                    }
+                }
+            }
+            Op::CallIndirect {
+                func_handle: func,
+                input,
+            } => {
+                replace(func, map);
+                for v in input.iter_mut() {
+                    match v {
+                        FnArg::Value(value) => replace(value, map),
+                        FnArg::Obj(values) => {
+                            for v in values.iter_mut() {
+                                replace(v, map);
+                            }
+                        }
+                    }
                 }
             }
         }

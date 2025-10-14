@@ -112,9 +112,21 @@ pub enum Ty {
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Value {
-    PhiArg { block: u32, arg: u32 },
+    PhiArg {
+        block: u32,
+        arg: u32,
+    },
     FnArg(u32),
-    BlockOp { block: u32, op: u32 },
+    BlockOp {
+        block: u32,
+        op: u32,
+    },
+    /// Structs and enums are returned from function calls as vecs of values, accessed by index
+    VecBlockOp {
+        block: u32,
+        op: u32,
+        index: u32,
+    },
     Const(ConstValue),
 }
 
@@ -257,7 +269,11 @@ pub enum Op {
     // Function calls
     Call {
         func: i32,
-        input: Vec<Value>,
+        input: Vec<FnArg>,
+    },
+    CallIndirect {
+        func_handle: Value,
+        input: Vec<FnArg>,
     },
 }
 
@@ -317,6 +333,14 @@ pub enum TermOp {
         default: u32,
     },
     Ret(Option<Value>),
+}
+
+/// Values passed to functions
+#[derive(Clone, PartialEq, Debug)]
+pub enum FnArg {
+    Value(Value),
+    /// Flattened values of a struct or enum, offset/alignment will be taken from the function sig
+    Obj(Vec<Value>),
 }
 
 #[derive(Clone, PartialEq)]
@@ -593,6 +617,11 @@ impl fmt::Display for Value {
             }
             Value::FnArg(arg) => write!(f, "$FnArg({})", arg),
             Value::BlockOp { block, op } => write!(f, "$BlockOp(block: {}, op: {})", block, op),
+            Value::VecBlockOp { block, op, index } => write!(
+                f,
+                "$BlockOp(block: {}, op: {}, index: {})",
+                block, op, index
+            ),
             Value::Const(val) => write!(f, "$Const({})", val),
         }
     }
@@ -662,6 +691,19 @@ impl fmt::Display for Op {
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
+            Op::CallIndirect {
+                func_handle: func,
+                input,
+            } => write!(
+                f,
+                "(call_indirect {} [{}])",
+                func,
+                input
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
         }
     }
 }
@@ -696,6 +738,23 @@ impl Display for TermOp {
                         .join(", ")
                 )
             }
+        }
+    }
+}
+
+impl fmt::Display for FnArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FnArg::Value(value) => write!(f, "{}", value),
+            FnArg::Obj(values) => write!(
+                f,
+                "Struct({})",
+                values
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }

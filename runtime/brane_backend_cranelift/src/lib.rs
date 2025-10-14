@@ -37,7 +37,7 @@ impl Default for CraneliftJitBackend {
 }
 
 impl CraneliftJitBackend {
-    pub fn jit(&mut self, module: ir::Module) -> Result<(Vec<(String, FuncId)>, JITModule)> {
+    pub fn jit(&mut self, module: ir::Module) -> Result<(HashMap<String, FuncId>, JITModule)> {
         let jit_module = JITModule::new(JITBuilder::with_isa(
             self.isa.clone(),
             cranelift_module::default_libcall_names(),
@@ -51,12 +51,18 @@ impl CraneliftJitBackend {
             function_builder_ctx: FunctionBuilderContext::new(),
         };
         let mut fn_map = Vec::new();
+
         for func in module.functions.iter() {
-            self.jit_fn(func, &mut ctx)?;
             let fn_id = ctx
                 .module
                 .declare_function(&func.id, Linkage::Export, &ctx.ctx.func.signature)
                 .map_err(|e| anyhow!("Failed to declare function {}", e))?;
+            fn_map.push((func.id.clone(), fn_id));
+        }
+
+        for (index, func) in module.functions.iter().enumerate() {
+            let fn_id = fn_map[index].1;
+            self.jit_fn(func, &mut ctx)?;
             ctx.module
                 .define_function(fn_id, &mut ctx.ctx)
                 .map_err(|e: ModuleError| {
@@ -89,12 +95,11 @@ impl CraneliftJitBackend {
                     .disassemble(Some(&ctx.ctx.func.params), &cs)?
             );
             ctx.module.clear_context(&mut ctx.ctx);
-            fn_map.push((func.id.clone(), fn_id));
         }
 
         ctx.module.finalize_definitions()?;
 
-        Ok((fn_map, ctx.module))
+        Ok((fn_map.into_iter().collect(), ctx.module))
     }
 
     fn jit_fn(&mut self, func: &ir::Function, module: &mut ModuleCtx) -> Result<()> {
@@ -102,6 +107,7 @@ impl CraneliftJitBackend {
         let ptr_bytes = module.ptr_bytes;
         let fn_ctx = &mut module.ctx.func;
         let ptr_ty = module.module.target_config().pointer_type();
+
         // add memory binding table
         fn_ctx.collect_debug_info();
         fn_ctx.signature.params.push(AbiParam::new(ptr_ty));
@@ -392,6 +398,7 @@ impl CraneliftJitBackend {
                 .get(*op as usize)
                 .ok_or_else(|| anyhow!("Invalid op id {}", op))?
                 .ok_or_else(|| anyhow!("Op {} does not return a value!", op)),
+            ir::Value::VecBlockOp { block, op, index } => todo!(),
             ir::Value::Const(const_value) => Ok(match const_value {
                 ir::ConstValue::Bool(v) => ctx.builder.ins().iconst(types::I8, *v as i64),
                 ir::ConstValue::U8(v) => ctx.builder.ins().iconst(types::I8, *v as i64),
