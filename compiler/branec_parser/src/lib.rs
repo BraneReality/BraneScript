@@ -572,6 +572,7 @@ where
             field_def
                 .clone()
                 .separated_by(token(","))
+                .allow_trailing()
                 .collect()
                 .delimited_by(token("{"), token("}")),
         )
@@ -592,6 +593,7 @@ where
                 .clone()
                 .then(ty.clone().delimited_by(token("("), token(")")).or_not())
                 .separated_by(token(","))
+                .allow_trailing()
                 .collect()
                 .delimited_by(token("{"), token("}")),
         )
