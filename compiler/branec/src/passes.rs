@@ -117,8 +117,8 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
             Op::Call { func: _, input } => {
                 for v in input.iter_mut() {
                     match v {
-                        FnArg::Value(value) => replace(value, map),
-                        FnArg::Obj(values) => {
+                        ValueOrObj::Value(value) => replace(value, map),
+                        ValueOrObj::Obj(values) => {
                             for v in values.iter_mut() {
                                 replace(v, map);
                             }
@@ -133,8 +133,8 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
                 replace(func, map);
                 for v in input.iter_mut() {
                     match v {
-                        FnArg::Value(value) => replace(value, map),
-                        FnArg::Obj(values) => {
+                        ValueOrObj::Value(value) => replace(value, map),
+                        ValueOrObj::Obj(values) => {
                             for v in values.iter_mut() {
                                 replace(v, map);
                             }

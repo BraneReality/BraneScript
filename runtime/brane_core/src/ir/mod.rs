@@ -117,13 +117,13 @@ pub enum Value {
         arg: u32,
     },
     FnArg(u32),
-    VecFnArg(u32, u32),
+    ObjFnArg(u32, u32),
     BlockOp {
         block: u32,
         op: u32,
     },
     /// Structs and enums are returned from function calls as vecs of values, accessed by index
-    VecBlockOp {
+    ObjBlockOp {
         block: u32,
         op: u32,
         index: u32,
@@ -270,11 +270,13 @@ pub enum Op {
     // Function calls
     Call {
         func: i32,
-        input: Vec<FnArg>,
+        input: Vec<ValueOrObj>,
     },
     CallIndirect {
         func_handle: Value,
-        input: Vec<FnArg>,
+        // Maybe we move this to a look up table later if we find it's taking up too much space
+        sig: FnSig,
+        input: Vec<ValueOrObj>,
     },
 }
 
@@ -340,9 +342,9 @@ pub enum TermOp {
 
 /// Values passed to functions
 #[derive(Clone, PartialEq, Debug)]
-pub enum FnArg {
+pub enum ValueOrObj {
     Value(Value),
-    /// Flattened values of a struct or enum, offset/alignment will be taken from the function sig
+    /// Flattened values of a struct or enum
     Obj(Vec<Value>),
 }
 
@@ -509,10 +511,15 @@ pub struct Block {
     pub terminator: TermOp,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnSig {
+    pub param_tys: Vec<Ty>,
+    pub ret_ty: Option<Ty>,
+}
+
 pub struct Function {
     pub id: String,
-    pub input: Vec<Ty>,
-    pub output: Option<Ty>,
+    pub sig: FnSig,
     pub blocks: Vec<Block>,
 }
 
@@ -579,30 +586,32 @@ impl Module {
         self.pipelines.get(id as usize)
     }
 
-    // Recursively convert a type to a vec of every native type value.
-    pub fn flatten(&self, ty: &Ty) -> Vec<NativeType> {
+    // Recursively convert a type to a vec of every native type value paired with it's byte offset.
+    pub fn flatten(&self, ty: &Ty) -> Vec<(NativeType, usize)> {
         let mut values = Vec::new();
-        self.flatten_internal(ty, &mut values);
+        self.flatten_internal(ty, 0, &mut values);
         values
     }
 
-    fn flatten_internal(&self, ty: &Ty, values: &mut Vec<NativeType>) {
+    fn flatten_internal(&self, ty: &Ty, offset: usize, values: &mut Vec<(NativeType, usize)>) {
         match ty {
-            Ty::Native(native_type) => values.push(native_type.clone()),
+            Ty::Native(native_type) => values.push((native_type.clone(), offset)),
             Ty::Struct(id) => {
                 let def = self.get_struct(*id).unwrap();
-                for member in &def.members {
-                    self.flatten_internal(&member.ty, values);
+                let layout = def.layout(self).unwrap();
+                for (member, m_offset) in def.members.iter().zip(layout.byte_offsets) {
+                    self.flatten_internal(&member.ty, offset + m_offset, values);
                 }
             }
             Ty::Enum(id) => {
                 let def = self.get_enum(*id).unwrap();
+                let layout = def.layout(self).unwrap();
                 if let Some(index_ty) = def.layout(self).unwrap().index_ty {
-                    values.push(index_ty);
+                    values.push((index_ty, offset));
                 }
                 for v in &def.variants {
                     if let Some(ty) = &v.ty {
-                        self.flatten_internal(ty, values);
+                        self.flatten_internal(ty, offset + layout.union_offset, values);
                     }
                 }
             }
@@ -707,11 +716,11 @@ impl fmt::Display for Value {
                 write!(f, "$PhiArg(block: {}, arg: {})", block, arg)
             }
             Value::FnArg(arg) => write!(f, "$FnArg({})", arg),
-            Value::VecFnArg(arg, index) => write!(f, "$VecFnArg({}, {})", arg, index),
+            Value::ObjFnArg(arg, index) => write!(f, "$ObjFnArg({}, {})", arg, index),
             Value::BlockOp { block, op } => write!(f, "$BlockOp(block: {}, op: {})", block, op),
-            Value::VecBlockOp { block, op, index } => write!(
+            Value::ObjBlockOp { block, op, index } => write!(
                 f,
-                "$BlockOp(block: {}, op: {}, index: {})",
+                "$BlockOp(block: {}, op: {}, member: {})",
                 block, op, index
             ),
             Value::Const(val) => write!(f, "$Const({})", val),
@@ -785,11 +794,13 @@ impl fmt::Display for Op {
             ),
             Op::CallIndirect {
                 func_handle: func,
+                sig,
                 input,
             } => write!(
                 f,
-                "(call_indirect {} [{}])",
+                "(call_indirect {} {} [{}])",
                 func,
+                sig,
                 input
                     .iter()
                     .map(|v| v.to_string())
@@ -842,13 +853,13 @@ impl Display for TermOp {
     }
 }
 
-impl fmt::Display for FnArg {
+impl fmt::Display for ValueOrObj {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FnArg::Value(value) => write!(f, "{}", value),
-            FnArg::Obj(values) => write!(
+            ValueOrObj::Value(value) => write!(f, "{}", value),
+            ValueOrObj::Obj(values) => write!(
                 f,
-                "Struct({})",
+                "Obj({})",
                 values
                     .iter()
                     .map(|v| v.to_string())
@@ -859,21 +870,27 @@ impl fmt::Display for FnArg {
     }
 }
 
-impl fmt::Display for Function {
+impl fmt::Display for FnSig {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(func \"{}\" ", self.id)?;
-        write!(f, "(")?;
-        for (i, ty) in self.input.iter().enumerate() {
+        write!(f, "FnSig(")?;
+        for (i, ty) in self.param_tys.iter().enumerate() {
             if i > 0 {
                 write!(f, " ")?;
             }
             write!(f, "{}", ty)?;
         }
         write!(f, ") ")?;
-        match &self.output {
+        match &self.ret_ty {
             Some(ty) => write!(f, "{}", ty)?,
             None => write!(f, "nil")?,
         }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(func \"{}\" {}", self.id, self.sig)?;
         for (i, block) in self.blocks.iter().enumerate() {
             write!(f, "\n   Block {}:", i)?;
             for (i, phi) in block.phi_nodes.iter().enumerate() {

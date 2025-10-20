@@ -235,7 +235,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             .flatten(&ty)
                             .into_iter()
                             .enumerate()
-                            .map(|(index, _ty)| ir::Value::VecFnArg(arg_index as u32, index as u32))
+                            .map(|(index, _ty)| ir::Value::ObjFnArg(arg_index as u32, index as u32))
                             .collect::<Vec<_>>();
                         RValue::from_flattened(&values, &ty, &fn_ctx.mod_ctx.module)?
                     },
