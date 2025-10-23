@@ -208,8 +208,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             let mut fn_ctx = FunctionCtx {
                 function: ir::Function {
                     id: function.ident.text.clone(),
-                    input: params.iter().map(|(_, v)| v.clone()).collect(),
-                    output: return_ty.clone(),
+                    sig: ir::FnSig {
+                        param_tys: params.iter().map(|(_, v)| v.clone()).collect(),
+                        ret_ty: return_ty.clone(),
+                    },
                     blocks: vec![],
                 },
                 current_block: None,
@@ -232,7 +234,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         let values = fn_ctx
                             .mod_ctx
                             .module
-                            .flatten(&ty)
+                            .flatten(&ty)?
                             .into_iter()
                             .enumerate()
                             .map(|(index, _ty)| ir::Value::ObjFnArg(arg_index as u32, index as u32))
@@ -491,13 +493,13 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             .emit_r_value(expr, namespace, ctx)?
                             .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                         let value_ty = value.ty();
-                        if Some(&value_ty.clone()) != ctx.function.output.as_ref() {
+                        if Some(&value_ty.clone()) != ctx.function.sig.ret_ty.as_ref() {
                             emt::error("incorrect return type", &self.sources)
                                 .err_at(
                                     expr.span.clone(),
                                     &format!(
                                         "Expected {} but found {}",
-                                        if let Some(output) = &ctx.function.output {
+                                        if let Some(output) = &ctx.function.sig.ret_ty {
                                             ctx.mod_ctx.module.ty_string(output)
                                         } else {
                                             "nothing".into()
@@ -981,7 +983,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
                     let struct_index = ctx.module.structs.len();
                     ctx.module.structs.push(ir::Struct {
-                        id: None,
+                        id: Some("slice".into()),
                         members: emitted_fields,
                         packed: false,
                     });
@@ -1113,6 +1115,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     }
                     Template::Enum(e, t_id) => {
                         if let Some(memoized) = ctx.type_instances.get(t_id) {
+                            println!("returning memoized enum {}", memoized);
                             return Ok(memoized.clone());
                         }
                         let emitted_varaints = e
@@ -1138,16 +1141,18 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             .enumerate()
                             .find(|(_, s)| s.variants == emitted_varaints && s.id == id)
                         {
+                            println!("found existing enum: {}", existing_index);
                             return Ok(ir::Ty::Enum(existing_index as u64));
                         }
 
-                        let enum_index = ctx.module.structs.len() as i32;
+                        let enum_index = ctx.module.enums.len() as i32;
                         ctx.module.enums.push(ir::Enum {
-                            id: None,
+                            id,
                             variants: emitted_varaints,
                             packed: false,
                         });
 
+                        println!("emitted new enum: {}", enum_index);
                         Ok(ir::Ty::Enum(enum_index as u64))
                     }
                     _ => bail!("Path does not reference a valid type"),

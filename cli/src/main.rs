@@ -38,7 +38,6 @@ fn main() -> anyhow::Result<()> {
 
     let add_test = module.get_finalized_function(fn_map["add_test"]);
     let jit_end = Instant::now();
-    println!("Add test data: {:?}", add_test);
 
     let add_test =
         unsafe { std::mem::transmute::<_, fn(*const *mut u8, u32, u32) -> u32>(add_test) };

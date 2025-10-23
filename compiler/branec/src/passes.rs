@@ -128,6 +128,7 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
             }
             Op::CallIndirect {
                 func_handle: func,
+                sig: _,
                 input,
             } => {
                 replace(func, map);

@@ -1,14 +1,12 @@
 use std::collections::HashMap;
-use target_lexicon::{Archetechture, Architecture, CallingConvention};
+use target_lexicon::{Architecture, CallingConvention};
 
 use anyhow::{Result, anyhow, bail};
 use brane_core::ir;
-use cranelift_codegen::ir::{
-    ArgumentExtension, ArgumentPurpose, BlockArg, Signature, StackSlotData, StackSlotKind,
-};
+use cranelift_codegen::ir::{ArgumentPurpose, BlockArg, Signature, StackSlotData, StackSlotKind};
 use cranelift_codegen::{
     isa,
-    settings::{self, Configurable},
+    settings::{self},
 };
 use cranelift_frontend::Switch;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -45,30 +43,43 @@ impl CraneliftJitBackend {
             self.isa.clone(),
             cranelift_module::default_libcall_names(),
         ));
+        let mut codegen = jit_module.make_context();
+        let mut builder_ctx = FunctionBuilderContext::new();
         let mut ctx = ModuleCtx {
-            ctx: jit_module.make_context(),
             ptr_ty: jit_module.target_config().pointer_type(),
             ptr_bytes: jit_module.target_config().pointer_bytes(),
             module: jit_module,
             fn_map: Vec::new(),
             data_desc: DataDescription::new(),
-            function_builder_ctx: FunctionBuilderContext::new(),
         };
 
+        let mut signatures = Vec::new();
         for func in module.functions.iter() {
-            let signature = self.construct_fn_sig(func, &module)?;
+            let (signature, has_ret_ptr) = self.construct_fn_sig(func, &module)?;
             let fn_id = ctx
                 .module
                 .declare_function(&func.id, Linkage::Export, &signature)
                 .map_err(|e| anyhow!("Failed to declare function {}", e))?;
+            println!("Declared function `{}` with sig {}", func.id, signature);
             ctx.fn_map.push((func.id.clone(), fn_id));
+            signatures.push((signature, has_ret_ptr));
         }
 
-        for (index, func) in module.functions.iter().enumerate() {
+        for (index, (func, (sig, has_ret_ptr))) in
+            module.functions.iter().zip(signatures).enumerate()
+        {
             let fn_id = ctx.fn_map[index].1;
-            self.jit_fn(func, &module, &mut ctx)?;
+            self.jit_fn(
+                func,
+                sig,
+                has_ret_ptr,
+                &module,
+                &mut ctx,
+                &mut codegen,
+                &mut builder_ctx,
+            )?;
             ctx.module
-                .define_function(fn_id, &mut ctx.ctx)
+                .define_function(fn_id, &mut codegen)
                 .map_err(|e: ModuleError| {
                     match e {
                         ModuleError::Compilation(ce) => match ce {
@@ -87,18 +98,18 @@ impl CraneliftJitBackend {
                         },
                         e => anyhow!("Failed to define function {}", e),
                     }
-                    .context(ctx.ctx.func.clone())
+                    .context(codegen.func.clone())
                 })?;
             let cs = self.isa.to_capstone()?;
             println!(
                 "Emitted function {}:\n{}",
                 func.id,
-                ctx.ctx
+                codegen
                     .compiled_code()
                     .unwrap()
-                    .disassemble(Some(&ctx.ctx.func.params), &cs)?
+                    .disassemble(Some(&codegen.func.params), &cs)?
             );
-            ctx.module.clear_context(&mut ctx.ctx);
+            ctx.module.clear_context(&mut codegen);
         }
 
         ctx.module.finalize_definitions()?;
@@ -109,27 +120,36 @@ impl CraneliftJitBackend {
     fn jit_fn(
         &mut self,
         func: &ir::Function,
+        sig: Signature,
+        ret_ptr: bool,
         ir: &ir::Module,
         module: &mut ModuleCtx,
+        codegen: &mut cranelift_codegen::Context,
+        builder_ctx: &mut FunctionBuilderContext,
     ) -> Result<()> {
-        let ptr_ty = module.ptr_ty;
         let ptr_bytes = module.ptr_bytes;
-        let fn_ctx = &mut module.ctx.func;
+        let fn_ctx = &mut codegen.func;
         let ptr_ty = module.module.target_config().pointer_type();
 
         // add memory binding table
         fn_ctx.collect_debug_info();
 
-        let mut builder = FunctionBuilder::new(fn_ctx, &mut module.function_builder_ctx);
+        let mut builder = FunctionBuilder::new(fn_ctx, builder_ctx);
+        builder.func.signature = sig;
 
+        let mut block_args = HashMap::new();
         let blocks: Vec<_> = func
             .blocks
             .iter()
             .map(|b| {
                 let n = builder.create_block();
+                let mut args = Vec::new();
                 for phi in &b.phi_nodes {
-                    builder.append_block_param(n, Self::jit_ty(&phi.ty));
+                    let ty = Self::jit_ty(&phi.ty);
+                    let arg_v = builder.append_block_param(n, ty);
+                    args.push(FValue::new(arg_v, ty));
                 }
+                block_args.insert(n, args);
                 n
             })
             .collect();
@@ -138,9 +158,24 @@ impl CraneliftJitBackend {
             bail!("Function has no content!");
         }
 
-        let entry = *blocks.first().unwrap();
+        let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
+        println!(
+            "jitting fn {} with sig: {}",
+            func.id, builder.func.signature
+        );
+
+        let fn_params = builder.block_params(entry);
+        let (ret_ptr, ctx_ptr, fn_params) = if ret_ptr {
+            (Some(fn_params[0]), fn_params[1], fn_params[2..].to_owned())
+        } else {
+            (None, fn_params[0], fn_params[1..].to_owned())
+        };
+
+        let fn_args = { self.reconstruct_fn_args(&fn_params, func, ir, &mut builder)? };
+
+        builder.ins().jump(blocks[0], &[]);
         builder.seal_block(entry);
 
         let mut ctx = FunctionCtx {
@@ -150,37 +185,46 @@ impl CraneliftJitBackend {
             blocks: blocks.clone(),
             ptr_ty,
             ptr_bytes,
+            fn_args,
+            ctx_ptr,
+            ret_ptr,
+            block_args,
         };
 
         for (block_id, (jit_block, ir_block)) in blocks.iter().zip(func.blocks.iter()).enumerate() {
-            ctx.block_values.insert(block_id, Vec::new());
+            ctx.block_values.insert(
+                Block::from_u32(block_id as u32),
+                Vec::with_capacity(ir_block.ops.len()),
+            );
             ctx.builder.switch_to_block(*jit_block);
             for op in &ir_block.ops {
-                let new_result: Option<Value> = match op {
+                let new_result = match op {
                     ir::Op::Unary { op, value } => {
-                        let value = self.jit_value(value, &mut ctx)?; /*TODO make this actually call an allocation callback*/
-                        match op {
-                            ir::UnaryOp::INeg => todo!(),
-                            ir::UnaryOp::FNeg => todo!(),
-                            ir::UnaryOp::Alloc => Some(ctx.builder.ins().iconst(types::I32, 0)),
-                        }
+                        let (value, _, _) = self.jit_value(value, &mut ctx)?; /*TODO make this actually call an allocation callback*/
+                        let res = match op {
+                            ir::UnaryOp::INeg => ctx.builder.ins().ineg(value),
+                            ir::UnaryOp::FNeg => ctx.builder.ins().fneg(value),
+                            ir::UnaryOp::Alloc => todo!(), // Some(ctx.builder.ins().iconst(types::I32, 0)),
+                        };
+                        let ty = ctx.builder.func.dfg.value_type(res);
+                        Some(FValue::new(res, ty))
                     }
                     ir::Op::Binary { op, left, right } => {
-                        let left = self.jit_value(left, &mut ctx)?;
-                        let right = self.jit_value(right, &mut ctx)?;
-                        match op {
-                            ir::BinaryOp::IAdd => Some(ctx.builder.ins().iadd(left, right)),
-                            ir::BinaryOp::FAdd => Some(ctx.builder.ins().fadd(left, right)),
-                            ir::BinaryOp::ISub => Some(ctx.builder.ins().isub(left, right)),
-                            ir::BinaryOp::FSub => Some(ctx.builder.ins().fsub(left, right)),
-                            ir::BinaryOp::IMul => Some(ctx.builder.ins().imul(left, right)),
-                            ir::BinaryOp::FMul => Some(ctx.builder.ins().fmul(left, right)),
-                            ir::BinaryOp::SDiv => Some(ctx.builder.ins().sdiv(left, right)),
-                            ir::BinaryOp::UDiv => Some(ctx.builder.ins().udiv(left, right)),
-                            ir::BinaryOp::FDiv => Some(ctx.builder.ins().fdiv(left, right)),
-                            ir::BinaryOp::URem => Some(ctx.builder.ins().urem(left, right)),
-                            ir::BinaryOp::SRem => Some(ctx.builder.ins().srem(left, right)),
-                            ir::BinaryOp::SCmp(cmp_ty) => Some(ctx.builder.ins().icmp(
+                        let (left, _, _) = self.jit_value(left, &mut ctx)?;
+                        let (right, _, _) = self.jit_value(right, &mut ctx)?;
+                        let res = match op {
+                            ir::BinaryOp::IAdd => ctx.builder.ins().iadd(left, right),
+                            ir::BinaryOp::FAdd => ctx.builder.ins().fadd(left, right),
+                            ir::BinaryOp::ISub => ctx.builder.ins().isub(left, right),
+                            ir::BinaryOp::FSub => ctx.builder.ins().fsub(left, right),
+                            ir::BinaryOp::IMul => ctx.builder.ins().imul(left, right),
+                            ir::BinaryOp::FMul => ctx.builder.ins().fmul(left, right),
+                            ir::BinaryOp::SDiv => ctx.builder.ins().sdiv(left, right),
+                            ir::BinaryOp::UDiv => ctx.builder.ins().udiv(left, right),
+                            ir::BinaryOp::FDiv => ctx.builder.ins().fdiv(left, right),
+                            ir::BinaryOp::URem => ctx.builder.ins().urem(left, right),
+                            ir::BinaryOp::SRem => ctx.builder.ins().srem(left, right),
+                            ir::BinaryOp::SCmp(cmp_ty) => ctx.builder.ins().icmp(
                                 match cmp_ty {
                                     ir::CmpTy::Eq => IntCC::Equal,
                                     ir::CmpTy::Ne => IntCC::NotEqual,
@@ -189,8 +233,8 @@ impl CraneliftJitBackend {
                                 },
                                 left,
                                 right,
-                            )),
-                            ir::BinaryOp::UCmp(cmp_ty) => Some(ctx.builder.ins().icmp(
+                            ),
+                            ir::BinaryOp::UCmp(cmp_ty) => ctx.builder.ins().icmp(
                                 match cmp_ty {
                                     ir::CmpTy::Eq => IntCC::Equal,
                                     ir::CmpTy::Ne => IntCC::NotEqual,
@@ -199,8 +243,8 @@ impl CraneliftJitBackend {
                                 },
                                 left,
                                 right,
-                            )),
-                            ir::BinaryOp::FCmp(cmp_ty) => Some(ctx.builder.ins().fcmp(
+                            ),
+                            ir::BinaryOp::FCmp(cmp_ty) => ctx.builder.ins().fcmp(
                                 match cmp_ty {
                                     ir::CmpTy::Eq => FloatCC::Equal,
                                     ir::CmpTy::Ne => FloatCC::NotEqual,
@@ -209,35 +253,42 @@ impl CraneliftJitBackend {
                                 },
                                 left,
                                 right,
-                            )),
-                            ir::BinaryOp::And => Some(ctx.builder.ins().band(left, right)),
-                            ir::BinaryOp::Or => Some(ctx.builder.ins().bor(left, right)),
-                            ir::BinaryOp::Xor => Some(ctx.builder.ins().bxor(left, right)),
-                            ir::BinaryOp::ShiftL => Some(ctx.builder.ins().ishl(left, right)),
-                            ir::BinaryOp::IShiftR => Some(ctx.builder.ins().sshr(left, right)),
-                            ir::BinaryOp::UShiftR => Some(ctx.builder.ins().ushr(left, right)),
-                        }
+                            ),
+                            ir::BinaryOp::And => ctx.builder.ins().band(left, right),
+                            ir::BinaryOp::Or => ctx.builder.ins().bor(left, right),
+                            ir::BinaryOp::Xor => ctx.builder.ins().bxor(left, right),
+                            ir::BinaryOp::ShiftL => ctx.builder.ins().ishl(left, right),
+                            ir::BinaryOp::IShiftR => ctx.builder.ins().sshr(left, right),
+                            ir::BinaryOp::UShiftR => ctx.builder.ins().ushr(left, right),
+                        };
+                        let ty = ctx.builder.func.dfg.value_type(res);
+                        Some(FValue::new(res, ty))
                     }
                     ir::Op::Load { ty, ptr } => {
                         let jit_ty = Self::jit_ty(ty);
-                        let ptr = self.jit_value(ptr, &mut ctx)?;
-                        Some(Self::load(ptr, jit_ty, &mut ctx))
+                        let (ptr, _, _) = self.jit_value(ptr, &mut ctx)?;
+                        Some(FValue::new(Self::load(ptr, jit_ty, &mut ctx), jit_ty))
                     }
                     ir::Op::Store { src, ptr } => {
-                        let src = self.jit_value(src, &mut ctx)?;
-                        let ptr = self.jit_value(ptr, &mut ctx)?;
+                        let (src, _, _) = self.jit_value(src, &mut ctx)?;
+                        let (ptr, _, _) = self.jit_value(ptr, &mut ctx)?;
                         Self::store(ptr, src, &mut ctx);
                         None
                     }
                     ir::Op::Call { func, input } => {
-                        let struct_value = Value;
-                        ctx.builder.ins().call(todo!(), args);
-                        todo!("Function calls not implemented yet");
+                        self.call_fn(Callable::FnId(*func as ir::FnId), &input, ir, &mut ctx)?
                     }
-                    ir::Op::CallIndirect { func_handle, input } => todo!(),
+                    ir::Op::CallIndirect {
+                        func_handle,
+                        input,
+                        sig,
+                    } => {
+                        let (func, _, _) = self.jit_value(func_handle, &mut ctx)?;
+                        self.call_fn(Callable::Pointer(func, sig), &input, ir, &mut ctx)?
+                    }
                 };
                 ctx.block_values
-                    .get_mut(&block_id)
+                    .get_mut(&Block::from_u32(block_id as u32))
                     .unwrap()
                     .push(new_result);
             }
@@ -248,7 +299,7 @@ impl CraneliftJitBackend {
                     ctx.builder.ins().jump(b, args.as_slice());
                 }
                 ir::TermOp::JumpIf { cond, then, else_ } => {
-                    let cond = self.jit_value(cond, &mut ctx)?;
+                    let (cond, _, _) = self.jit_value(cond, &mut ctx)?;
                     let then_args = self.jump_args(block_id as u32, *then, func, &mut ctx)?;
                     let else_args = self.jump_args(block_id as u32, *else_, func, &mut ctx)?;
                     let then = ctx.get_block(*then)?;
@@ -272,17 +323,16 @@ impl CraneliftJitBackend {
                         let block = ctx.get_block(*block)?;
                         switch.set_entry(*cond, block);
                     }
-                    let cond = self.jit_value(cond, &mut ctx)?;
+                    let (cond, _, _) = self.jit_value(cond, &mut ctx)?;
                     switch.emit(&mut ctx.builder, cond, default);
                 }
                 ir::TermOp::Ret(value) => match value {
                     Some(values) => {
                         let values = values
                             .iter()
-                            .map(|value| self.jit_value(value, &mut ctx))
+                            .map(|value| Ok(self.jit_value(value, &mut ctx)?.0))
                             .collect::<anyhow::Result<Vec<Value>>>()?;
-                        todo!("Implement return ABI");
-                        ctx.builder.ins().return_(&values);
+                        self.jit_return(values, func, ir, &mut ctx)?;
                     }
                     None => {
                         ctx.builder.ins().return_(&[]);
@@ -372,51 +422,97 @@ impl CraneliftJitBackend {
                     .iter()
                     .find(|v| v.block == from)
                     .map(|v| -> Result<BlockArg> {
-                        Ok(BlockArg::Value(self.jit_value(&v.value, ctx)?))
+                        Ok(BlockArg::Value(self.jit_value(&v.value, ctx)?.0))
                     })
             })
             .collect::<Result<Vec<_>>>()
     }
 
-    fn jit_value(&self, value: &ir::Value, ctx: &mut FunctionCtx) -> Result<Value> {
+    fn jit_value(&self, value: &ir::Value, ctx: &mut FunctionCtx) -> Result<(Value, Type, usize)> {
         match value {
-            ir::Value::PhiArg { block, arg } => {
-                let b = ctx.get_block(*block)?;
-                ctx.builder
-                    .block_params(b)
-                    .get(*arg as usize)
-                    .ok_or_else(|| anyhow!("invalid phi node (block: {}, arg: {})", block, arg))
-                    .cloned()
-            }
-            ir::Value::FnArg(arg) => {
-                let b = ctx.blocks[0];
-                ctx.builder
-                    .block_params(b)
-                    .get(*arg as usize + 1)
-                    .ok_or_else(|| anyhow!("invalid function arg {}", arg))
-                    .cloned()
-            }
-            ir::Value::ObjFnArg(_, _) => todo!(),
+            ir::Value::PhiArg { block, arg } => ctx
+                .block_args
+                .get(&Block::from_u32(*block))
+                .map(|args| args.get(*arg as usize))
+                .flatten()
+                .map(|fv| fv.values.get(0))
+                .flatten()
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid phi node {}", value)),
+            ir::Value::FnArg(arg) => ctx
+                .fn_args
+                .get(*arg as usize)
+                .map(|fv| fv.values.get(0))
+                .flatten()
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid function arg {}", value)),
+            ir::Value::ObjFnArg(arg, index) => ctx
+                .fn_args
+                .get(*arg as usize)
+                .map(|fv| fv.values.get(*index as usize))
+                .flatten()
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid function arg {}", arg)),
             ir::Value::BlockOp { block, op } => ctx
                 .block_values
-                .get(&(*block as usize))
-                .ok_or_else(|| anyhow!("Invalid block ID {}", block))?
-                .get(*op as usize)
-                .ok_or_else(|| anyhow!("Invalid op id {}", op))?
-                .ok_or_else(|| anyhow!("Op {} does not return a value!", op)),
-            ir::Value::ObjBlockOp { block, op, index } => todo!(),
+                .get(&Block::from_u32(*block))
+                .map(|ops| ops.get(*op as usize).cloned())
+                .flatten()
+                .flatten()
+                .map(|fv| fv.values.get(0).cloned())
+                .flatten()
+                .ok_or_else(|| anyhow!("Value is not a block op: {}", value)),
+            ir::Value::ObjBlockOp { block, op, index } => ctx
+                .block_values
+                .get(&Block::from_u32(*block))
+                .map(|ops| ops.get(*op as usize).cloned())
+                .flatten()
+                .flatten()
+                .map(|fv| fv.values.get(*index as usize).cloned())
+                .flatten()
+                .ok_or_else(|| anyhow!("Value is not a block op: {}", value)),
             ir::Value::Const(const_value) => Ok(match const_value {
-                ir::ConstValue::Bool(v) => ctx.builder.ins().iconst(types::I8, *v as i64),
-                ir::ConstValue::U8(v) => ctx.builder.ins().iconst(types::I8, *v as i64),
-                ir::ConstValue::I8(v) => ctx.builder.ins().iconst(types::I8, *v as i64),
-                ir::ConstValue::U16(v) => ctx.builder.ins().iconst(types::I16, *v as i64),
-                ir::ConstValue::I16(v) => ctx.builder.ins().iconst(types::I16, *v as i64),
-                ir::ConstValue::U32(v) => ctx.builder.ins().iconst(types::I32, *v as i64),
-                ir::ConstValue::I32(v) => ctx.builder.ins().iconst(types::I32, *v as i64),
-                ir::ConstValue::U64(v) => ctx.builder.ins().iconst(types::I64, *v as i64),
-                ir::ConstValue::I64(v) => ctx.builder.ins().iconst(types::I64, *v as i64),
-                ir::ConstValue::F32(v) => ctx.builder.ins().f32const(*v),
-                ir::ConstValue::F64(v) => ctx.builder.ins().f64const(*v),
+                ir::ConstValue::Bool(v) => {
+                    (ctx.builder.ins().iconst(types::I8, *v as i64), types::I8, 0)
+                }
+                ir::ConstValue::U8(v) => {
+                    (ctx.builder.ins().iconst(types::I8, *v as i64), types::I8, 0)
+                }
+                ir::ConstValue::I8(v) => {
+                    (ctx.builder.ins().iconst(types::I8, *v as i64), types::I8, 0)
+                }
+                ir::ConstValue::U16(v) => (
+                    ctx.builder.ins().iconst(types::I16, *v as i64),
+                    types::I16,
+                    0,
+                ),
+                ir::ConstValue::I16(v) => (
+                    ctx.builder.ins().iconst(types::I16, *v as i64),
+                    types::I16,
+                    0,
+                ),
+                ir::ConstValue::U32(v) => (
+                    ctx.builder.ins().iconst(types::I32, *v as i64),
+                    types::I32,
+                    0,
+                ),
+                ir::ConstValue::I32(v) => (
+                    ctx.builder.ins().iconst(types::I32, *v as i64),
+                    types::I32,
+                    0,
+                ),
+                ir::ConstValue::U64(v) => (
+                    ctx.builder.ins().iconst(types::I64, *v as i64),
+                    types::I64,
+                    0,
+                ),
+                ir::ConstValue::I64(v) => (
+                    ctx.builder.ins().iconst(types::I64, *v as i64),
+                    types::I64,
+                    0,
+                ),
+                ir::ConstValue::F32(v) => (ctx.builder.ins().f32const(*v), types::F32, 0),
+                ir::ConstValue::F64(v) => (ctx.builder.ins().f64const(*v), types::F64, 0),
             }),
         }
     }
@@ -433,8 +529,13 @@ impl CraneliftJitBackend {
         }
     }
 
-    fn construct_fn_sig(&self, func: &ir::Function, ir: &ir::Module) -> anyhow::Result<Signature> {
+    fn construct_fn_sig(
+        &self,
+        func: &ir::Function,
+        ir: &ir::Module,
+    ) -> anyhow::Result<(Signature, bool)> {
         let triple = self.isa.triple();
+        let mut has_ret_ptr = false;
 
         match triple
             .default_calling_convention()
@@ -450,6 +551,7 @@ impl CraneliftJitBackend {
 
                 if let Some(ret_ty) = &func.sig.ret_ty {
                     let mut ret_struct = |size: usize| {
+                        println!("sig for returning struct of size {}", size);
                         match size {
                             0 => unreachable!(),
                             1 => sig.returns.push(AbiParam::new(types::I8)),
@@ -457,14 +559,12 @@ impl CraneliftJitBackend {
                             3 | 4 => sig.returns.push(AbiParam::new(types::I32)),
                             5..=8 => sig.returns.push(AbiParam::new(types::I64)),
                             _ => {
-                                let ret_param = AbiParam::special(
-                                    self.isa.pointer_type(),
-                                    ArgumentPurpose::StructReturn,
-                                );
+                                let ret_param = AbiParam::new(self.isa.pointer_type());
                                 // Windows wants us to pass a pointer, and then return
                                 // that same pointer back when we return
                                 sig.params.push(ret_param);
                                 sig.returns.push(ret_param);
+                                has_ret_ptr = true;
                             }
                         }
                     };
@@ -492,19 +592,22 @@ impl CraneliftJitBackend {
                     }
                 }
 
+                // ctx pointer
+                sig.params.push(AbiParam::new(self.isa.pointer_type()));
+
                 for param in &func.sig.param_tys {
-                    let mut pass_struct = |size: usize| match size {
-                        0 => unreachable!(),
-                        1 => sig.returns.push(AbiParam::new(types::I8)),
-                        2 => sig.returns.push(AbiParam::new(types::I16)),
-                        3 | 4 => sig.returns.push(AbiParam::new(types::I32)),
-                        5..=8 => sig.returns.push(AbiParam::new(types::I64)),
-                        _ => {
-                            let struct_param = AbiParam::special(
-                                self.isa.pointer_type(),
-                                ArgumentPurpose::StructArgument(size as u32),
-                            );
-                            sig.params.push(struct_param);
+                    let mut pass_struct = |size: usize| {
+                        println!("passing struct of size {} as arg", size);
+                        match size {
+                            0 => unreachable!(),
+                            1 => sig.params.push(AbiParam::new(types::I8)),
+                            2 => sig.params.push(AbiParam::new(types::I16)),
+                            3 | 4 => sig.params.push(AbiParam::new(types::I32)),
+                            5..=8 => sig.params.push(AbiParam::new(types::I64)),
+                            _ => {
+                                let struct_param = AbiParam::new(self.isa.pointer_type());
+                                sig.params.push(struct_param);
+                            }
                         }
                     };
 
@@ -529,7 +632,7 @@ impl CraneliftJitBackend {
                     }
                 }
 
-                Ok(sig)
+                Ok((sig, has_ret_ptr))
             }
             CallingConvention::SystemV => match &triple.architecture {
                 Architecture::X86_64 => {
@@ -556,10 +659,10 @@ impl CraneliftJitBackend {
     fn call_fn(
         &self,
         callable: Callable,
-        args: &[SValue],
+        args: &Vec<ir::ValueOrObj>,
         ir: &ir::Module,
         fn_ctx: &mut FunctionCtx,
-    ) -> anyhow::Result<Option<SValue>> {
+    ) -> anyhow::Result<Option<FValue>> {
         let triple = self.isa.triple();
 
         let sig = match callable {
@@ -568,12 +671,30 @@ impl CraneliftJitBackend {
                     .ok_or(anyhow!("Invalid function id {}", id))?
                     .sig
             }
-            Callable::Pointer(value, fn_sig) => fn_sig,
+            Callable::Pointer(_value, fn_sig) => fn_sig,
         };
+
+        let args = args
+            .iter()
+            .zip(&sig.param_tys)
+            .map(|(arg, param)| match arg {
+                ir::ValueOrObj::Value(value) => {
+                    FValue::from_flattened(&[self.jit_value(value, fn_ctx)?.0], param, ir)
+                }
+                ir::ValueOrObj::Obj(values) => {
+                    let values = values
+                        .iter()
+                        .map(|v| self.jit_value(v, fn_ctx).map(|v| v.0))
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    FValue::from_flattened(&values, param, ir)
+                }
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         let mut arg_values = Vec::new();
         let mut ret_alloc = None;
 
+        // Construct args and return pointer memory acording to ABI
         match triple
             .default_calling_convention()
             .expect("No default calling convention for this platform")
@@ -604,53 +725,37 @@ impl CraneliftJitBackend {
                 }
 
                 for arg in args {
-                    match arg {
-                        SValue::Value(value, _ty) => {
-                            arg_values.push(*value);
-                        }
-                        SValue::Struct(ssastruct) => {
-                            let (size, align) = ir.size_align(&ir::Ty::Struct(ssastruct.def_id))?;
-                            if size > 8 {
-                                let stack_slot = StackSlotData::new(
-                                    StackSlotKind::ExplicitSlot,
-                                    size as u32,
-                                    align as u8,
-                                );
-                                let stack_slot = fn_ctx.builder.create_sized_stack_slot(stack_slot);
-                                let stack_ptr = fn_ctx.builder.ins().stack_addr(
-                                    self.isa.pointer_type(),
-                                    stack_slot,
-                                    0,
-                                );
-                                arg.store(stack_ptr, 0, ir, fn_ctx)?;
-                                arg_values.push(stack_ptr);
-                            } else {
-                                let mut eightbyte = [fn_ctx.builder.ins().iconst(types::I64, 0)];
-                                arg.as_int_eightbytes(&mut eightbyte, 0, ir, fn_ctx)?;
-                                arg_values.push(eightbyte[0]);
-                            }
-                        }
-                        SValue::Enum(ssaenum) => {
-                            let (size, align) = ir.size_align(&ir::Ty::Enum(ssaenum.def_id))?;
-                            if size > 8 {
-                                let stack_slot = StackSlotData::new(
-                                    StackSlotKind::ExplicitSlot,
-                                    size as u32,
-                                    align as u8,
-                                );
-                                let stack_slot = fn_ctx.builder.create_sized_stack_slot(stack_slot);
-                                let stack_ptr = fn_ctx.builder.ins().stack_addr(
-                                    self.isa.pointer_type(),
-                                    stack_slot,
-                                    0,
-                                );
-                                arg.store(stack_ptr, 0, ir, fn_ctx)?;
-                                arg_values.push(stack_ptr);
-                            } else {
-                                let mut eightbyte = [fn_ctx.builder.ins().iconst(types::I64, 0)];
-                                arg.as_int_eightbytes(&mut eightbyte, 0, ir, fn_ctx)?;
-                                arg_values.push(eightbyte[0]);
-                            }
+                    if let FValueDesc::Value(_) = arg.desc {
+                        arg_values.push(arg.values[0].0);
+                    } else {
+                        let size = arg.size();
+                        if size > 8 {
+                            let stack_slot = StackSlotData::new(
+                                StackSlotKind::ExplicitSlot,
+                                size as u32,
+                                arg.align() as u8,
+                            );
+                            let stack_slot = fn_ctx.builder.create_sized_stack_slot(stack_slot);
+                            let stack_ptr = fn_ctx.builder.ins().stack_addr(
+                                self.isa.pointer_type(),
+                                stack_slot,
+                                0,
+                            );
+                            arg.store(stack_ptr, 0, ir, fn_ctx)?;
+                            arg_values.push(stack_ptr)
+                        } else {
+                            let mut eightbyte = [fn_ctx.builder.ins().iconst(types::I64, 0)];
+                            arg.as_int_eightbytes(&mut eightbyte, ir, fn_ctx)?;
+                            // Since this might overflow onto the stack, the size of this register
+                            // might actually matter
+                            let cast_int = match size {
+                                1 => fn_ctx.builder.ins().ireduce(types::I8, eightbyte[0]),
+                                2 => fn_ctx.builder.ins().ireduce(types::I16, eightbyte[0]),
+                                4 => fn_ctx.builder.ins().ireduce(types::I32, eightbyte[0]),
+                                8 => eightbyte[0],
+                                _ => unreachable!(),
+                            };
+                            arg_values.push(cast_int);
                         }
                     }
                 }
@@ -689,7 +794,7 @@ impl CraneliftJitBackend {
                     .declare_func_in_func(func_id, fn_ctx.builder.func);
                 fn_ctx.builder.ins().call(func_ref, &arg_values)
             }
-            Callable::Pointer(value, fn_sig) => {
+            Callable::Pointer(_value, _fn_sig) => {
                 todo!("Indirect function calls not implemented yet")
             }
         };
@@ -701,7 +806,7 @@ impl CraneliftJitBackend {
             {
                 CallingConvention::WindowsFastcall => {
                     if let Some(ret_alloc) = ret_alloc {
-                        Ok(Some(SValue::load(
+                        Ok(Some(FValue::load(
                             fn_ctx
                                 .builder
                                 .ins()
@@ -709,27 +814,25 @@ impl CraneliftJitBackend {
                             0,
                             ret_ty,
                             ir,
-                            fn_ctx,
+                            &mut fn_ctx.builder,
                         )?))
                     } else {
                         let ret_val = fn_ctx.builder.inst_results(call_inst)[0];
                         match ret_ty {
                             ir::Ty::Native(native_type) => {
-                                Ok(Some(SValue::Value(ret_val, Self::jit_ty(native_type))))
+                                Ok(Some(FValue::new(ret_val, Self::jit_ty(native_type))))
                             }
-                            ir::Ty::Struct(_) => Ok(Some(SValue::from_int_eightbytes(
+                            ir::Ty::Struct(_) => Ok(Some(FValue::from_int_eightbytes(
                                 &[ret_val],
-                                0,
                                 ret_ty,
                                 ir,
-                                fn_ctx,
+                                &mut fn_ctx.builder,
                             )?)),
-                            ir::Ty::Enum(_) => Ok(Some(SValue::from_int_eightbytes(
+                            ir::Ty::Enum(_) => Ok(Some(FValue::from_int_eightbytes(
                                 &[ret_val],
-                                0,
                                 ret_ty,
                                 ir,
-                                fn_ctx,
+                                &mut fn_ctx.builder,
                             )?)),
                         }
                     }
@@ -758,20 +861,141 @@ impl CraneliftJitBackend {
         }
     }
 
-    fn destruct_fn_args(&self, func: &ir::Function) -> Vec<Value> {
-        todo!();
+    fn reconstruct_fn_args(
+        &self,
+        params: &[Value],
+        func: &ir::Function,
+        ir: &ir::Module,
+        builder: &mut FunctionBuilder,
+    ) -> anyhow::Result<Vec<FValue>> {
+        let triple = self.isa.triple();
+        let mut fn_args = Vec::new();
+        match triple
+            .default_calling_convention()
+            .expect("No default calling convention for this platform")
+        {
+            CallingConvention::WindowsFastcall => {
+                let mut consumed_params = 0;
+                for arg in &func.sig.param_tys {
+                    match arg {
+                        ir::Ty::Native(nt) => {
+                            let value = FValue::new(params[consumed_params], Self::jit_ty(nt));
+                            consumed_params += 1;
+                            fn_args.push(value);
+                        }
+                        ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
+                            let (size, _) = ir.size_align(arg)?;
+                            if size <= 8 {
+                                let mut eightbyte =
+                                    [size_value(params[consumed_params], types::I64, builder)];
+                                consumed_params += 1;
+                                let rebuilt_arg =
+                                    FValue::from_int_eightbytes(&mut eightbyte, arg, ir, builder)?;
+                                fn_args.push(rebuilt_arg);
+                            } else {
+                                let stack_ptr = params[consumed_params];
+                                consumed_params += 1;
+                                let loaded_arg = FValue::load(stack_ptr, 0, arg, ir, builder)?;
+                                fn_args.push(loaded_arg);
+                            }
+                        }
+                    }
+                }
+            }
+            CallingConvention::SystemV => match &triple.architecture {
+                Architecture::X86_64 => {
+                    todo!();
+                }
+                Architecture::Aarch64(_) => {
+                    todo!();
+                }
+                arch => unimplemented!(
+                    "function call conv for SystemV on {:?} not implemented",
+                    arch
+                ),
+            },
+            CallingConvention::AppleAarch64 => {
+                todo!("No apple calling convention suppport yet");
+            }
+            arch => {
+                unimplemented!("No support for architecture: {:?}", arch)
+            }
+        }
+        Ok(fn_args)
     }
 
-    fn return_data(&self, value: ValueOrObj, fn_ctx: &mut FunctionCtx) {
-        todo!()
+    fn jit_return(
+        &self,
+        values: Vec<Value>,
+        func: &ir::Function,
+        ir: &ir::Module,
+        ctx: &mut FunctionCtx,
+    ) -> anyhow::Result<()> {
+        let ret_ty = func.sig.ret_ty.as_ref().ok_or(anyhow!(
+            "Tried to return value from function with no return value"
+        ))?;
+        match ret_ty {
+            ir::Ty::Native(_) => {
+                ctx.builder.ins().return_(&[values
+                    .get(0)
+                    .cloned()
+                    .ok_or(anyhow!("Expected one return value"))?]);
+            }
+            ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
+                let ret_obj = FValue::from_flattened(&values, ret_ty, ir)?;
+                let triple = self.isa.triple();
+                match triple
+                    .default_calling_convention()
+                    .expect("No default calling convention for this platform")
+                {
+                    CallingConvention::WindowsFastcall => {
+                        if let Some(ret_ptr) = ctx.ret_ptr.clone() {
+                            ret_obj.store(ret_ptr, 0, ir, ctx)?;
+                            ctx.builder.ins().return_(&[ret_ptr]);
+                        } else {
+                            assert!(ret_obj.size() <= 8);
+                            let mut eightbyte = [ctx.builder.ins().iconst(types::I64, 0)];
+                            ret_obj.as_int_eightbytes(&mut eightbyte, ir, ctx)?;
+                            let cast_int = match ret_obj.size() {
+                                1 => ctx.builder.ins().ireduce(types::I8, eightbyte[0]),
+                                2 => ctx.builder.ins().ireduce(types::I16, eightbyte[0]),
+                                3 | 4 => ctx.builder.ins().ireduce(types::I32, eightbyte[0]),
+                                5..=8 => eightbyte[0],
+                                _ => {
+                                    unreachable!("Windows Fastcall must have a defined return ptr")
+                                }
+                            };
+                            ctx.builder.ins().return_(&[cast_int]);
+                        }
+                    }
+                    CallingConvention::SystemV => match &triple.architecture {
+                        Architecture::X86_64 => {
+                            todo!();
+                        }
+                        Architecture::Aarch64(_) => {
+                            todo!();
+                        }
+                        arch => unimplemented!(
+                            "function call conv for SystemV on {:?} not implemented",
+                            arch
+                        ),
+                    },
+                    CallingConvention::AppleAarch64 => {
+                        todo!("No apple calling convention suppport yet");
+                    }
+                    arch => {
+                        unimplemented!("No support for architecture: {:?}", arch)
+                    }
+                };
+            }
+        };
+        Ok(())
     }
 }
 
 struct ModuleCtx {
     module: JITModule,
     data_desc: DataDescription,
-    ctx: cranelift_codegen::Context,
-    function_builder_ctx: FunctionBuilderContext,
     fn_map: Vec<(String, FuncId)>,
     ptr_ty: Type,
     ptr_bytes: u8,
@@ -780,8 +1004,12 @@ struct ModuleCtx {
 struct FunctionCtx<'a> {
     mod_ctx: &'a mut ModuleCtx,
     builder: FunctionBuilder<'a>,
+    fn_args: Vec<FValue>,
+    ctx_ptr: Value,
+    ret_ptr: Option<Value>,
     blocks: Vec<Block>,
-    block_values: HashMap<usize, Vec<Option<SValue>>>,
+    block_values: HashMap<Block, Vec<Option<FValue>>>,
+    block_args: HashMap<Block, Vec<FValue>>,
     ptr_ty: Type,
     ptr_bytes: u8,
 }
@@ -801,87 +1029,111 @@ enum Callable<'a> {
 }
 
 #[derive(Clone)]
-pub struct SSAStruct {
-    pub fields: Vec<(SValue, usize)>,
+pub struct FStruct {
+    pub fields: Vec<FValueDesc>,
     pub def_id: ir::StructId,
-}
-
-impl SSAStruct {
-    pub fn width(&self) -> usize {
-        self.fields.len()
-    }
-
-    pub fn walk_values(
-        &self,
-        base_offset: usize,
-        callback: impl Fn(Value, Type, usize) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        for (value, offset) in &self.fields {
-            value.walk_values(base_offset + offset, &callback)?;
-        }
-        Ok(())
-    }
+    pub size: usize,
 }
 
 #[derive(Clone)]
-pub struct SSAEnum {
-    /// None in the cases of a 0 or 1 variant enum, we don't need a discriminant in those cases
-    index: Option<Value>,
+pub struct FEnum {
+    /// Index of the value in the FValue values vec
+    /// None in the cases of a 0 or 1 variant enum, we don't need a discriminant in those cases.
+    pub index: Option<usize>,
     /// Represents a 1-1 mapping with all variants of the enum, with none values representing
     /// variants with no data
-    variants: Vec<Option<SValue>>,
-    union_offset: usize,
-    index_ty: Option<Type>,
-    def_id: ir::EnumId,
+    pub variants: Vec<Option<FValueDesc>>,
+    pub union_offset: usize,
+    pub size: usize,
+    pub def_id: ir::EnumId,
 }
 
-impl SSAEnum {
-    pub fn width(&self) -> usize {
-        self.variants.len() + 1 // +1 for the index
-    }
-
-    pub fn walk_values(
-        &self,
-        base_offset: usize,
-        callback: impl Fn(Value, Type, usize) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        if let (Some(index), Some(index_ty)) = (self.index, self.index_ty) {
-            callback(index, index_ty, base_offset)?;
-        }
-        for variant in &self.variants {
-            if let Some(svalue) = variant {
-                svalue.walk_values(base_offset + self.union_offset, &callback)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Structured values are an abstraction over the flattened representation we use for structs and
-/// enums, useful for easier construction of function arguments
+/// F values (or flattened values) are an abstraction over the flattened representation we use for structs and
+/// enums to avoid needing to directly expose the stack.
 #[derive(Clone)]
-pub enum SValue {
-    Value(Value, Type),
-    Struct(SSAStruct),
-    Enum(SSAEnum),
+pub struct FValue {
+    pub values: Vec<(Value, Type, usize)>,
+    pub desc: FValueDesc,
 }
 
-impl SValue {
-    pub fn load(
-        ptr: Value,
-        base_offset: i32,
+#[derive(Clone)]
+pub enum FValueDesc {
+    /// Index of the value within the FValue values array
+    Value(usize),
+    Struct(FStruct),
+    Enum(FEnum),
+}
+
+impl FValue {
+    pub fn new(value: Value, ty: Type) -> Self {
+        Self {
+            values: vec![(value, ty, 0)],
+            desc: FValueDesc::Value(0),
+        }
+    }
+
+    fn new_auto_ty(value: Value, builder: &mut FunctionBuilder) -> Self {
+        Self {
+            values: vec![(value, builder.func.dfg.value_type(value), 0)],
+            desc: FValueDesc::Value(0),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match &self.desc {
+            FValueDesc::Value(i) => self.values[*i].1.bytes() as usize,
+            FValueDesc::Struct(obj) => obj.size,
+            FValueDesc::Enum(obj) => obj.size,
+        }
+    }
+
+    pub fn align(&self) -> u8 {
+        self.values.iter().fold(1, |align, value| {
+            // TODO account for vector types that may be fine with alignments less than their size
+            align.max(value.1.bytes() as u8)
+        })
+    }
+
+    pub fn zeroed_ty(
         ty: &ir::Ty,
         ir: &ir::Module,
-        ctx: &mut FunctionCtx,
+        builder: &mut FunctionBuilder,
     ) -> anyhow::Result<Self> {
-        Ok(match ty {
+        let mut values = Vec::new();
+        let desc = Self::zeroed_ty_internal(ty, ir, builder, 0, &mut values)?;
+        Ok(Self { values, desc })
+    }
+
+    fn zeroed_ty_internal(
+        ty: &ir::Ty,
+        ir: &ir::Module,
+        builder: &mut FunctionBuilder,
+        struct_offset: usize,
+        fvalues: &mut Vec<(Value, Type, usize)>,
+    ) -> anyhow::Result<FValueDesc> {
+        match ty {
             ir::Ty::Native(native_type) => {
                 let ty = CraneliftJitBackend::jit_ty(native_type);
-                let value = ctx
-                    .builder
-                    .ins()
-                    .load(ty, MemFlags::trusted(), ptr, base_offset);
-                SValue::Value(value, ty)
+                let value = match native_type {
+                    ir::NativeType::Bool | ir::NativeType::U8 | ir::NativeType::I8 => {
+                        builder.ins().iconst(types::I8, 0)
+                    }
+                    ir::NativeType::U16 | ir::NativeType::I16 => {
+                        builder.ins().iconst(types::I16, 0)
+                    }
+                    ir::NativeType::U32 | ir::NativeType::I32 | ir::NativeType::Ptr(_, _) => {
+                        builder.ins().iconst(types::I32, 0)
+                    }
+                    ir::NativeType::U64 | ir::NativeType::I64 => {
+                        builder.ins().iconst(types::I64, 0)
+                    }
+                    ir::NativeType::F32 => builder.ins().f32const(0f32),
+                    ir::NativeType::F64 => builder.ins().f64const(0f64),
+                    ir::NativeType::U128 | ir::NativeType::I128 => todo!(),
+                };
+                let index = fvalues.len();
+                fvalues.push((value, ty, struct_offset));
+                Ok(FValueDesc::Value(index))
             }
             ir::Ty::Struct(id) => {
                 let def = ir
@@ -894,79 +1146,315 @@ impl SValue {
                     .iter()
                     .zip(&layout.byte_offsets)
                     .map(|(member, offset)| {
-                        Ok((
-                            SValue::load(ptr, base_offset + *offset as i32, &member.ty, ir, ctx)?,
-                            *offset,
-                        ))
+                        Self::zeroed_ty_internal(
+                            &member.ty,
+                            ir,
+                            builder,
+                            struct_offset + *offset,
+                            fvalues,
+                        )
                     })
                     .collect::<anyhow::Result<_>>()?;
 
-                SValue::Struct(SSAStruct {
+                Ok(FValueDesc::Struct(FStruct {
                     fields,
                     def_id: *id,
-                })
+                    size: layout.size,
+                }))
             }
             ir::Ty::Enum(id) => {
                 let def = ir.get_enum(*id).ok_or(anyhow!("Invalid enum id: {}", id))?;
                 let layout = def.layout(ir)?;
 
-                let index_ty = layout.index_ty.map(|ty| CraneliftJitBackend::jit_ty(&ty));
+                let index_ty = layout
+                    .index_ty
+                    .as_ref()
+                    .map(|ty| CraneliftJitBackend::jit_ty(ty));
 
-                let mut variants = Vec::new();
+                if let Some(index_ty) = index_ty {
+                    let index_value = builder.ins().iconst(index_ty, 0);
+                    let idx = fvalues.len();
+                    fvalues.push((index_value, index_ty, struct_offset));
 
-                let index = if let Some(index_ty) = index_ty {
-                    let index =
-                        ctx.builder
-                            .ins()
-                            .load(index_ty, MemFlags::trusted(), ptr, base_offset);
-
-                    let mut switch = Switch::new();
-
-                    let join_block = ctx.builder.create_block();
-                    let prev_block = ctx
-                        .builder
-                        .current_block()
-                        .expect("Was expecting a current block");
-
-                    for (i, v) in def.variants.iter().enumerate() {
+                    let mut variants = Vec::new();
+                    for v in &def.variants {
                         let Some(v_ty) = &v.ty else {
                             variants.push(None);
                             continue;
                         };
-
-                        let block = ctx.builder.create_block();
-                        switch.set_entry(i as u128, block);
-                        ctx.builder.switch_to_block(block);
-
-                        variants.push(Some(SValue::load(
-                            ptr,
-                            layout.union_offset as i32 + base_offset,
+                        variants.push(Some(Self::zeroed_ty_internal(
                             v_ty,
                             ir,
-                            ctx,
+                            builder,
+                            struct_offset + layout.union_offset,
+                            fvalues,
                         )?));
-
-                        ctx.builder.ins().jump(join_block, &[]);
                     }
 
-                    ctx.builder.switch_to_block(prev_block);
-                    switch.emit(&mut ctx.builder, index, join_block);
-                    ctx.builder.switch_to_block(join_block);
-
-                    Some(index)
+                    Ok(FValueDesc::Enum(FEnum {
+                        index: Some(idx),
+                        variants,
+                        union_offset: layout.union_offset,
+                        size: layout.size,
+                        def_id: *id,
+                    }))
                 } else {
-                    None
-                };
+                    let variant = if def.variants.is_empty() {
+                        None
+                    } else {
+                        let v = &def.variants[0];
+                        v.ty.as_ref()
+                            .map(|v_ty| {
+                                Self::zeroed_ty_internal(
+                                    v_ty,
+                                    ir,
+                                    builder,
+                                    struct_offset + layout.union_offset,
+                                    fvalues,
+                                )
+                            })
+                            .transpose()?
+                    };
 
-                SValue::Enum(SSAEnum {
-                    index,
-                    variants,
-                    index_ty,
-                    union_offset: layout.union_offset,
-                    def_id: *id,
-                })
+                    Ok(FValueDesc::Enum(FEnum {
+                        index: None,
+                        variants: vec![variant],
+                        union_offset: layout.union_offset,
+                        size: layout.size,
+                        def_id: *id,
+                    }))
+                }
             }
+        }
+    }
+
+    pub fn load(
+        ptr: Value,
+        base_offset: i32,
+        ty: &ir::Ty,
+        ir: &ir::Module,
+        builder: &mut FunctionBuilder,
+    ) -> anyhow::Result<Self> {
+        let mut fvalues = Vec::new();
+        let desc = Self::load_internal(ptr, base_offset, ty, ir, builder, 0, &mut fvalues)?;
+        Ok(Self {
+            values: fvalues,
+            desc,
         })
+    }
+
+    fn load_internal(
+        ptr: Value,
+        base_offset: i32,
+        ty: &ir::Ty,
+        ir: &ir::Module,
+        builder: &mut FunctionBuilder,
+        struct_offset: usize,
+        fvalues: &mut Vec<(Value, Type, usize)>,
+    ) -> anyhow::Result<FValueDesc> {
+        match ty {
+            ir::Ty::Native(native_type) => {
+                let ty = CraneliftJitBackend::jit_ty(native_type);
+                let value = builder.ins().load(
+                    ty,
+                    MemFlags::trusted(),
+                    ptr,
+                    base_offset + struct_offset as i32,
+                );
+                let index = fvalues.len();
+                fvalues.push((value, ty, struct_offset));
+                Ok(FValueDesc::Value(index))
+            }
+            ir::Ty::Struct(id) => {
+                let def = ir
+                    .get_struct(*id)
+                    .ok_or(anyhow!("Invalid struct id: {}", id))?;
+                let layout = def.layout(ir)?;
+
+                let fields = def
+                    .members
+                    .iter()
+                    .zip(&layout.byte_offsets)
+                    .map(|(member, offset)| {
+                        Self::load_internal(
+                            ptr,
+                            base_offset,
+                            &member.ty,
+                            ir,
+                            builder,
+                            struct_offset + *offset,
+                            fvalues,
+                        )
+                    })
+                    .collect::<anyhow::Result<_>>()?;
+
+                Ok(FValueDesc::Struct(FStruct {
+                    fields,
+                    def_id: *id,
+                    size: layout.size,
+                }))
+            }
+            ir::Ty::Enum(id) => {
+                let def = ir.get_enum(*id).ok_or(anyhow!("Invalid enum id: {}", id))?;
+                let layout = def.layout(ir)?;
+
+                let index_ty = layout
+                    .index_ty
+                    .as_ref()
+                    .map(|ty| CraneliftJitBackend::jit_ty(ty));
+
+                if let Some(index_ty) = index_ty {
+                    let index_value = builder.ins().load(
+                        index_ty,
+                        MemFlags::trusted(),
+                        ptr,
+                        base_offset + struct_offset as i32,
+                    );
+                    let idx = fvalues.len();
+                    fvalues.push((index_value, index_ty, struct_offset));
+
+                    let variant_defaults = def
+                        .variants
+                        .iter()
+                        .map(|v| {
+                            Ok(if let Some(v_ty) = &v.ty {
+                                Some(Self::zeroed_ty(v_ty, ir, builder)?)
+                            } else {
+                                None
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    let join_block = builder.create_block();
+                    let default_block = builder.create_block();
+
+                    for d in &variant_defaults {
+                        let Some(d) = d else {
+                            continue;
+                        };
+                        for (_, ty, _) in &d.values {
+                            builder.append_block_param(join_block, *ty);
+                        }
+                    }
+
+                    let mut switch = Switch::new();
+                    let branches = def
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            if let Some(v_ty) = &v.ty {
+                                let block = builder.create_block();
+                                switch.set_entry(i as u128, block);
+                                Some((block, v_ty))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+
+                    switch.emit(builder, index_value, default_block);
+
+                    builder.switch_to_block(default_block);
+                    builder.ins().jump(
+                        join_block,
+                        &variant_defaults
+                            .iter()
+                            .filter_map(|v| v.as_ref())
+                            .flat_map(|v| &v.values)
+                            .map(|(v, _, _)| BlockArg::Value(*v))
+                            .collect::<Vec<_>>(),
+                    );
+
+                    for (b_idx, b) in branches.into_iter().enumerate() {
+                        let Some((block, v_ty)) = b else {
+                            continue;
+                        };
+                        builder.switch_to_block(block);
+
+                        let loaded = Self::load(
+                            ptr,
+                            (struct_offset + layout.union_offset) as i32,
+                            v_ty,
+                            ir,
+                            builder,
+                        )?;
+
+                        builder.ins().jump(
+                            join_block,
+                            &variant_defaults
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, v)| {
+                                    if i != b_idx {
+                                        v.as_ref()
+                                    } else {
+                                        Some(&loaded)
+                                    }
+                                })
+                                .flat_map(|v| &v.values)
+                                .map(|(v, _, _)| BlockArg::Value(*v))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+
+                    builder.switch_to_block(join_block);
+                    let args = builder.block_params(join_block);
+                    let mut used_args = 0;
+                    let mut variants = Vec::new();
+                    for v in &def.variants {
+                        if let Some(v_ty) = &v.ty {
+                            let arg_c = Self::value_count(v_ty, ir)?;
+                            variants.push(Some(Self::from_flattened_internal(
+                                &args[used_args..(used_args + arg_c)],
+                                v_ty,
+                                ir,
+                                struct_offset,
+                                fvalues,
+                            )?));
+                            used_args += arg_c;
+                        } else {
+                            variants.push(None);
+                        }
+                    }
+
+                    Ok(FValueDesc::Enum(FEnum {
+                        index: Some(idx),
+                        variants,
+                        union_offset: layout.union_offset,
+                        size: layout.size,
+                        def_id: *id,
+                    }))
+                } else {
+                    let variant = if def.variants.is_empty() {
+                        None
+                    } else {
+                        let v = &def.variants[0];
+                        v.ty.as_ref()
+                            .map(|v_ty| {
+                                Self::load_internal(
+                                    ptr,
+                                    base_offset,
+                                    v_ty,
+                                    ir,
+                                    builder,
+                                    struct_offset + layout.union_offset,
+                                    fvalues,
+                                )
+                            })
+                            .transpose()?
+                    };
+
+                    Ok(FValueDesc::Enum(FEnum {
+                        index: None,
+                        variants: vec![variant],
+                        union_offset: layout.union_offset,
+                        size: layout.size,
+                        def_id: *id,
+                    }))
+                }
+            }
+        }
     }
 
     pub fn store(
@@ -976,87 +1464,129 @@ impl SValue {
         ir: &ir::Module,
         ctx: &mut FunctionCtx,
     ) -> anyhow::Result<()> {
-        match self {
-            SValue::Value(value, _ty) => {
-                ctx.builder
-                    .ins()
-                    .store(MemFlags::trusted(), *value, ptr, base_offset);
-            }
-            SValue::Struct(obj) => {
-                let def = ir
-                    .get_struct(obj.def_id)
-                    .ok_or(anyhow!("Invalid struct id: {}", obj.def_id))?;
-                let layout = def.layout(ir)?;
+        self.store_internal(ptr, base_offset, ir, ctx, &self.desc)
+    }
 
-                for (field, offset) in obj.fields.iter().zip(&layout.byte_offsets) {
-                    field.0.store(ptr, base_offset + *offset as i32, ir, ctx)?
+    fn store_internal(
+        &self,
+        ptr: Value,
+        base_offset: i32,
+        ir: &ir::Module,
+        ctx: &mut FunctionCtx,
+        desc: &FValueDesc,
+    ) -> anyhow::Result<()> {
+        match desc {
+            FValueDesc::Value(index) => {
+                let (value, _, offset) = self.values[*index];
+                ctx.builder.ins().store(
+                    MemFlags::trusted(),
+                    value,
+                    ptr,
+                    base_offset + offset as i32,
+                );
+                Ok(())
+            }
+            FValueDesc::Struct(obj) => {
+                for field_desc in &obj.fields {
+                    self.store_internal(ptr, base_offset, ir, ctx, field_desc)?;
                 }
+                Ok(())
             }
-            SValue::Enum(obj) => {
-                let def = ir
-                    .get_enum(obj.def_id)
-                    .ok_or(anyhow!("Invalid enum id: {}", obj.def_id))?;
-                let layout = def.layout(ir)?;
-
-                if let Some(index) = obj.index {
-                    ctx.builder
-                        .ins()
-                        .store(MemFlags::trusted(), index, ptr, base_offset);
+            FValueDesc::Enum(obj) => {
+                if let Some(index_idx) = obj.index {
+                    let (index_value, _, offset) = self.values[index_idx];
+                    ctx.builder.ins().store(
+                        MemFlags::trusted(),
+                        index_value,
+                        ptr,
+                        base_offset + offset as i32,
+                    );
 
                     let mut switch = Switch::new();
-
                     let join_block = ctx.builder.create_block();
-                    let prev_block = ctx
-                        .builder
-                        .current_block()
-                        .expect("Was expecting a current block");
+                    let branches = obj
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| {
+                            let Some(v_desc) = v else {
+                                return None;
+                            };
+                            let block = ctx.builder.create_block();
+                            switch.set_entry(i as u128, block);
+                            Some((v_desc, block))
+                        })
+                        .collect::<Vec<_>>();
 
-                    for (i, v) in obj.variants.iter().enumerate() {
-                        let Some(v) = v else {
-                            continue;
-                        };
-
-                        let block = ctx.builder.create_block();
-                        switch.set_entry(i as u128, block);
+                    switch.emit(&mut ctx.builder, index_value, join_block);
+                    for (v_desc, block) in branches {
                         ctx.builder.switch_to_block(block);
 
-                        v.store(ptr, layout.union_offset as i32 + base_offset, ir, ctx)?;
+                        self.store_internal(ptr, base_offset, ir, ctx, v_desc)?;
 
                         ctx.builder.ins().jump(join_block, &[]);
                     }
 
-                    ctx.builder.switch_to_block(prev_block);
-                    switch.emit(&mut ctx.builder, index, join_block);
                     ctx.builder.switch_to_block(join_block);
-
-                    Some(index)
                 } else {
-                    None
-                };
+                    // No discriminant, store the single variant
+                    for variant_desc in &obj.variants {
+                        if let Some(v_desc) = variant_desc {
+                            self.store_internal(ptr, base_offset, ir, ctx, v_desc)?;
+                        }
+                    }
+                }
+                Ok(())
             }
         }
-        Ok(())
     }
 
     pub fn from_int_eightbytes(
         eightbytes: &[Value],
+        ty: &ir::Ty,
+        ir: &ir::Module,
+        builder: &mut FunctionBuilder,
+    ) -> anyhow::Result<Self> {
+        let mut fvalues = Vec::new();
+        let desc =
+            Self::from_int_eightbytes_internal(eightbytes, 0, ty, ir, builder, &mut fvalues)?;
+        Ok(Self {
+            values: fvalues,
+            desc,
+        })
+    }
+
+    fn from_int_eightbytes_internal(
+        eightbytes: &[Value],
         byte_offset: i64,
         ty: &ir::Ty,
         ir: &ir::Module,
-        ctx: &mut FunctionCtx,
-    ) -> anyhow::Result<Self> {
-        Ok(match ty {
+        builder: &mut FunctionBuilder,
+        fvalues: &mut Vec<(Value, Type, usize)>,
+    ) -> anyhow::Result<FValueDesc> {
+        match ty {
             ir::Ty::Native(native_type) => {
                 let ty = CraneliftJitBackend::jit_ty(native_type);
-                let eightbyte = byte_offset / 8;
-                let value = ctx
-                    .builder
-                    .ins()
-                    .ushr_imm(eightbytes[eightbyte as usize], byte_offset % 8);
-                let value = ctx.builder.ins().ireduce(ty.as_int(), value);
-                let value = ctx.builder.ins().bitcast(ty, MemFlags::trusted(), value);
+                let eightbyte_idx = (byte_offset / 8) as usize;
+                let bit_offset = (byte_offset % 8) * 8;
 
-                SValue::Value(value, ty)
+                if eightbyte_idx >= eightbytes.len() {
+                    bail!(
+                        "Not enough 64 bit ints to cast type. Found {} but needed {}",
+                        eightbytes.len(),
+                        eightbyte_idx + 1
+                    );
+                }
+
+                let value = builder
+                    .ins()
+                    .ushr_imm(eightbytes[eightbyte_idx], bit_offset);
+                let value = size_value(value, ty.as_int(), builder);
+                let value = builder.ins().bitcast(ty, MemFlags::new(), value);
+
+                let index = fvalues.len();
+                fvalues.push((value, ty, byte_offset as usize));
+                Ok(FValueDesc::Value(index))
             }
             ir::Ty::Struct(id) => {
                 let def = ir
@@ -1064,176 +1594,297 @@ impl SValue {
                     .ok_or(anyhow!("Invalid struct id: {}", id))?;
                 let layout = def.layout(ir)?;
 
+                if (layout.size + byte_offset as usize) / 8 > eightbytes.len() {
+                    bail!(
+                        "Cannot fit struct {} of size {} in provided {} eightbytes",
+                        id,
+                        layout.size,
+                        eightbytes.len()
+                    );
+                }
+
                 let fields = def
                     .members
                     .iter()
                     .zip(&layout.byte_offsets)
                     .map(|(member, offset)| {
-                        Ok((
-                            SValue::from_int_eightbytes(
-                                eightbytes,
-                                byte_offset + *offset as i64,
-                                &member.ty,
-                                ir,
-                                ctx,
-                            )?,
-                            *offset,
-                        ))
+                        Self::from_int_eightbytes_internal(
+                            eightbytes,
+                            byte_offset + *offset as i64,
+                            &member.ty,
+                            ir,
+                            builder,
+                            fvalues,
+                        )
                     })
                     .collect::<anyhow::Result<_>>()?;
 
-                SValue::Struct(SSAStruct {
+                Ok(FValueDesc::Struct(FStruct {
                     fields,
                     def_id: *id,
-                })
+                    size: layout.size,
+                }))
             }
             ir::Ty::Enum(id) => {
                 let def = ir.get_enum(*id).ok_or(anyhow!("Invalid enum id: {}", id))?;
                 let layout = def.layout(ir)?;
 
-                let mut variants = Vec::new();
+                if (layout.size + byte_offset as usize) / 8 > eightbytes.len() {
+                    bail!(
+                        "Cannot fit enum {} of size {} in provided {} eightbytes",
+                        id,
+                        layout.size,
+                        eightbytes.len()
+                    );
+                }
 
                 let index = if let Some(index_ty) = &layout.index_ty {
-                    let Self::Value(index, _) = Self::from_int_eightbytes(
+                    let FValueDesc::Value(index_idx) = Self::from_int_eightbytes_internal(
                         eightbytes,
                         byte_offset,
                         &ir::Ty::Native(index_ty.clone()),
                         ir,
-                        ctx,
+                        builder,
+                        fvalues,
                     )?
                     else {
                         unreachable!("Index should be a single value");
                     };
 
-                    let mut switch = Switch::new();
+                    let index_value = fvalues[index_idx].0;
 
-                    let join_block = ctx.builder.create_block();
-                    let prev_block = ctx
-                        .builder
-                        .current_block()
-                        .expect("Was expecting a current block");
+                    let variant_defaults = def
+                        .variants
+                        .iter()
+                        .map(|v| {
+                            Ok(if let Some(v_ty) = &v.ty {
+                                Some(Self::zeroed_ty(v_ty, ir, builder)?)
+                            } else {
+                                None
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
 
-                    for (i, v) in def.variants.iter().enumerate() {
-                        let Some(v_ty) = &v.ty else {
-                            variants.push(None);
+                    let join_block = builder.create_block();
+                    let default_block = builder.create_block();
+
+                    for d in &variant_defaults {
+                        let Some(d) = d else {
                             continue;
                         };
-
-                        let block = ctx.builder.create_block();
-                        switch.set_entry(i as u128, block);
-                        ctx.builder.switch_to_block(block);
-
-                        variants.push(Some(SValue::from_int_eightbytes(
-                            eightbytes,
-                            layout.union_offset as i64 + byte_offset,
-                            v_ty,
-                            ir,
-                            ctx,
-                        )?));
-
-                        ctx.builder.ins().jump(join_block, &[]);
+                        for (_, ty, _) in &d.values {
+                            builder.append_block_param(join_block, *ty);
+                        }
                     }
 
-                    ctx.builder.switch_to_block(prev_block);
-                    switch.emit(&mut ctx.builder, index, join_block);
-                    ctx.builder.switch_to_block(join_block);
+                    let mut switch = Switch::new();
+                    let branches = def
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            if let Some(v_ty) = &v.ty {
+                                let block = builder.create_block();
+                                switch.set_entry(i as u128, block);
+                                Some((block, v_ty))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
 
-                    Some(index)
+                    switch.emit(builder, index_value, default_block);
+
+                    builder.switch_to_block(default_block);
+                    builder.ins().jump(
+                        join_block,
+                        &variant_defaults
+                            .iter()
+                            .filter_map(|v| v.as_ref())
+                            .flat_map(|v| &v.values)
+                            .map(|(v, _, _)| BlockArg::Value(*v))
+                            .collect::<Vec<_>>(),
+                    );
+
+                    for (b_idx, b) in branches.into_iter().enumerate() {
+                        let Some((block, v_ty)) = b else {
+                            continue;
+                        };
+                        builder.switch_to_block(block);
+
+                        let mut variant_values = Vec::new();
+                        Self::from_int_eightbytes_internal(
+                            eightbytes,
+                            byte_offset + layout.union_offset as i64,
+                            v_ty,
+                            ir,
+                            builder,
+                            &mut variant_values,
+                        )?;
+
+                        builder.ins().jump(
+                            join_block,
+                            &variant_defaults
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(i, v)| v.as_ref().map(|v| (i, v)))
+                                .flat_map(|(i, v)| {
+                                    if i == b_idx {
+                                        &variant_values
+                                    } else {
+                                        &v.values
+                                    }
+                                })
+                                .map(|(v, _, _)| BlockArg::Value(*v))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+
+                    builder.switch_to_block(join_block);
+                    let args = builder.block_params(join_block);
+                    let mut used_args = 0;
+                    let mut variants = Vec::new();
+                    for v in &def.variants {
+                        if let Some(v_ty) = &v.ty {
+                            let arg_c = Self::value_count(v_ty, ir)?;
+                            variants.push(Some(Self::from_flattened_internal(
+                                &args[used_args..(used_args + arg_c)],
+                                v_ty,
+                                ir,
+                                byte_offset as usize,
+                                fvalues,
+                            )?));
+                            used_args += arg_c;
+                        } else {
+                            variants.push(None);
+                        }
+                    }
+                    Some(index_idx)
                 } else {
                     None
                 };
 
-                SValue::Enum(SSAEnum {
+                let variants = if index.is_none() {
+                    def.variants
+                        .iter()
+                        .map(|v| {
+                            v.ty.as_ref()
+                                .map(|v_ty| {
+                                    Self::from_int_eightbytes_internal(
+                                        eightbytes,
+                                        byte_offset + layout.union_offset as i64,
+                                        v_ty,
+                                        ir,
+                                        builder,
+                                        fvalues,
+                                    )
+                                })
+                                .transpose()
+                        })
+                        .collect::<anyhow::Result<_>>()?
+                } else {
+                    vec![]
+                };
+
+                Ok(FValueDesc::Enum(FEnum {
                     index,
                     variants,
-                    index_ty: layout.index_ty.map(|ty| CraneliftJitBackend::jit_ty(&ty)),
                     union_offset: layout.union_offset,
+                    size: layout.size,
                     def_id: *id,
-                })
+                }))
             }
-        })
+        }
     }
 
-    /// Write this value into a set of general purpose registers preserving it's memory layout.
-    ///
-    /// eightbytes is expected to be a slice of values initialized to 0i64 large enough to contain
-    /// the current value
-    pub fn as_int_eightbytes(
+    fn as_int_eightbytes(
         &self,
         eightbytes: &mut [Value],
-        byte_offset: i64,
         ir: &ir::Module,
         ctx: &mut FunctionCtx,
     ) -> anyhow::Result<()> {
-        match self {
-            SValue::Value(value, ty) => {
-                let eightbyte = byte_offset / 8;
+        self.as_int_eightbytes_internal(eightbytes, ir, ctx, &self.desc)
+    }
+
+    fn as_int_eightbytes_internal(
+        &self,
+        eightbytes: &mut [Value],
+        ir: &ir::Module,
+        ctx: &mut FunctionCtx,
+        desc: &FValueDesc,
+    ) -> anyhow::Result<()> {
+        match desc {
+            FValueDesc::Value(index) => {
+                let (value, ty, struct_offset) = self.values[*index];
+                let eightbyte_idx = struct_offset / 8;
+                let bit_offset = (struct_offset % 8) * 8;
+
                 let value = ctx
                     .builder
                     .ins()
-                    .bitcast(ty.as_int(), MemFlags::trusted(), *value);
-                let value = ctx.builder.ins().uextend(types::I64, value);
-                let value = ctx.builder.ins().ishl_imm(value, byte_offset % 8);
-                let current = eightbytes[eightbyte as usize];
-                eightbytes[eightbyte as usize] = ctx.builder.ins().band(value, current);
+                    .bitcast(ty.as_int(), MemFlags::new(), value);
+                let value = size_value(value, types::I64, &mut ctx.builder);
+                let value = ctx.builder.ins().ishl_imm(value, bit_offset as i64);
+                let current = eightbytes[eightbyte_idx];
+                eightbytes[eightbyte_idx] = ctx.builder.ins().bor(value, current);
+                Ok(())
             }
-            SValue::Struct(obj) => {
-                let def = ir
-                    .get_struct(obj.def_id)
-                    .ok_or(anyhow!("Invalid struct id: {}", obj.def_id))?;
-                let layout = def.layout(ir)?;
-
-                for (field, offset) in obj.fields.iter().zip(&layout.byte_offsets) {
-                    field
-                        .0
-                        .as_int_eightbytes(eightbytes, byte_offset + *offset as i64, ir, ctx)?
+            FValueDesc::Struct(obj) => {
+                for field_desc in &obj.fields {
+                    self.as_int_eightbytes_internal(eightbytes, ir, ctx, field_desc)?;
                 }
+                Ok(())
             }
-            SValue::Enum(obj) => {
-                let def = ir
-                    .get_enum(obj.def_id)
-                    .ok_or(anyhow!("Invalid enum id: {}", obj.def_id))?;
-                let layout = def.layout(ir)?;
+            FValueDesc::Enum(obj) => {
+                if let Some(index_idx) = obj.index {
+                    let (index_value, _index_ty, _struct_offset) = self.values[index_idx];
 
-                if let Some(index) = obj.index {
-                    Self::Value(index, obj.index_ty.unwrap()).as_int_eightbytes(
-                        eightbytes,
-                        byte_offset,
-                        ir,
-                        ctx,
-                    )?;
+                    // Store discriminant
+                    let discriminant_desc = FValueDesc::Value(index_idx);
+                    self.as_int_eightbytes_internal(eightbytes, ir, ctx, &discriminant_desc)?;
 
                     let mut switch = Switch::new();
-
+                    let default_block = ctx.builder.create_block();
                     let join_block = ctx.builder.create_block();
                     for _ in eightbytes.iter() {
                         ctx.builder.append_block_param(join_block, types::I64);
                     }
-                    let prev_block = ctx
-                        .builder
-                        .current_block()
-                        .expect("Was expecting a current block");
+
+                    let branches = obj
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| {
+                            let Some(v_desc) = v else {
+                                return None;
+                            };
+                            let block = ctx.builder.create_block();
+                            switch.set_entry(i as u128, block);
+                            Some((v_desc, block))
+                        })
+                        .collect::<Vec<_>>();
+
+                    switch.emit(&mut ctx.builder, index_value, default_block);
+
+                    ctx.builder.switch_to_block(default_block);
+                    ctx.builder.ins().jump(
+                        join_block,
+                        &eightbytes
+                            .iter()
+                            .map(|eb| BlockArg::Value(*eb))
+                            .collect::<Vec<_>>(),
+                    );
 
                     let mut v_eightbytes = eightbytes.to_vec();
-                    for (i, v) in obj.variants.iter().enumerate() {
-                        let Some(v) = v else {
-                            continue;
-                        };
-
-                        let block = ctx.builder.create_block();
-                        switch.set_entry(i as u128, block);
+                    for (v_desc, block) in branches {
                         ctx.builder.switch_to_block(block);
 
+                        // Reset to base eightbytes for this variant
                         for (dest, src) in v_eightbytes.iter_mut().zip(eightbytes.iter()) {
                             *dest = *src;
                         }
 
-                        v.as_int_eightbytes(
-                            &mut v_eightbytes,
-                            layout.union_offset as i64 + byte_offset,
-                            ir,
-                            ctx,
-                        )?;
+                        self.as_int_eightbytes_internal(&mut v_eightbytes, ir, ctx, v_desc)?;
 
                         ctx.builder.ins().jump(
                             join_block,
@@ -1244,50 +1895,29 @@ impl SValue {
                         );
                     }
 
-                    ctx.builder.switch_to_block(prev_block);
-                    switch.emit(&mut ctx.builder, index, join_block);
                     ctx.builder.switch_to_block(join_block);
 
-                    // Since SSA, need to return the PHI'd value
+                    // Update eightbytes with PHI'd values
                     for (eb, value) in eightbytes
                         .iter_mut()
                         .zip(ctx.builder.block_params(join_block))
                     {
                         *eb = *value;
                     }
-
-                    Some(index)
                 } else {
-                    None
-                };
+                    // No discriminant, handle single variant
+                    for variant_desc in &obj.variants {
+                        if let Some(v_desc) = variant_desc {
+                            self.as_int_eightbytes_internal(eightbytes, ir, ctx, v_desc)?;
+                        }
+                    }
+                }
+                Ok(())
             }
         }
-        Ok(())
     }
 
-    pub fn width(&self) -> usize {
-        match self {
-            SValue::Value(_, _) => 1,
-            SValue::Struct(ssa_struct) => ssa_struct.width(),
-            SValue::Enum(ssa_enum) => ssa_enum.width(),
-        }
-    }
-
-    /// Walk all fields of this object as if they were flattened. Callback is passed the Value,
-    /// it's Type, and it's offset from the initial offset passed in as if it were stored in memory.
-    pub fn walk_values(
-        &self,
-        base_offset: usize,
-        callback: impl Fn(Value, Type, usize) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        match self {
-            SValue::Value(value, ty) => callback(*value, *ty, base_offset),
-            SValue::Struct(ssastruct) => ssastruct.walk_values(base_offset, callback),
-            SValue::Enum(ssaenum) => ssaenum.walk_values(base_offset, callback),
-        }
-    }
-
-    pub fn ty_width(ty: &ir::Ty, module: &ir::Module) -> Result<usize> {
+    pub fn value_count(ty: &ir::Ty, module: &ir::Module) -> Result<usize> {
         match ty {
             ir::Ty::Native(_) => Ok(1usize),
             ir::Ty::Struct(id) => {
@@ -1296,7 +1926,7 @@ impl SValue {
                     .ok_or_else(|| anyhow!("Invalid struct ID: {}", id))?;
                 let mut count = 0;
                 for member in struct_def.members.iter() {
-                    count += Self::ty_width(&member.ty, module)?;
+                    count += Self::value_count(&member.ty, module)?;
                 }
                 Ok(count)
             }
@@ -1307,7 +1937,7 @@ impl SValue {
                 let mut count = 1;
                 for variant in enum_def.variants.iter() {
                     if let Some(ty) = &variant.ty {
-                        count += Self::ty_width(&ty, module)?;
+                        count += Self::value_count(&ty, module)?;
                     }
                 }
                 Ok(count)
@@ -1315,7 +1945,23 @@ impl SValue {
         }
     }
 
-    pub fn from_flattened(values: &[Value], ty: &ir::Ty, ir: &ir::Module) -> Result<SValue> {
+    pub fn from_flattened(values: &[Value], ty: &ir::Ty, ir: &ir::Module) -> anyhow::Result<Self> {
+        let mut fvalues = Vec::new();
+        fvalues.reserve_exact(values.len());
+        let desc = Self::from_flattened_internal(values, ty, ir, 0, &mut fvalues)?;
+        Ok(Self {
+            values: fvalues,
+            desc,
+        })
+    }
+
+    pub fn from_flattened_internal(
+        values: &[Value],
+        ty: &ir::Ty,
+        ir: &ir::Module,
+        base_offset: usize,
+        fvalues: &mut Vec<(Value, Type, usize)>,
+    ) -> anyhow::Result<FValueDesc> {
         match ty {
             ir::Ty::Native(native_ty) => {
                 if values.len() != 1 {
@@ -1325,10 +1971,13 @@ impl SValue {
                         values.len()
                     );
                 }
-                Ok(SValue::Value(
+                let index = fvalues.len();
+                fvalues.push((
                     values[0],
                     CraneliftJitBackend::jit_ty(native_ty),
-                ))
+                    base_offset,
+                ));
+                Ok(FValueDesc::Value(index))
             }
             ir::Ty::Struct(def_id) => {
                 let def_id = *def_id;
@@ -1340,14 +1989,24 @@ impl SValue {
                 let mut offset = 0;
 
                 for (member, byte_offset) in struct_def.members.iter().zip(layout.byte_offsets) {
-                    let member_width = Self::ty_width(&member.ty, ir)?;
+                    let member_width = Self::value_count(&member.ty, ir)?;
                     let member_values = &values[offset..(offset + member_width)];
-                    let member_svalue = Self::from_flattened(member_values, &member.ty, ir)?;
-                    fields.push((member_svalue, byte_offset));
+                    let member_desc = Self::from_flattened_internal(
+                        member_values,
+                        &member.ty,
+                        ir,
+                        base_offset + byte_offset,
+                        fvalues,
+                    )?;
+                    fields.push(member_desc);
                     offset += member_width;
                 }
 
-                Ok(SValue::Struct(SSAStruct { fields, def_id }))
+                Ok(FValueDesc::Struct(FStruct {
+                    fields,
+                    def_id,
+                    size: layout.size,
+                }))
             }
             ir::Ty::Enum(def_id) => {
                 let def_id = *def_id;
@@ -1364,12 +2023,16 @@ impl SValue {
 
                 let index = if index_ty.is_some() {
                     offset += 1;
-                    Some(
+                    let index = fvalues.len();
+                    fvalues.push((
                         values
                             .get(0)
                             .ok_or(anyhow!("Expected discriminant value for enum"))?
                             .to_owned(),
-                    )
+                        index_ty.unwrap(),
+                        base_offset,
+                    ));
+                    Some(index)
                 } else {
                     None
                 };
@@ -1379,10 +2042,16 @@ impl SValue {
                     let variant_width = variant
                         .ty
                         .as_ref()
-                        .map_or(Ok(0), |ty| Self::ty_width(ty, ir))?;
+                        .map_or(Ok(0), |ty| Self::value_count(ty, ir))?;
                     let variant_values = &values[offset..(offset + variant_width)];
                     let variant_svalue = if let Some(ty) = &variant.ty {
-                        Some(Self::from_flattened(variant_values, ty, ir)?)
+                        Some(Self::from_flattened_internal(
+                            variant_values,
+                            ty,
+                            ir,
+                            layout.union_offset + base_offset,
+                            fvalues,
+                        )?)
                     } else {
                         None
                     };
@@ -1390,14 +2059,25 @@ impl SValue {
                     offset += variant_width;
                 }
 
-                Ok(SValue::Enum(SSAEnum {
-                    index_ty,
+                Ok(FValueDesc::Enum(FEnum {
                     variants,
                     index,
                     def_id,
+                    size: layout.size,
                     union_offset: layout.union_offset,
                 }))
             }
         }
+    }
+}
+
+fn size_value(value: Value, ty: Type, builder: &mut FunctionBuilder) -> Value {
+    let current_ty = builder.func.dfg.value_type(value);
+    if current_ty.bytes() < ty.bytes() {
+        builder.ins().uextend(ty, value)
+    } else if current_ty.bytes() > ty.bytes() {
+        builder.ins().ireduce(ty, value)
+    } else {
+        value
     }
 }

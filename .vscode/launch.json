@@ -19,6 +19,21 @@
         {
             "type": "codelldb",
             "request": "launch",
+            "name": "Function-Calls-Debug",
+            "preLaunchTask": "cargo-build-debug",
+            "program": "${workspaceFolder}/target/debug/branec_cli",
+            "sourceLanguages": [
+                "rust"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/cli",
+            "args": [
+                "${workspaceFolder}/tests/object_function_calls.bscript"
+            ]
+        },
+        {
+            "type": "codelldb",
+            "request": "launch",
             "name": "Cli-Release",
             "expressions": "native",
             "program": "cargo",

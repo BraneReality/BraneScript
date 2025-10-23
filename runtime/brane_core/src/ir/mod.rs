@@ -361,6 +361,7 @@ pub struct Struct {
     pub packed: bool,
 }
 
+#[derive(Debug)]
 pub struct StructLayout {
     // offsets of struct members in bytes
     pub byte_offsets: Vec<usize>,
@@ -371,10 +372,12 @@ pub struct StructLayout {
 
 /// Increase a size or offset so that it alligns properly
 pub fn pad_align(size: usize, align: usize) -> usize {
-    if size == 0 {
-        return size;
+    let remaining = size % align;
+    if remaining > 0 {
+        size + (align - size % align)
+    } else {
+        size
     }
-    (size + align - 1) & !(size - 1) // Align offset
 }
 
 impl Struct {
@@ -395,7 +398,9 @@ impl Struct {
             let (size, align) = module.size_align(&member.ty)?;
 
             if !self.packed {
+                let ob = offset;
                 offset = pad_align(offset, align); // Align offset
+                println!("offset before {} after {}", ob, offset);
             }
             byte_offsets.push(offset);
             offset += size;
@@ -410,11 +415,12 @@ impl Struct {
 
         assert_ne!(0, offset, "structs with members cannot be zero sized!");
 
-        Ok(StructLayout {
+        let layout = StructLayout {
             byte_offsets,
             size: offset,
             alignment: max_alignment,
-        })
+        };
+        Ok(layout)
     }
 }
 
@@ -431,6 +437,7 @@ pub struct Enum {
     pub packed: bool,
 }
 
+#[derive(Debug)]
 pub struct EnumLayout {
     // total size of the struct
     pub union_size: usize,
@@ -482,13 +489,14 @@ impl Enum {
         let alignment = index_size.max(alignment);
         let size = pad_align(union_size + union_offset, alignment);
 
-        Ok(EnumLayout {
+        let layout = EnumLayout {
             union_size,
             union_offset,
             index_ty,
             size,
             alignment,
-        })
+        };
+        Ok(layout)
     }
 }
 
@@ -587,35 +595,45 @@ impl Module {
     }
 
     // Recursively convert a type to a vec of every native type value paired with it's byte offset.
-    pub fn flatten(&self, ty: &Ty) -> Vec<(NativeType, usize)> {
+    pub fn flatten(&self, ty: &Ty) -> anyhow::Result<Vec<(NativeType, usize)>> {
         let mut values = Vec::new();
-        self.flatten_internal(ty, 0, &mut values);
-        values
+        self.flatten_internal(ty, 0, &mut values)?;
+        Ok(values)
     }
 
-    fn flatten_internal(&self, ty: &Ty, offset: usize, values: &mut Vec<(NativeType, usize)>) {
+    fn flatten_internal(
+        &self,
+        ty: &Ty,
+        offset: usize,
+        values: &mut Vec<(NativeType, usize)>,
+    ) -> anyhow::Result<()> {
         match ty {
             Ty::Native(native_type) => values.push((native_type.clone(), offset)),
             Ty::Struct(id) => {
-                let def = self.get_struct(*id).unwrap();
-                let layout = def.layout(self).unwrap();
+                let def = self
+                    .get_struct(*id)
+                    .ok_or(anyhow!("Invalid struct Id: {}", *id))?;
+                let layout = def.layout(self)?;
                 for (member, m_offset) in def.members.iter().zip(layout.byte_offsets) {
-                    self.flatten_internal(&member.ty, offset + m_offset, values);
+                    self.flatten_internal(&member.ty, offset + m_offset, values)?;
                 }
             }
             Ty::Enum(id) => {
-                let def = self.get_enum(*id).unwrap();
-                let layout = def.layout(self).unwrap();
-                if let Some(index_ty) = def.layout(self).unwrap().index_ty {
+                let def = self
+                    .get_enum(*id)
+                    .ok_or(anyhow!("Invalid enum Id: {}", *id))?;
+                let layout = def.layout(self)?;
+                if let Some(index_ty) = layout.index_ty {
                     values.push((index_ty, offset));
                 }
                 for v in &def.variants {
                     if let Some(ty) = &v.ty {
-                        self.flatten_internal(ty, offset + layout.union_offset, values);
+                        self.flatten_internal(ty, offset + layout.union_offset, values)?;
                     }
                 }
             }
         }
+        Ok(())
     }
 
     pub fn ty_string(&self, ty: &Ty) -> String {
@@ -951,17 +969,41 @@ impl fmt::Display for Struct {
     }
 }
 
+impl fmt::Display for EnumVariant {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}(", self.id)?;
+        if let Some(ty) = &self.ty {
+            write!(f, "{}", ty)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl fmt::Display for Enum {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let id = self.id.as_deref().unwrap_or("-anon");
+        write!(f, "(enum \"{}\"", id)?;
+        for variant in &self.variants {
+            write!(f, " {}", variant)?;
+        }
+        write!(f, ")")
+    }
+}
+
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(module \"{}\"", self.id)?;
-        for s in &self.structs {
-            write!(f, "\n{}", s)?;
+        for (i, s) in self.structs.iter().enumerate() {
+            write!(f, "\n{}: {}", i, s)?;
         }
-        for func in &self.functions {
-            write!(f, "\n{}", func)?;
+        for (i, e) in self.enums.iter().enumerate() {
+            write!(f, "\n{}: {}", i, e)?;
         }
-        for pipe in &self.pipelines {
-            write!(f, "\n{}", pipe)?;
+        for (i, func) in self.functions.iter().enumerate() {
+            write!(f, "\n{}: {}", i, func)?;
+        }
+        for (i, pipe) in self.pipelines.iter().enumerate() {
+            write!(f, "\n{}: {}", i, pipe)?;
         }
         write!(f, ")")
     }
