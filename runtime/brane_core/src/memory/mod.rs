@@ -91,7 +91,8 @@ pub enum MemId {
     PageVecId(u64),
 }
 
-pub struct BindingSet {
+#[repr(C)]
+pub struct BindingsCtx {
     bindings: Box<PageTable>,
     fn_bindings: Box<PageTable>,
     page_binding_map: BiMap<PageId, u16>,
@@ -100,7 +101,7 @@ pub struct BindingSet {
     shared_pages: Vec<Arc<Page>>,
 }
 
-impl BindingSet {
+impl BindingsCtx {
     pub fn new() -> Self {
         let bindings = unsafe {
             let mut array = Box::<PageTable>::new_uninit();

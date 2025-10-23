@@ -742,7 +742,6 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     }
 
                     if let (Some(index_ty), Some(index)) = (&layout.index_ty, index) {
-                        let mut variant_ptr = None;
                         let branches = (0..variants.len())
                             .into_iter()
                             .map(|i| Ok((i as u128, ctx.create_block()?)))
@@ -750,16 +749,16 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
                         let join_block = ctx.create_block()?;
                         ctx.end_block_jump_map(index_ty, index, join_block, branches.clone())?;
-                        for ((_cond, block), inner) in branches.into_iter().zip(variants) {
+                        for (((_cond, block), inner), (_, v_offset)) in
+                            branches.into_iter().zip(variants).zip(layout.variants)
+                        {
                             ctx.start_block(block)?;
                             if let Some(inner) = inner {
-                                if variant_ptr.is_none() {
-                                    variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
-                                        op: ir::BinaryOp::IAdd,
-                                        left: *ptr,
-                                        right: ir::Value::const_u32(layout.union_offset as u32),
-                                    })?);
-                                }
+                                let variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
+                                    op: ir::BinaryOp::IAdd,
+                                    left: *ptr,
+                                    right: ir::Value::const_u32(v_offset as u32),
+                                })?);
                                 self.store(
                                     &LValue::Ptr(variant_ptr.unwrap(), inner.ty()),
                                     inner,
@@ -774,7 +773,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             let variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
                                 op: ir::BinaryOp::IAdd,
                                 left: *ptr,
-                                right: ir::Value::const_u32(layout.union_offset as u32),
+                                right: ir::Value::const_u32(layout.variants[0].1 as u32),
                             })?);
                             self.store(
                                 &LValue::Ptr(variant_ptr.unwrap(), inner.ty()),
@@ -840,7 +839,6 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     let mut variants = Vec::new();
 
                     if let (Some(index_ty), Some(index)) = (&layout.index_ty, &index) {
-                        let mut variant_ptr = None;
                         let branches = (0..variant_tys.len())
                             .into_iter()
                             .map(|i| Ok((i as u128, ctx.create_block()?)))
@@ -848,21 +846,18 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
                         let join_block = ctx.create_block()?;
                         ctx.end_block_jump_map(index_ty, *index, join_block, branches.clone())?;
-                        for ((_cond, block), variant) in branches.into_iter().zip(variant_tys) {
+                        for (((_cond, block), variant), (_, v_offset)) in
+                            branches.into_iter().zip(variant_tys).zip(layout.variants)
+                        {
                             ctx.start_block(block)?;
                             variants.push(match &variant {
                                 Some(inner) => {
-                                    if variant_ptr.is_none() {
-                                        variant_ptr = Some(ctx.emit_op(ir::Op::Binary {
-                                            op: ir::BinaryOp::IAdd,
-                                            left: *ptr,
-                                            right: ir::Value::const_u32(layout.union_offset as u32),
-                                        })?);
-                                    }
-                                    Some(self.load(
-                                        &LValue::Ptr(variant_ptr.unwrap(), inner.clone()),
-                                        ctx,
-                                    )?)
+                                    let variant_ptr = ctx.emit_op(ir::Op::Binary {
+                                        op: ir::BinaryOp::IAdd,
+                                        left: *ptr,
+                                        right: ir::Value::const_u32(v_offset as u32),
+                                    })?;
+                                    Some(self.load(&LValue::Ptr(variant_ptr, inner.clone()), ctx)?)
                                 }
                                 None => None,
                             });
@@ -875,7 +870,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 let variant_ptr = ctx.emit_op(ir::Op::Binary {
                                     op: ir::BinaryOp::IAdd,
                                     left: *ptr,
-                                    right: ir::Value::const_u32(layout.union_offset as u32),
+                                    right: ir::Value::const_u32(layout.variants[0].1 as u32),
                                 })?;
                                 Some(self.load(&LValue::Ptr(variant_ptr, inner.clone()), ctx)?)
                             }

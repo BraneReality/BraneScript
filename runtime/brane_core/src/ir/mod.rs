@@ -398,9 +398,7 @@ impl Struct {
             let (size, align) = module.size_align(&member.ty)?;
 
             if !self.packed {
-                let ob = offset;
                 offset = pad_align(offset, align); // Align offset
-                println!("offset before {} after {}", ob, offset);
             }
             byte_offsets.push(offset);
             offset += size;
@@ -439,12 +437,12 @@ pub struct Enum {
 
 #[derive(Debug)]
 pub struct EnumLayout {
-    // total size of the struct
-    pub union_size: usize,
-    pub union_offset: usize,
+    /// The size and offset variant data
+    pub variants: Vec<(usize, usize)>,
     /// The size of the index_ty. For enums with only one or no variants index_ty will be none, and
     /// the enum will not contain an index_ty. In those cases the enum is a no-op.
     pub index_ty: Option<NativeType>,
+    // total size of the enum
     pub size: usize,
     pub alignment: usize,
 }
@@ -454,28 +452,11 @@ impl Enum {
         if self.variants.is_empty() {
             return Ok(EnumLayout {
                 alignment: 1,
-                union_size: 0,
-                union_offset: 0,
+                variants: Vec::new(),
                 size: 1,
                 index_ty: None,
             });
         }
-
-        let (union_size, alignment) =
-            self.variants
-                .iter()
-                .fold(Ok((0, 1)), |res, member| -> anyhow::Result<_> {
-                    let (size, align) = match res {
-                        Err(err) => return Err(err),
-                        Ok(tpl) => tpl,
-                    };
-                    Ok(if let Some(ty) = &member.ty {
-                        let (ty_size, ty_align) = module.size_align(ty)?;
-                        (ty_size.max(size), ty_align.max(align))
-                    } else {
-                        (size, align)
-                    })
-                })?;
 
         let index_ty = match self.variants.len() {
             0..2 => None,
@@ -485,13 +466,39 @@ impl Enum {
         };
 
         let index_size = index_ty.as_ref().map(|ty| ty.size()).unwrap_or(0);
-        let union_offset = pad_align(index_size, alignment);
+
+        let mut alignment = 1;
+        let mut largest_variant_size = 0;
+        let mut largest_variant_offset = 0;
+        let variants = self
+            .variants
+            .iter()
+            .map(|variant| -> anyhow::Result<_> {
+                Ok(if let Some(ty) = &variant.ty {
+                    let (ty_size, ty_align) = module.size_align(ty)?;
+                    let offset = pad_align(index_size, ty_align);
+                    if ty_size > largest_variant_size {
+                        largest_variant_size = ty_size;
+                        largest_variant_offset = offset;
+                    }
+                    alignment = alignment.max(ty_align);
+                    (ty_size, offset)
+                } else {
+                    (0, 1)
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
         let alignment = index_size.max(alignment);
-        let size = pad_align(union_size + union_offset, alignment);
+        // We max here to acount for no-data enums where max size/offset will be 0
+        let size = pad_align(
+            index_size.max(largest_variant_size + largest_variant_offset),
+            alignment,
+        );
+        assert_ne!(size, 0);
 
         let layout = EnumLayout {
-            union_size,
-            union_offset,
+            variants,
             index_ty,
             size,
             alignment,
@@ -626,9 +633,9 @@ impl Module {
                 if let Some(index_ty) = layout.index_ty {
                     values.push((index_ty, offset));
                 }
-                for v in &def.variants {
+                for (v, (_, v_offset)) in def.variants.iter().zip(&layout.variants) {
                     if let Some(ty) = &v.ty {
-                        self.flatten_internal(ty, offset + layout.union_offset, values)?;
+                        self.flatten_internal(ty, offset + v_offset, values)?;
                     }
                 }
             }

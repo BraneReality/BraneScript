@@ -48,6 +48,27 @@
                 "--",
                 "${workspaceFolder}/exampleScripts/test.bscript"
             ]
+        },
+        {
+            "type": "codelldb",
+            "request": "launch",
+            "name": "Tests Cli",
+            "expressions": "native",
+            "program": "cargo",
+            "console": "internalConsole",
+            "sourceLanguages": [
+                "rust"
+            ],
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "test",
+                "-p",
+                "branec_cli",
+                "--bin",
+                "branec_cli",
+                "--",
+                "--nocapture"
+            ]
         }
     ]
 }

@@ -5,6 +5,8 @@ use brane_backend_cranelift::CraneliftJitBackend;
 use branec::CompileContext;
 use branec_source::{SourceManager, Uri};
 
+mod c_abi_tests;
+
 #[derive(clap::Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -44,7 +46,7 @@ fn main() -> anyhow::Result<()> {
 
     let store = brane_core::memory::Store::new();
     println!("store initialized");
-    let mut bindings = brane_core::memory::BindingSet::new();
+    let mut bindings = brane_core::memory::BindingsCtx::new();
     println!("bindings created");
 
     //let test_page = store.alloc_page();

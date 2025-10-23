@@ -3,7 +3,7 @@ use target_lexicon::{Architecture, CallingConvention};
 
 use anyhow::{Result, anyhow, bail};
 use brane_core::ir;
-use cranelift_codegen::ir::{ArgumentPurpose, BlockArg, Signature, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{BlockArg, Signature, StackSlotData, StackSlotKind};
 use cranelift_codegen::{
     isa,
     settings::{self},
@@ -16,6 +16,9 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, Block, InstBuilder, MemFlags, Type, Value};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+
+pub use cranelift_jit;
+pub use cranelift_module;
 
 pub struct CraneliftJitBackend {
     pub isa: isa::OwnedTargetIsa,
@@ -102,8 +105,10 @@ impl CraneliftJitBackend {
                 })?;
             let cs = self.isa.to_capstone()?;
             println!(
-                "Emitted function {}:\n{}",
+                "Emitted function {} (in map as ({}, {})):\n{}",
                 func.id,
+                ctx.fn_map[index].0,
+                ctx.fn_map[index].1,
                 codegen
                     .compiled_code()
                     .unwrap()
@@ -1043,7 +1048,6 @@ pub struct FEnum {
     /// Represents a 1-1 mapping with all variants of the enum, with none values representing
     /// variants with no data
     pub variants: Vec<Option<FValueDesc>>,
-    pub union_offset: usize,
     pub size: usize,
     pub def_id: ir::EnumId,
 }
@@ -1177,7 +1181,7 @@ impl FValue {
                     fvalues.push((index_value, index_ty, struct_offset));
 
                     let mut variants = Vec::new();
-                    for v in &def.variants {
+                    for (v, (_, v_offset)) in def.variants.iter().zip(layout.variants) {
                         let Some(v_ty) = &v.ty else {
                             variants.push(None);
                             continue;
@@ -1186,7 +1190,7 @@ impl FValue {
                             v_ty,
                             ir,
                             builder,
-                            struct_offset + layout.union_offset,
+                            struct_offset + v_offset,
                             fvalues,
                         )?));
                     }
@@ -1194,7 +1198,6 @@ impl FValue {
                     Ok(FValueDesc::Enum(FEnum {
                         index: Some(idx),
                         variants,
-                        union_offset: layout.union_offset,
                         size: layout.size,
                         def_id: *id,
                     }))
@@ -1209,7 +1212,7 @@ impl FValue {
                                     v_ty,
                                     ir,
                                     builder,
-                                    struct_offset + layout.union_offset,
+                                    struct_offset + layout.variants[0].1,
                                     fvalues,
                                 )
                             })
@@ -1219,7 +1222,6 @@ impl FValue {
                     Ok(FValueDesc::Enum(FEnum {
                         index: None,
                         variants: vec![variant],
-                        union_offset: layout.union_offset,
                         size: layout.size,
                         def_id: *id,
                     }))
@@ -1366,19 +1368,16 @@ impl FValue {
                             .collect::<Vec<_>>(),
                     );
 
-                    for (b_idx, b) in branches.into_iter().enumerate() {
+                    for ((b_idx, b), (_, v_offset)) in
+                        branches.into_iter().enumerate().zip(layout.variants)
+                    {
                         let Some((block, v_ty)) = b else {
                             continue;
                         };
                         builder.switch_to_block(block);
 
-                        let loaded = Self::load(
-                            ptr,
-                            (struct_offset + layout.union_offset) as i32,
-                            v_ty,
-                            ir,
-                            builder,
-                        )?;
+                        let loaded =
+                            Self::load(ptr, (struct_offset + v_offset) as i32, v_ty, ir, builder)?;
 
                         builder.ins().jump(
                             join_block,
@@ -1421,7 +1420,6 @@ impl FValue {
                     Ok(FValueDesc::Enum(FEnum {
                         index: Some(idx),
                         variants,
-                        union_offset: layout.union_offset,
                         size: layout.size,
                         def_id: *id,
                     }))
@@ -1438,7 +1436,7 @@ impl FValue {
                                     v_ty,
                                     ir,
                                     builder,
-                                    struct_offset + layout.union_offset,
+                                    struct_offset + layout.variants[0].1,
                                     fvalues,
                                 )
                             })
@@ -1448,7 +1446,6 @@ impl FValue {
                     Ok(FValueDesc::Enum(FEnum {
                         index: None,
                         variants: vec![variant],
-                        union_offset: layout.union_offset,
                         size: layout.size,
                         def_id: *id,
                     }))
@@ -1706,7 +1703,9 @@ impl FValue {
                             .collect::<Vec<_>>(),
                     );
 
-                    for (b_idx, b) in branches.into_iter().enumerate() {
+                    for ((b_idx, b), (_, v_offset)) in
+                        branches.into_iter().enumerate().zip(&layout.variants)
+                    {
                         let Some((block, v_ty)) = b else {
                             continue;
                         };
@@ -1715,7 +1714,7 @@ impl FValue {
                         let mut variant_values = Vec::new();
                         Self::from_int_eightbytes_internal(
                             eightbytes,
-                            byte_offset + layout.union_offset as i64,
+                            byte_offset + *v_offset as i64,
                             v_ty,
                             ir,
                             builder,
@@ -1767,12 +1766,13 @@ impl FValue {
                 let variants = if index.is_none() {
                     def.variants
                         .iter()
-                        .map(|v| {
+                        .zip(layout.variants)
+                        .map(|(v, (_, v_offset))| {
                             v.ty.as_ref()
                                 .map(|v_ty| {
                                     Self::from_int_eightbytes_internal(
                                         eightbytes,
-                                        byte_offset + layout.union_offset as i64,
+                                        byte_offset + v_offset as i64,
                                         v_ty,
                                         ir,
                                         builder,
@@ -1789,7 +1789,6 @@ impl FValue {
                 Ok(FValueDesc::Enum(FEnum {
                     index,
                     variants,
-                    union_offset: layout.union_offset,
                     size: layout.size,
                     def_id: *id,
                 }))
@@ -2038,7 +2037,7 @@ impl FValue {
                 };
                 let mut variants = Vec::new();
 
-                for variant in &enum_def.variants {
+                for (variant, (_, v_offset)) in enum_def.variants.iter().zip(layout.variants) {
                     let variant_width = variant
                         .ty
                         .as_ref()
@@ -2049,7 +2048,7 @@ impl FValue {
                             variant_values,
                             ty,
                             ir,
-                            layout.union_offset + base_offset,
+                            v_offset + base_offset,
                             fvalues,
                         )?)
                     } else {
@@ -2064,7 +2063,6 @@ impl FValue {
                     index,
                     def_id,
                     size: layout.size,
-                    union_offset: layout.union_offset,
                 }))
             }
         }

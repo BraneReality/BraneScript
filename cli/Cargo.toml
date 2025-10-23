@@ -12,3 +12,5 @@ brane_core = {path = "../runtime/brane_core" }
 branec_source = {path = "../compiler/branec_source" }
 branec_emitter = {path = "../compiler/branec_emitter" }
 brane_backend_cranelift = { path = "../runtime/brane_backend_cranelift/" }
+cranelift-jit = "0.125.2"
+cranelift-module = "0.125.2"

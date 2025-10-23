@@ -5,8 +5,8 @@ use windows::Win32::Foundation::{
     EXCEPTION_FLT_DENORMAL_OPERAND, EXCEPTION_FLT_DIVIDE_BY_ZERO, EXCEPTION_FLT_INVALID_OPERATION,
     EXCEPTION_FLT_OVERFLOW, EXCEPTION_FLT_UNDERFLOW, EXCEPTION_ILLEGAL_INSTRUCTION,
     EXCEPTION_INT_DIVIDE_BY_ZERO, EXCEPTION_IN_PAGE_ERROR, EXCEPTION_PRIV_INSTRUCTION,
-    EXCEPTION_SINGLE_STEP, EXCEPTION_STACK_OVERFLOW, STATUS_STACK_BUFFER_OVERRUN,
-    STATUS_STACK_OVERFLOW_READ,
+    EXCEPTION_SINGLE_STEP, EXCEPTION_STACK_OVERFLOW, STATUS_ACCESS_VIOLATION,
+    STATUS_STACK_BUFFER_OVERRUN, STATUS_STACK_OVERFLOW_READ,
 };
 use windows::Win32::System::Diagnostics::Debug::{
     AddVectoredExceptionHandler, RtlCaptureContext, CONTEXT, EXCEPTION_CONTINUE_EXECUTION,
@@ -46,6 +46,8 @@ unsafe extern "system" fn veh_handler(exception_info: *mut EXCEPTION_POINTERS) -
     // Convert Windows exception to FaultKind
     let fault_kind = match exception_code {
         // Memory faults
+
+        // Alias for STATUS_ACCESS_VIOLATION
         EXCEPTION_ACCESS_VIOLATION => {
             let address = if exception_record.NumberParameters >= 2 {
                 exception_record.ExceptionInformation[1]

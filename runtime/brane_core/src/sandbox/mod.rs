@@ -15,6 +15,7 @@ pub struct Fault {
     /// Memory address of instruction that caused the fault.
     pub fault_source: Option<usize>,
 }
+impl std::error::Error for Fault {}
 
 /// OS-agnostic categories of runtime faults code can trigger.
 #[derive(Debug)]
@@ -122,6 +123,17 @@ pub enum TrapFault {
 
     /// Unix: `SIGTRAP`
     UnixSigtrap,
+}
+
+use std::fmt;
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Fault {{ kind: {:?}, fault_source: {:?} }}",
+            self.kind, self.fault_source
+        )
+    }
 }
 
 // The ONE time the rust panic checks are not helpful
