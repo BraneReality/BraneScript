@@ -50,6 +50,15 @@ mod tests {
 
     #[repr(C)]
     #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Struct16BF {
+        pub field1: f32,
+        pub field2: f32,
+        pub field3: f32,
+        pub field4: f32,
+    }
+
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct Struct24B {
         pub field1: i64,
         pub field2: i64,
@@ -61,6 +70,37 @@ mod tests {
     pub enum EnumEmpty2 {
         Variant1,
         Variant2,
+    }
+
+    #[repr(u8)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum EnumEmpty256 {
+        V1, V2, V3, V4, V5, V6, V7, V8, V9, V10,
+        V11, V12, V13, V14, V15, V16, V17, V18, V19, V20,
+        V21, V22, V23, V24, V25, V26, V27, V28, V29, V30,
+        V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
+        V41, V42, V43, V44, V45, V46, V47, V48, V49, V50,
+        V51, V52, V53, V54, V55, V56, V57, V58, V59, V60,
+        V61, V62, V63, V64, V65, V66, V67, V68, V69, V70,
+        V71, V72, V73, V74, V75, V76, V77, V78, V79, V80,
+        V81, V82, V83, V84, V85, V86, V87, V88, V89, V90,
+        V91, V92, V93, V94, V95, V96, V97, V98, V99, V100,
+        V101, V102, V103, V104, V105, V106, V107, V108, V109, V110,
+        V111, V112, V113, V114, V115, V116, V117, V118, V119, V120,
+        V121, V122, V123, V124, V125, V126, V127, V128, V129, V130,
+        V131, V132, V133, V134, V135, V136, V137, V138, V139, V140,
+        V141, V142, V143, V144, V145, V146, V147, V148, V149, V150,
+        V151, V152, V153, V154, V155, V156, V157, V158, V159, V160,
+        V161, V162, V163, V164, V165, V166, V167, V168, V169, V170,
+        V171, V172, V173, V174, V175, V176, V177, V178, V179, V180,
+        V181, V182, V183, V184, V185, V186, V187, V188, V189, V190,
+        V191, V192, V193, V194, V195, V196, V197, V198, V199, V200,
+        V201, V202, V203, V204, V205, V206, V207, V208, V209, V210,
+        V211, V212, V213, V214, V215, V216, V217, V218, V219, V220,
+        V221, V222, V223, V224, V225, V226, V227, V228, V229, V230,
+        V231, V232, V233, V234, V235, V236, V237, V238, V239, V240,
+        V241, V242, V243, V244, V245, V246, V247, V248, V249, V250,
+        V251, V252, V253, V254, V255, V256,
     }
 
     #[repr(transparent)]
@@ -148,8 +188,10 @@ mod tests {
         pub abi_test_struct_4b: extern "C" fn(*mut BindingsCtx, Struct4B) -> Struct4B,
         pub abi_test_struct_8b: extern "C" fn(*mut BindingsCtx, Struct8B) -> Struct8B,
         pub abi_test_struct_16b: extern "C" fn(*mut BindingsCtx, Struct16B) -> Struct16B,
+        pub abi_test_struct_16f: extern "C" fn(*mut BindingsCtx, Struct16BF) -> Struct16BF,
         pub abi_test_struct_24b: extern "C" fn(*mut BindingsCtx, Struct24B) -> Struct24B,
         pub abi_test_enum_empty_2: extern "C" fn(*mut BindingsCtx, EnumEmpty2) -> EnumEmpty2,
+        pub abi_test_enum_empty_256: extern "C" fn(*mut BindingsCtx, EnumEmpty256) -> EnumEmpty256,
         pub abi_test_enum_single_4b: extern "C" fn(*mut BindingsCtx, EnumSingle4B) -> EnumSingle4B,
         pub abi_test_enum_single_8b: extern "C" fn(*mut BindingsCtx, EnumSingle8B) -> EnumSingle8B,
         pub abi_test_enum_single_16b:
@@ -167,6 +209,10 @@ mod tests {
         pub abi_test_enum_mixed_all: extern "C" fn(*mut BindingsCtx, EnumMixedAll) -> EnumMixedAll,
         pub abi_test_multi_params:
             extern "C" fn(*mut BindingsCtx, Struct4B, Struct8B, Struct16B, Struct24B) -> Struct24B,
+        pub abi_test_exaust_general:
+            extern "C" fn(*mut BindingsCtx, i32, f32, i32, i32, Struct16B) -> Struct16B,
+        pub abi_test_exaust_vector:
+            extern "C" fn(*mut BindingsCtx, f32, i32, f32, f32, Struct16BF) -> Struct16BF,
     }
 
     // ============================================================================
@@ -228,6 +274,10 @@ mod tests {
                     "abi_test_struct_16b",
                     extern "C" fn(*mut BindingsCtx, Struct16B) -> Struct16B
                 ),
+                abi_test_struct_16f: get_fn!(
+                    "abi_test_struct_16f",
+                    extern "C" fn(*mut BindingsCtx, Struct16BF) -> Struct16BF
+                ),
                 abi_test_struct_24b: get_fn!(
                     "abi_test_struct_24b",
                     extern "C" fn(*mut BindingsCtx, Struct24B) -> Struct24B
@@ -235,6 +285,10 @@ mod tests {
                 abi_test_enum_empty_2: get_fn!(
                     "abi_test_enum_empty_2",
                     extern "C" fn(*mut BindingsCtx, EnumEmpty2) -> EnumEmpty2
+                ),
+                abi_test_enum_empty_256: get_fn!(
+                    "abi_test_enum_empty_256",
+                    extern "C" fn(*mut BindingsCtx, EnumEmpty256) -> EnumEmpty256
                 ),
                 abi_test_enum_single_4b: get_fn!(
                     "abi_test_enum_single_4b",
@@ -289,6 +343,14 @@ mod tests {
                         Struct16B,
                         Struct24B,
                     ) -> Struct24B
+                ),
+                abi_test_exaust_general: get_fn!(
+                    "abi_test_exaust_general",
+                    extern "C" fn(*mut BindingsCtx, i32, f32, i32, i32, Struct16B) -> Struct16B
+                ),
+                abi_test_exaust_vector: get_fn!(
+                    "abi_test_exaust_vector",
+                    extern "C" fn(*mut BindingsCtx, f32, i32, f32, f32, Struct16BF) -> Struct16BF
                 ),
             };
 
@@ -412,6 +474,20 @@ mod tests {
         Ok(())
     }
 
+    fn test_struct_16bf(funcs: &JitFunctions) -> Result<()> {
+        let input = Struct16BF {
+            field1: 1.5,
+            field2: -2.75,
+            field3: 3.125,
+            field4: -4.5,
+        };
+        let output = (funcs.abi_test_struct_16f)(std::ptr::null_mut(), input);
+        if input != output {
+            anyhow::bail!("Expected {:?}, got {:?}", input, output);
+        }
+        Ok(())
+    }
+
     fn test_struct_24b(funcs: &JitFunctions) -> Result<()> {
         let input = Struct24B {
             field1: 0x0123456789ABCDEF,
@@ -438,6 +514,34 @@ mod tests {
     fn test_enum_empty_2_variant2(funcs: &JitFunctions) -> Result<()> {
         let input = EnumEmpty2::Variant2;
         let output = (funcs.abi_test_enum_empty_2)(std::ptr::null_mut(), input);
+        if input != output {
+            anyhow::bail!("Expected {:?}, got {:?}", input, output);
+        }
+        Ok(())
+    }
+
+    // Empty enum with 256 variants tests
+    fn test_enum_empty_256_v1(funcs: &JitFunctions) -> Result<()> {
+        let input = EnumEmpty256::V1;
+        let output = (funcs.abi_test_enum_empty_256)(std::ptr::null_mut(), input);
+        if input != output {
+            anyhow::bail!("Expected {:?}, got {:?}", input, output);
+        }
+        Ok(())
+    }
+
+    fn test_enum_empty_256_v128(funcs: &JitFunctions) -> Result<()> {
+        let input = EnumEmpty256::V128;
+        let output = (funcs.abi_test_enum_empty_256)(std::ptr::null_mut(), input);
+        if input != output {
+            anyhow::bail!("Expected {:?}, got {:?}", input, output);
+        }
+        Ok(())
+    }
+
+    fn test_enum_empty_256_v256(funcs: &JitFunctions) -> Result<()> {
+        let input = EnumEmpty256::V256;
+        let output = (funcs.abi_test_enum_empty_256)(std::ptr::null_mut(), input);
         if input != output {
             anyhow::bail!("Expected {:?}, got {:?}", input, output);
         }
@@ -752,6 +856,47 @@ mod tests {
         Ok(())
     }
 
+    // Exhaustion/general calling convention test
+    fn test_exaust_general(funcs: &JitFunctions) -> Result<()> {
+        let value = Struct16B {
+            field1: 0x1122334455667788,
+            field2: 0x99AABBCCDDEEFF00,
+        };
+        let output = (funcs.abi_test_exaust_general)(
+            std::ptr::null_mut(),
+            1,
+            2.5,
+            -3,
+            4,
+            value,
+        );
+        if output != value {
+            anyhow::bail!("Expected {:?}, got {:?}", value, output);
+        }
+        Ok(())
+    }
+
+    fn test_exaust_vector(funcs: &JitFunctions) -> Result<()> {
+        let value = Struct16BF {
+            field1: 10.25,
+            field2: -0.5,
+            field3: 1234.5,
+            field4: -1000.0,
+        };
+        let output = (funcs.abi_test_exaust_vector)(
+            std::ptr::null_mut(),
+            1.0f32,
+            2i32,
+            -3.5f32,
+            4.25f32,
+            value,
+        );
+        if output != value {
+            anyhow::bail!("Expected {:?}, got {:?}", value, output);
+        }
+        Ok(())
+    }
+
     // Edge case tests
     fn test_struct_4b_zero(funcs: &JitFunctions) -> Result<()> {
         let input = Struct4B { field: 0 };
@@ -906,6 +1051,12 @@ mod tests {
     }
 
     #[test]
+    fn test_struct_16bf_jit() -> Result<()> {
+        let harness = get_test_harness();
+        unsafe { brane_core::sandbox::try_run(&mut || test_struct_16bf(harness.functions()))? }
+    }
+
+    #[test]
     fn test_struct_24b_jit() -> Result<()> {
         let harness = get_test_harness();
         unsafe { brane_core::sandbox::try_run(&mut || test_struct_24b(harness.functions()))? }
@@ -922,6 +1073,27 @@ mod tests {
         let harness = get_test_harness();
         let funcs = harness.functions();
         unsafe { brane_core::sandbox::try_run(&mut || test_enum_empty_2_variant2(funcs))? }
+    }
+
+    #[test]
+    fn test_enum_empty_256_v1_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_enum_empty_256_v1(funcs))? }
+    }
+
+    #[test]
+    fn test_enum_empty_256_v128_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_enum_empty_256_v128(funcs))? }
+    }
+
+    #[test]
+    fn test_enum_empty_256_v256_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_enum_empty_256_v256(funcs))? }
     }
 
     #[test]
@@ -1111,6 +1283,27 @@ mod tests {
         let harness = get_test_harness();
         let funcs = harness.functions();
         unsafe { brane_core::sandbox::try_run(&mut || test_struct_8b_min(funcs))? }
+    }
+
+    #[test]
+    fn test_multi_params_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_multi_params(funcs))? }
+    }
+
+    #[test]
+    fn test_exaust_general_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_general(funcs))? }
+    }
+
+    #[test]
+    fn test_exaust_vector_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_vector(funcs))? }
     }
 
     #[test]

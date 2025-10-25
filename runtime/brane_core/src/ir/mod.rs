@@ -26,8 +26,6 @@ pub enum NativeType {
     U64,
     I64,
     F64,
-    U128,
-    I128,
     /// (is mutable, inner ty)
     Ptr(bool, Option<Box<Ty>>),
 }
@@ -40,7 +38,6 @@ impl NativeType {
             I16 | U16 => 2,
             I32 | U32 | F32 | Ptr(_, _) => 4,
             I64 | U64 | F64 => 8,
-            U128 | I128 => 16,
         }
     }
 
@@ -55,12 +52,10 @@ impl NativeType {
                 | NativeType::I16
                 | NativeType::I32
                 | NativeType::I64
-                | NativeType::I128
                 | NativeType::U8
                 | NativeType::U16
                 | NativeType::U32
                 | NativeType::U64
-                | NativeType::U128
         )
     }
 
@@ -71,7 +66,7 @@ impl NativeType {
     pub fn is_unsigned(&self) -> bool {
         matches!(
             self,
-            NativeType::U8 | NativeType::U16 | NativeType::U32 | NativeType::U64 | NativeType::U128
+            NativeType::U8 | NativeType::U16 | NativeType::U32 | NativeType::U64
         )
     }
 }
@@ -90,8 +85,6 @@ impl Display for NativeType {
             NativeType::U64 => write!(f, "u64"),
             NativeType::I64 => write!(f, "i64"),
             NativeType::F64 => write!(f, "f64"),
-            NativeType::U128 => write!(f, "u128"),
-            NativeType::I128 => write!(f, "i128"),
             NativeType::Ptr(is_mut, inner_ty) => {
                 if let Some(ty) = inner_ty {
                     write!(f, "*{}{}", if *is_mut { "mut " } else { "" }, ty)

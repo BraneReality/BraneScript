@@ -27,6 +27,14 @@ struct Struct16B {
     field2: i64,
 }
 
+// Struct = 128 bits (16 bytes) - typically passed in two registers, on some archetectures in vector registers
+struct Struct16BF {
+    field1: f32,
+    field2: f32,
+    field3: f32,
+    field4: f32,
+}
+
 fn abi_test_struct_16b(input: Struct16B) -> Struct16B {
     return input;
 }
@@ -39,6 +47,10 @@ struct Struct24B {
 }
 
 fn abi_test_struct_24b(input: Struct24B) -> Struct24B {
+    return input;
+}
+
+fn abi_test_struct_16f(input: Struct16BF) -> Struct16BF{
     return input;
 }
 
@@ -208,4 +220,14 @@ fn abi_test_enum_mixed_all(input: EnumMixedAll) -> EnumMixedAll {
 // Multiple struct parameters of different sizes
 fn abi_test_multi_params(s4: Struct4B, s8: Struct8B, s16: Struct16B, s24: Struct24B) -> Struct24B {
     return s24;
+}
+
+// On SystemV x86_64 structs can take up to registers, but should be passed on the stack
+// if they can't completely be passed in registers. 
+fn abi_test_exaust_general(p1: i32, p2: f32, p3: i32, p3: i32, value: Struct16B) -> Struct16B {
+    return value;
+}
+
+fn abi_test_exaust_vector(p1: f32, p2: i32, p3: f32, p3: f32, value: Struct16BF) -> Struct16BF {
+    return value;
 }

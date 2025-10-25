@@ -178,9 +178,9 @@ pub fn define_fcmp_op_for<'a>(
 
 pub fn populate(root: &mut IdentScope, template_count: &mut TemplateId) {
     use ir::NativeType::*;
-    let ints = [U8, I8, U16, I16, U32, I32, U64, I64, U128, I128];
-    let unsigned = [U8, U16, U32, U64, U128];
-    let signed = [I8, I16, I32, I64, I128];
+    let ints = [U8, I8, U16, I16, U32, I32, U64, I64];
+    let unsigned = [U8, U16, U32, U64];
+    let signed = [I8, I16, I32, I64];
     let floats = [F64, F32];
 
     define_bin_op_for("add", &ints, None, ir::BinaryOp::IAdd, template_count, root);

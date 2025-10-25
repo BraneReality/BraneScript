@@ -1,9 +1,12 @@
+use cranelift_codegen::ir::immediates::V128Imm;
 use std::collections::HashMap;
 use target_lexicon::{Architecture, CallingConvention};
 
 use anyhow::{Result, anyhow, bail};
 use brane_core::ir;
-use cranelift_codegen::ir::{BlockArg, Signature, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{
+    ArgumentPurpose, BlockArg, ConstantData, Endianness, Signature, StackSlotData, StackSlotKind,
+};
 use cranelift_codegen::{
     isa,
     settings::{self},
@@ -530,7 +533,6 @@ impl CraneliftJitBackend {
             ir::NativeType::F32 => types::F32,
             ir::NativeType::U64 | ir::NativeType::I64 => types::I64,
             ir::NativeType::F64 => types::F64,
-            ir::NativeType::U128 | ir::NativeType::I128 => types::I128,
         }
     }
 
@@ -552,6 +554,7 @@ impl CraneliftJitBackend {
                     Architecture::X86_64,
                     "We only have X86_64 windows call convention support"
                 );
+                // Based off of: https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170
                 let mut sig = Signature::new(isa::CallConv::WindowsFastcall);
 
                 if let Some(ret_ty) = &func.sig.ret_ty {
@@ -641,7 +644,123 @@ impl CraneliftJitBackend {
             }
             CallingConvention::SystemV => match &triple.architecture {
                 Architecture::X86_64 => {
-                    todo!();
+                    // Based off of: https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf
+                    let mut sig = Signature::new(isa::CallConv::SystemV);
+
+                    // If the class is INTEGER, the next available register of the sequence %rdi,
+                    // %rsi, %rdx, %rcx, %r8 and %r9 is used.
+                    let mut rem_general = 6;
+                    // If the class is SSE, the next available vector register is used, the registers
+                    // are taken in the order from %xmm0 to %xmm7.
+                    let mut rem_vector = 8;
+
+                    if let Some(ret_ty) = &func.sig.ret_ty {
+                        match ret_ty {
+                            ir::Ty::Native(native_type) => {
+                                sig.returns.push(AbiParam::new(Self::jit_ty(native_type)))
+                            }
+                            ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
+                                let (size, _) = ir.size_align(ret_ty)?;
+                                let mut ret_as_ptr = || {
+                                    let ret_ptr = AbiParam::new(self.isa.pointer_type());
+                                    sig.returns.push(ret_ptr);
+                                    sig.params.push(ret_ptr);
+                                    rem_general -= 1;
+                                    has_ret_ptr = true;
+                                };
+
+                                if size > 16 {
+                                    ret_as_ptr();
+                                } else {
+                                    let mut arg_classes = [ArgClass::NoClass, ArgClass::NoClass];
+                                    ArgClass::ty_arg_class(ret_ty, ir, &mut arg_classes)?;
+                                    if arg_classes.contains(&ArgClass::Memory) {
+                                        ret_as_ptr();
+                                    } else {
+                                        for c in arg_classes {
+                                            match c {
+                                                ArgClass::NoClass => {}
+                                                ArgClass::General => {
+                                                    sig.returns.push(AbiParam::new(types::I64))
+                                                }
+                                                ArgClass::Vector => {
+                                                    sig.returns.push(AbiParam::new(types::F64X2))
+                                                }
+                                                ArgClass::Memory => unreachable!(),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ctx pointer
+                    sig.params.push(AbiParam::new(self.isa.pointer_type()));
+                    rem_general -= 1;
+
+                    for param in &func.sig.param_tys {
+                        match param {
+                            ir::Ty::Native(native_type) => {
+                                let ty = Self::jit_ty(native_type);
+                                sig.params.push(AbiParam::new(ty));
+                                if ty.is_int() {
+                                    rem_general -= 1;
+                                } else {
+                                    rem_vector -= 1;
+                                }
+                            }
+                            ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
+                                let (size, _) = ir.size_align(param)?;
+                                let mut pass_as_mem = || {
+                                    sig.params.push(AbiParam::special(
+                                        self.isa.pointer_type(),
+                                        ArgumentPurpose::StructArgument(size as u32),
+                                    ));
+                                };
+
+                                if size > 16 {
+                                    pass_as_mem();
+                                } else {
+                                    let mut arg_classes = [ArgClass::NoClass, ArgClass::NoClass];
+                                    ArgClass::ty_arg_class(param, ir, &mut arg_classes)?;
+                                    let mut general_consumed = 0;
+                                    let mut vector_consumed = 0;
+                                    for c in &arg_classes {
+                                        match c {
+                                            ArgClass::NoClass | ArgClass::Memory => {}
+                                            ArgClass::General => general_consumed += 1,
+                                            ArgClass::Vector => vector_consumed += 1,
+                                        }
+                                    }
+
+                                    if general_consumed > rem_general
+                                        || vector_consumed > rem_vector
+                                        || arg_classes.contains(&ArgClass::Memory)
+                                    {
+                                        pass_as_mem();
+                                    } else {
+                                        for c in arg_classes {
+                                            match c {
+                                                ArgClass::NoClass => {}
+                                                ArgClass::General => {
+                                                    sig.params.push(AbiParam::new(types::I64))
+                                                }
+                                                ArgClass::Vector => {
+                                                    sig.params.push(AbiParam::new(types::F64X2))
+                                                }
+                                                ArgClass::Memory => unreachable!(),
+                                            }
+                                        }
+                                        rem_general -= general_consumed;
+                                        rem_vector -= vector_consumed;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Ok((sig, has_ret_ptr))
                 }
                 Architecture::Aarch64(_) => {
                     todo!();
@@ -750,7 +869,8 @@ impl CraneliftJitBackend {
                             arg_values.push(stack_ptr)
                         } else {
                             let mut eightbyte = [fn_ctx.builder.ins().iconst(types::I64, 0)];
-                            arg.as_int_eightbytes(&mut eightbyte, ir, fn_ctx)?;
+
+                            arg.to_packed_args(&mut eightbyte, &[ArgClass::General], ir, fn_ctx)?;
                             // Since this might overflow onto the stack, the size of this register
                             // might actually matter
                             let cast_int = match size {
@@ -767,7 +887,90 @@ impl CraneliftJitBackend {
             }
             CallingConvention::SystemV => match &triple.architecture {
                 Architecture::X86_64 => {
-                    todo!();
+                    let mut rem_general = 6;
+                    let mut rem_vector = 8;
+
+                    for (arg, arg_ty) in args.into_iter().zip(&sig.param_tys) {
+                        if let FValueDesc::Value(_) = arg.desc {
+                            arg_values.push(arg.values[0].0);
+                            if arg.values[0].1.is_int() {
+                                rem_general -= 1;
+                            } else {
+                                rem_vector -= 1;
+                            }
+                        } else {
+                            let mut pass_as_mem = || -> anyhow::Result<_> {
+                                let stack_slot = StackSlotData::new(
+                                    StackSlotKind::ExplicitSlot,
+                                    arg.size() as u32,
+                                    arg.align() as u8,
+                                );
+                                let stack_slot = fn_ctx.builder.create_sized_stack_slot(stack_slot);
+                                let stack_ptr = fn_ctx.builder.ins().stack_addr(
+                                    self.isa.pointer_type(),
+                                    stack_slot,
+                                    0,
+                                );
+                                arg.store(stack_ptr, 0, ir, fn_ctx)?;
+                                arg_values.push(stack_ptr);
+                                Ok(())
+                            };
+
+                            if arg.size() > 16 {
+                                pass_as_mem()?;
+                            } else {
+                                let mut arg_classes = [ArgClass::NoClass, ArgClass::NoClass];
+                                ArgClass::ty_arg_class(arg_ty, ir, &mut arg_classes)?;
+                                let mut general_consumed = 0;
+                                let mut vector_consumed = 0;
+
+                                for c in &arg_classes {
+                                    match c {
+                                        ArgClass::NoClass | ArgClass::Memory => {}
+                                        ArgClass::General => general_consumed += 1,
+                                        ArgClass::Vector => vector_consumed += 1,
+                                    }
+                                }
+
+                                if general_consumed > rem_general
+                                    || vector_consumed > rem_vector
+                                    || arg_classes.contains(&ArgClass::Memory)
+                                {
+                                    pass_as_mem()?;
+                                } else {
+                                    let arg_c = general_consumed + vector_consumed;
+                                    let current_arg_c = arg_values.len();
+                                    arg_values.resize_with(current_arg_c + arg_c, || {
+                                        fn_ctx.builder.ins().iconst(types::I64, 0)
+                                    });
+                                    arg_values.extend(arg_classes.iter().filter_map(|class| {
+                                        match class {
+                                            ArgClass::NoClass => None,
+                                            ArgClass::General => {
+                                                Some(fn_ctx.builder.ins().iconst(types::I64, 0))
+                                            }
+                                            ArgClass::Vector => Some({
+                                                let constant =
+                                                    fn_ctx.builder.func.dfg.constants.insert(
+                                                        ConstantData::from(V128Imm([0; 16])),
+                                                    );
+                                                fn_ctx.builder.ins().vconst(types::F64X2, constant)
+                                            }),
+                                            ArgClass::Memory => unreachable!(),
+                                        }
+                                    }));
+                                    arg.to_packed_args(
+                                        &mut arg_values[current_arg_c..],
+                                        &arg_classes,
+                                        ir,
+                                        fn_ctx,
+                                    )?;
+                                    rem_general -= general_consumed;
+                                    rem_vector -= vector_consumed;
+                                }
+                            }
+                        }
+                    }
                 }
                 Architecture::Aarch64(_) => {
                     todo!();
@@ -827,14 +1030,16 @@ impl CraneliftJitBackend {
                             ir::Ty::Native(native_type) => {
                                 Ok(Some(FValue::new(ret_val, Self::jit_ty(native_type))))
                             }
-                            ir::Ty::Struct(_) => Ok(Some(FValue::from_int_eightbytes(
+                            ir::Ty::Struct(_) => Ok(Some(FValue::from_packed_args(
                                 &[ret_val],
+                                &[ArgClass::General],
                                 ret_ty,
                                 ir,
                                 &mut fn_ctx.builder,
                             )?)),
-                            ir::Ty::Enum(_) => Ok(Some(FValue::from_int_eightbytes(
+                            ir::Ty::Enum(_) => Ok(Some(FValue::from_packed_args(
                                 &[ret_val],
+                                &[ArgClass::General],
                                 ret_ty,
                                 ir,
                                 &mut fn_ctx.builder,
@@ -843,9 +1048,39 @@ impl CraneliftJitBackend {
                     }
                 }
                 CallingConvention::SystemV => match &triple.architecture {
-                    Architecture::X86_64 => {
-                        todo!();
-                    }
+                    Architecture::X86_64 => match ret_ty {
+                        ir::Ty::Native(nt) => {
+                            let ret_val = fn_ctx.builder.inst_results(call_inst)[0];
+                            let value_ty = Self::jit_ty(nt);
+                            let value = FValue::new(ret_val, value_ty);
+                            Ok(Some(value))
+                        }
+                        ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
+                            if let Some(ret_alloc) = ret_alloc {
+                                let ptr = fn_ctx.builder.ins().stack_addr(
+                                    self.isa.pointer_type(),
+                                    ret_alloc,
+                                    0,
+                                );
+                                let loaded = FValue::load(ptr, 0, ret_ty, ir, &mut fn_ctx.builder)?;
+                                Ok(Some(loaded))
+                            } else {
+                                let ret_vals = fn_ctx.builder.inst_results(call_inst).to_vec();
+
+                                let mut arg_classes = [ArgClass::NoClass, ArgClass::NoClass];
+                                ArgClass::ty_arg_class(ret_ty, ir, &mut arg_classes)?;
+
+                                let reconstructed = FValue::from_packed_args(
+                                    &ret_vals,
+                                    &arg_classes,
+                                    ret_ty,
+                                    ir,
+                                    &mut fn_ctx.builder,
+                                )?;
+                                Ok(Some(reconstructed))
+                            }
+                        }
+                    },
                     Architecture::Aarch64(_) => {
                         todo!();
                     }
@@ -894,8 +1129,13 @@ impl CraneliftJitBackend {
                                 let mut eightbyte =
                                     [size_value(params[consumed_params], types::I64, builder)];
                                 consumed_params += 1;
-                                let rebuilt_arg =
-                                    FValue::from_int_eightbytes(&mut eightbyte, arg, ir, builder)?;
+                                let rebuilt_arg = FValue::from_packed_args(
+                                    &mut eightbyte,
+                                    &[ArgClass::General],
+                                    arg,
+                                    ir,
+                                    builder,
+                                )?;
                                 fn_args.push(rebuilt_arg);
                             } else {
                                 let stack_ptr = params[consumed_params];
@@ -909,7 +1149,73 @@ impl CraneliftJitBackend {
             }
             CallingConvention::SystemV => match &triple.architecture {
                 Architecture::X86_64 => {
-                    todo!();
+                    let mut rem_general = 6;
+                    let mut rem_vector = 8;
+
+                    let mut params_consumed = 0;
+                    for arg in &func.sig.param_tys {
+                        match arg {
+                            ir::Ty::Native(nt) => {
+                                let value_ty = Self::jit_ty(nt);
+                                let value = FValue::new(params[params_consumed], value_ty);
+                                params_consumed += 1;
+                                if value_ty.is_int() {
+                                    rem_general -= 1;
+                                } else {
+                                    rem_vector -= 1;
+                                }
+                                fn_args.push(value);
+                            }
+                            ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
+                                let (size, _) = ir.size_align(arg)?;
+                                let mut load_as_mem = || -> anyhow::Result<_> {
+                                    let ptr = params[params_consumed];
+                                    params_consumed += 1;
+                                    let loaded = FValue::load(ptr, 0, arg, ir, builder)?;
+                                    Ok(loaded)
+                                };
+
+                                if size > 16 {
+                                    fn_args.push(load_as_mem()?);
+                                } else {
+                                    let mut arg_classes = [ArgClass::NoClass, ArgClass::NoClass];
+                                    ArgClass::ty_arg_class(arg, ir, &mut arg_classes)?;
+                                    let mut general_consumed = 0;
+                                    let mut vector_consumed = 0;
+
+                                    for c in &arg_classes {
+                                        match c {
+                                            ArgClass::NoClass | ArgClass::Memory => {}
+                                            ArgClass::General => general_consumed += 1,
+                                            ArgClass::Vector => vector_consumed += 1,
+                                        }
+                                    }
+
+                                    if general_consumed > rem_general
+                                        || vector_consumed > rem_vector
+                                        || arg_classes.contains(&ArgClass::Memory)
+                                    {
+                                        fn_args.push(load_as_mem()?);
+                                    } else {
+                                        let arg_c = general_consumed + vector_consumed;
+                                        let param_slice =
+                                            &params[params_consumed..(arg_c + params_consumed)];
+                                        let reconstructed = FValue::from_packed_args(
+                                            param_slice,
+                                            &arg_classes,
+                                            arg,
+                                            ir,
+                                            builder,
+                                        )?;
+                                        params_consumed += arg_c;
+                                        rem_general -= general_consumed;
+                                        rem_vector -= vector_consumed;
+                                        fn_args.push(reconstructed);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 Architecture::Aarch64(_) => {
                     todo!();
@@ -960,7 +1266,12 @@ impl CraneliftJitBackend {
                         } else {
                             assert!(ret_obj.size() <= 8);
                             let mut eightbyte = [ctx.builder.ins().iconst(types::I64, 0)];
-                            ret_obj.as_int_eightbytes(&mut eightbyte, ir, ctx)?;
+                            ret_obj.to_packed_args(
+                                &mut eightbyte,
+                                &[ArgClass::General],
+                                ir,
+                                ctx,
+                            )?;
                             let cast_int = match ret_obj.size() {
                                 1 => ctx.builder.ins().ireduce(types::I8, eightbyte[0]),
                                 2 => ctx.builder.ins().ireduce(types::I16, eightbyte[0]),
@@ -975,7 +1286,34 @@ impl CraneliftJitBackend {
                     }
                     CallingConvention::SystemV => match &triple.architecture {
                         Architecture::X86_64 => {
-                            todo!();
+                            if let Some(ret_ptr) = ctx.ret_ptr.clone() {
+                                ret_obj.store(ret_ptr, 0, ir, ctx)?;
+                                ctx.builder.ins().return_(&[ret_ptr]);
+                            } else {
+                                assert!(ret_obj.size() <= 16);
+                                let mut ret_classes = [ArgClass::NoClass, ArgClass::NoClass];
+                                ArgClass::ty_arg_class(ret_ty, ir, &mut ret_classes)?;
+                                let mut eightbyte =
+                                    ret_classes
+                                        .iter()
+                                        .filter_map(|class| match class {
+                                            ArgClass::NoClass => None,
+                                            ArgClass::General => {
+                                                Some(ctx.builder.ins().iconst(types::I64, 0))
+                                            }
+                                            ArgClass::Vector => Some({
+                                                let constant =
+                                                    ctx.builder.func.dfg.constants.insert(
+                                                        ConstantData::from(V128Imm([0; 16])),
+                                                    );
+                                                ctx.builder.ins().vconst(types::F64X2, constant)
+                                            }),
+                                            ArgClass::Memory => unreachable!(),
+                                        })
+                                        .collect::<Vec<_>>();
+                                ret_obj.to_packed_args(&mut eightbyte, &ret_classes, ir, ctx)?;
+                                ctx.builder.ins().return_(&eightbyte);
+                            }
                         }
                         Architecture::Aarch64(_) => {
                             todo!();
@@ -1031,6 +1369,109 @@ impl<'a> FunctionCtx<'a> {
 enum Callable<'a> {
     FnId(ir::FnId),
     Pointer(Value, &'a ir::FnSig),
+}
+
+/// Describes where an argument will be stored
+///
+/// Inspired by the x86_64 SystemV arg class concept: https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ArgClass {
+    /// Padding, undefined data, etc
+    NoClass,
+    /// General/Int registers. Often other register types will be bitcast to this
+    General,
+    /// Usually used for float arguments not explicit vectors, but some ABIs pack struct floats as
+    /// vectors
+    Vector,
+    /// For arguments that must be passed on the stack, some ABI require a pointer in it's place,
+    /// others use implicit stack posiitons
+    Memory,
+}
+
+impl ArgClass {
+    /// Get the arg classification for an ir type
+    ///
+    /// # Arguments
+    ///
+    /// * `classes` - Should initialized to [ArgClass::NoClass], length should be the type's size / 8 rounded up
+    pub fn ty_arg_class(
+        ty: &ir::Ty,
+        module: &ir::Module,
+        classes: &mut [ArgClass],
+    ) -> anyhow::Result<()> {
+        fn class_merge(a: ArgClass, b: ArgClass) -> ArgClass {
+            if a == b {
+                a
+            } else if a == ArgClass::Memory || b == ArgClass::Memory {
+                ArgClass::Memory
+            } else if a == ArgClass::General || b == ArgClass::General {
+                ArgClass::General
+            } else {
+                ArgClass::Vector
+            }
+        }
+
+        match ty {
+            ir::Ty::Native(native_type) => {
+                let class = classes
+                    .get_mut(0)
+                    .ok_or(anyhow!("Did not allocate enough arg classes"))?;
+                *class = class_merge(
+                    *class,
+                    match native_type {
+                        ir::NativeType::Bool
+                        | ir::NativeType::U8
+                        | ir::NativeType::I8
+                        | ir::NativeType::U16
+                        | ir::NativeType::I16
+                        | ir::NativeType::U32
+                        | ir::NativeType::I32
+                        | ir::NativeType::U64
+                        | ir::NativeType::I64
+                        | ir::NativeType::Ptr(_, _) => ArgClass::General,
+                        ir::NativeType::F32 | ir::NativeType::F64 => ArgClass::Vector,
+                    },
+                );
+            }
+            ir::Ty::Struct(id) => {
+                let def = module
+                    .get_struct(*id)
+                    .ok_or(anyhow!("Invalid struct id: {}", id))?;
+                let layout = def.layout(module)?;
+
+                for (m, offset) in def.members.iter().zip(layout.byte_offsets) {
+                    let eb_start = offset / 8;
+                    let classes = classes
+                        .get_mut(eb_start..)
+                        .ok_or(anyhow!("Did not allocate enough arg classes"))?;
+                    Self::ty_arg_class(&m.ty, module, classes)?;
+                }
+            }
+            ir::Ty::Enum(id) => {
+                let def = module
+                    .get_enum(*id)
+                    .ok_or(anyhow!("Invalid enum id: {}", id))?;
+                let layout = def.layout(module)?;
+
+                // We know the index ty will always be an int and in the first eightbyte
+                let class = classes
+                    .get_mut(0)
+                    .ok_or(anyhow!("Did not allocate enough arg classes"))?;
+                *class = class_merge(ArgClass::General, *class);
+
+                for (v, (_, offset)) in def.variants.iter().zip(layout.variants) {
+                    let eb_start = offset / 8;
+                    let classes = classes
+                        .get_mut(eb_start..)
+                        .ok_or(anyhow!("Did not allocate enough arg classes"))?;
+                    if let Some(ty) = &v.ty {
+                        Self::ty_arg_class(ty, module, classes)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -1133,7 +1574,6 @@ impl FValue {
                     }
                     ir::NativeType::F32 => builder.ins().f32const(0f32),
                     ir::NativeType::F64 => builder.ins().f64const(0f64),
-                    ir::NativeType::U128 | ir::NativeType::I128 => todo!(),
                 };
                 let index = fvalues.len();
                 fvalues.push((value, ty, struct_offset));
@@ -1538,23 +1978,32 @@ impl FValue {
         }
     }
 
-    pub fn from_int_eightbytes(
-        eightbytes: &[Value],
+    pub fn from_packed_args(
+        arg_values: &[Value],
+        arg_classes: &[ArgClass],
         ty: &ir::Ty,
         ir: &ir::Module,
         builder: &mut FunctionBuilder,
     ) -> anyhow::Result<Self> {
         let mut fvalues = Vec::new();
-        let desc =
-            Self::from_int_eightbytes_internal(eightbytes, 0, ty, ir, builder, &mut fvalues)?;
+        let desc = Self::from_packed_args_internal(
+            arg_values,
+            arg_classes,
+            0,
+            ty,
+            ir,
+            builder,
+            &mut fvalues,
+        )?;
         Ok(Self {
             values: fvalues,
             desc,
         })
     }
 
-    fn from_int_eightbytes_internal(
-        eightbytes: &[Value],
+    fn from_packed_args_internal(
+        arg_values: &[Value],
+        arg_classes: &[ArgClass],
         byte_offset: i64,
         ty: &ir::Ty,
         ir: &ir::Module,
@@ -1565,25 +2014,68 @@ impl FValue {
             ir::Ty::Native(native_type) => {
                 let ty = CraneliftJitBackend::jit_ty(native_type);
                 let eightbyte_idx = (byte_offset / 8) as usize;
-                let bit_offset = (byte_offset % 8) * 8;
-
-                if eightbyte_idx >= eightbytes.len() {
+                if eightbyte_idx >= arg_values.len() {
                     bail!(
                         "Not enough 64 bit ints to cast type. Found {} but needed {}",
-                        eightbytes.len(),
+                        arg_values.len(),
                         eightbyte_idx + 1
                     );
                 }
 
-                let value = builder
-                    .ins()
-                    .ushr_imm(eightbytes[eightbyte_idx], bit_offset);
-                let value = size_value(value, ty.as_int(), builder);
-                let value = builder.ins().bitcast(ty, MemFlags::new(), value);
+                let arg_class = arg_classes[eightbyte_idx];
+                match arg_class {
+                    ArgClass::NoClass => bail!("Cannot pass an arg with no class"),
+                    ArgClass::General => {
+                        let bit_offset = (byte_offset % 8) * 8;
 
-                let index = fvalues.len();
-                fvalues.push((value, ty, byte_offset as usize));
-                Ok(FValueDesc::Value(index))
+                        let value = builder
+                            .ins()
+                            .ushr_imm(arg_values[eightbyte_idx], bit_offset);
+                        let value = size_value(value, ty.as_int(), builder);
+                        let value = builder.ins().bitcast(ty, MemFlags::new(), value);
+
+                        let index = fvalues.len();
+                        fvalues.push((value, ty, byte_offset as usize));
+                        Ok(FValueDesc::Value(index))
+                    }
+                    ArgClass::Vector => {
+                        let value = match native_type {
+                            ir::NativeType::Bool
+                            | ir::NativeType::U8
+                            | ir::NativeType::I8
+                            | ir::NativeType::U16
+                            | ir::NativeType::I16
+                            | ir::NativeType::U32
+                            | ir::NativeType::I32
+                            | ir::NativeType::U64
+                            | ir::NativeType::I64
+                            | ir::NativeType::Ptr(_, _) => {
+                                bail!("Packing ints in vector registers not supported")
+                            }
+                            ir::NativeType::F32 => {
+                                let lane_offset = (byte_offset % 8) / 4;
+                                let typed_vec = builder.ins().bitcast(
+                                    types::F32X4,
+                                    MemFlags::new().with_endianness(Endianness::Little),
+                                    arg_values[eightbyte_idx],
+                                );
+                                builder.ins().extractlane(typed_vec, lane_offset as u8)
+                            }
+                            ir::NativeType::F64 => builder.ins().bitcast(
+                                types::F64,
+                                MemFlags::new(),
+                                arg_values[eightbyte_idx],
+                            ),
+                        };
+
+                        let index = fvalues.len();
+                        fvalues.push((value, ty, byte_offset as usize));
+                        Ok(FValueDesc::Value(index))
+                    }
+                    ArgClass::Memory => {
+                        bail!("Cannot pack arguments that must be passed in memory")
+                    }
+                }
             }
             ir::Ty::Struct(id) => {
                 let def = ir
@@ -1591,12 +2083,12 @@ impl FValue {
                     .ok_or(anyhow!("Invalid struct id: {}", id))?;
                 let layout = def.layout(ir)?;
 
-                if (layout.size + byte_offset as usize) / 8 > eightbytes.len() {
+                if (layout.size + byte_offset as usize) / 8 > arg_values.len() {
                     bail!(
                         "Cannot fit struct {} of size {} in provided {} eightbytes",
                         id,
                         layout.size,
-                        eightbytes.len()
+                        arg_values.len()
                     );
                 }
 
@@ -1605,8 +2097,9 @@ impl FValue {
                     .iter()
                     .zip(&layout.byte_offsets)
                     .map(|(member, offset)| {
-                        Self::from_int_eightbytes_internal(
-                            eightbytes,
+                        Self::from_packed_args_internal(
+                            arg_values,
+                            arg_classes,
                             byte_offset + *offset as i64,
                             &member.ty,
                             ir,
@@ -1626,18 +2119,19 @@ impl FValue {
                 let def = ir.get_enum(*id).ok_or(anyhow!("Invalid enum id: {}", id))?;
                 let layout = def.layout(ir)?;
 
-                if (layout.size + byte_offset as usize) / 8 > eightbytes.len() {
+                if (layout.size + byte_offset as usize) / 8 > arg_values.len() {
                     bail!(
                         "Cannot fit enum {} of size {} in provided {} eightbytes",
                         id,
                         layout.size,
-                        eightbytes.len()
+                        arg_values.len()
                     );
                 }
 
                 let index = if let Some(index_ty) = &layout.index_ty {
-                    let FValueDesc::Value(index_idx) = Self::from_int_eightbytes_internal(
-                        eightbytes,
+                    let FValueDesc::Value(index_idx) = Self::from_packed_args_internal(
+                        arg_values,
+                        arg_classes,
                         byte_offset,
                         &ir::Ty::Native(index_ty.clone()),
                         ir,
@@ -1712,8 +2206,9 @@ impl FValue {
                         builder.switch_to_block(block);
 
                         let mut variant_values = Vec::new();
-                        Self::from_int_eightbytes_internal(
-                            eightbytes,
+                        Self::from_packed_args_internal(
+                            arg_values,
+                            arg_classes,
                             byte_offset + *v_offset as i64,
                             v_ty,
                             ir,
@@ -1770,8 +2265,9 @@ impl FValue {
                         .map(|(v, (_, v_offset))| {
                             v.ty.as_ref()
                                 .map(|v_ty| {
-                                    Self::from_int_eightbytes_internal(
-                                        eightbytes,
+                                    Self::from_packed_args_internal(
+                                        arg_values,
+                                        arg_classes,
                                         byte_offset + v_offset as i64,
                                         v_ty,
                                         ir,
@@ -1796,41 +2292,89 @@ impl FValue {
         }
     }
 
-    fn as_int_eightbytes(
+    fn to_packed_args(
         &self,
-        eightbytes: &mut [Value],
+        arg_values: &mut [Value],
+        arg_classes: &[ArgClass],
         ir: &ir::Module,
         ctx: &mut FunctionCtx,
     ) -> anyhow::Result<()> {
-        self.as_int_eightbytes_internal(eightbytes, ir, ctx, &self.desc)
+        self.to_packed_args_internal(arg_values, arg_classes, ir, ctx, &self.desc)
     }
 
-    fn as_int_eightbytes_internal(
+    fn to_packed_args_internal(
         &self,
-        eightbytes: &mut [Value],
+        arg_values: &mut [Value],
+        arg_classes: &[ArgClass],
         ir: &ir::Module,
         ctx: &mut FunctionCtx,
         desc: &FValueDesc,
     ) -> anyhow::Result<()> {
         match desc {
             FValueDesc::Value(index) => {
-                let (value, ty, struct_offset) = self.values[*index];
-                let eightbyte_idx = struct_offset / 8;
-                let bit_offset = (struct_offset % 8) * 8;
+                let (value, ty, byte_offset) = self.values[*index];
+                let eightbyte_idx = byte_offset / 8;
+                if eightbyte_idx >= arg_values.len() {
+                    bail!(
+                        "Not enough 64 bit ints to cast type. Found {} but needed {}",
+                        arg_values.len(),
+                        eightbyte_idx + 1
+                    );
+                }
 
-                let value = ctx
-                    .builder
-                    .ins()
-                    .bitcast(ty.as_int(), MemFlags::new(), value);
-                let value = size_value(value, types::I64, &mut ctx.builder);
-                let value = ctx.builder.ins().ishl_imm(value, bit_offset as i64);
-                let current = eightbytes[eightbyte_idx];
-                eightbytes[eightbyte_idx] = ctx.builder.ins().bor(value, current);
+                let arg_class = arg_classes[eightbyte_idx];
+                match arg_class {
+                    ArgClass::NoClass => bail!("Cannot pass an arg with no class"),
+                    ArgClass::General => {
+                        let bit_offset = (byte_offset % 8) * 8;
+
+                        let value = ctx
+                            .builder
+                            .ins()
+                            .bitcast(ty.as_int(), MemFlags::new(), value);
+                        let value = size_value(value, types::I64, &mut ctx.builder);
+                        let value = ctx.builder.ins().ishl_imm(value, bit_offset as i64);
+                        let current = arg_values[eightbyte_idx];
+                        arg_values[eightbyte_idx] = ctx.builder.ins().bor(value, current);
+                    }
+                    ArgClass::Vector => {
+                        arg_values[eightbyte_idx] = match ty {
+                            types::F32 => {
+                                let lane_offset = (byte_offset % 8) / 4;
+                                let typed_vec = ctx.builder.ins().bitcast(
+                                    types::F32X4,
+                                    MemFlags::new().with_endianness(Endianness::Little),
+                                    arg_values[eightbyte_idx],
+                                );
+                                let mutated_vec = ctx.builder.ins().insertlane(
+                                    typed_vec,
+                                    value,
+                                    lane_offset as u8,
+                                );
+                                ctx.builder.ins().bitcast(
+                                    types::F64X2,
+                                    MemFlags::new().with_endianness(Endianness::Little),
+                                    mutated_vec,
+                                )
+                            }
+                            // No vector packing needed
+                            types::F64 => value,
+                            new_type => bail!(
+                                "No support for packing value of type {} into vector args",
+                                new_type
+                            ),
+                        };
+                    }
+                    ArgClass::Memory => {
+                        bail!("Cannot unpack arguments that must be passed in memory")
+                    }
+                }
+
                 Ok(())
             }
             FValueDesc::Struct(obj) => {
                 for field_desc in &obj.fields {
-                    self.as_int_eightbytes_internal(eightbytes, ir, ctx, field_desc)?;
+                    self.to_packed_args_internal(arg_values, arg_classes, ir, ctx, field_desc)?;
                 }
                 Ok(())
             }
@@ -1840,12 +2384,18 @@ impl FValue {
 
                     // Store discriminant
                     let discriminant_desc = FValueDesc::Value(index_idx);
-                    self.as_int_eightbytes_internal(eightbytes, ir, ctx, &discriminant_desc)?;
+                    self.to_packed_args_internal(
+                        arg_values,
+                        arg_classes,
+                        ir,
+                        ctx,
+                        &discriminant_desc,
+                    )?;
 
                     let mut switch = Switch::new();
                     let default_block = ctx.builder.create_block();
                     let join_block = ctx.builder.create_block();
-                    for _ in eightbytes.iter() {
+                    for _ in arg_values.iter() {
                         ctx.builder.append_block_param(join_block, types::I64);
                     }
 
@@ -1868,22 +2418,28 @@ impl FValue {
                     ctx.builder.switch_to_block(default_block);
                     ctx.builder.ins().jump(
                         join_block,
-                        &eightbytes
+                        &arg_values
                             .iter()
                             .map(|eb| BlockArg::Value(*eb))
                             .collect::<Vec<_>>(),
                     );
 
-                    let mut v_eightbytes = eightbytes.to_vec();
+                    let mut v_eightbytes = arg_values.to_vec();
                     for (v_desc, block) in branches {
                         ctx.builder.switch_to_block(block);
 
                         // Reset to base eightbytes for this variant
-                        for (dest, src) in v_eightbytes.iter_mut().zip(eightbytes.iter()) {
+                        for (dest, src) in v_eightbytes.iter_mut().zip(arg_values.iter()) {
                             *dest = *src;
                         }
 
-                        self.as_int_eightbytes_internal(&mut v_eightbytes, ir, ctx, v_desc)?;
+                        self.to_packed_args_internal(
+                            &mut v_eightbytes,
+                            arg_classes,
+                            ir,
+                            ctx,
+                            v_desc,
+                        )?;
 
                         ctx.builder.ins().jump(
                             join_block,
@@ -1897,7 +2453,7 @@ impl FValue {
                     ctx.builder.switch_to_block(join_block);
 
                     // Update eightbytes with PHI'd values
-                    for (eb, value) in eightbytes
+                    for (eb, value) in arg_values
                         .iter_mut()
                         .zip(ctx.builder.block_params(join_block))
                     {
@@ -1907,7 +2463,7 @@ impl FValue {
                     // No discriminant, handle single variant
                     for variant_desc in &obj.variants {
                         if let Some(v_desc) = variant_desc {
-                            self.as_int_eightbytes_internal(eightbytes, ir, ctx, v_desc)?;
+                            self.to_packed_args_internal(arg_values, arg_classes, ir, ctx, v_desc)?;
                         }
                     }
                 }
