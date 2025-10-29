@@ -439,10 +439,31 @@ mod tests {
         pub abi_test_enum_mixed_all: extern "C" fn(*mut BindingsCtx, EnumMixedAll) -> EnumMixedAll,
         pub abi_test_multi_params:
             extern "C" fn(*mut BindingsCtx, Struct4B, Struct8B, Struct16B, Struct24B) -> Struct24B,
-        pub abi_test_exaust_general:
-            extern "C" fn(*mut BindingsCtx, i32, f32, i32, i32, Struct16B) -> Struct16B,
-        pub abi_test_exaust_vector:
-            extern "C" fn(*mut BindingsCtx, f32, i32, f32, f32, Struct16BF) -> Struct16BF,
+        pub abi_test_exaust_general_6:
+            extern "C" fn(*mut BindingsCtx, i32, f32, i32, i32, i32, Struct16B) -> Struct16B,
+        pub abi_test_exaust_general_8: extern "C" fn(
+            *mut BindingsCtx,
+            i32,
+            f32,
+            i32,
+            i32,
+            i32,
+            i32,
+            i32,
+            Struct16B,
+        ) -> Struct16B,
+        pub abi_test_exaust_vector_8: extern "C" fn(
+            *mut BindingsCtx,
+            f32,
+            i32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            f32,
+            Struct16BF,
+        ) -> Struct16BF,
     }
 
     // ============================================================================
@@ -574,13 +595,46 @@ mod tests {
                         Struct24B,
                     ) -> Struct24B
                 ),
-                abi_test_exaust_general: get_fn!(
-                    "abi_test_exaust_general",
-                    extern "C" fn(*mut BindingsCtx, i32, f32, i32, i32, Struct16B) -> Struct16B
+                abi_test_exaust_general_6: get_fn!(
+                    "abi_test_exaust_general_6",
+                    extern "C" fn(
+                        *mut BindingsCtx,
+                        i32,
+                        f32,
+                        i32,
+                        i32,
+                        i32,
+                        Struct16B,
+                    ) -> Struct16B
                 ),
-                abi_test_exaust_vector: get_fn!(
-                    "abi_test_exaust_vector",
-                    extern "C" fn(*mut BindingsCtx, f32, i32, f32, f32, Struct16BF) -> Struct16BF
+                abi_test_exaust_general_8: get_fn!(
+                    "abi_test_exaust_general_8",
+                    extern "C" fn(
+                        *mut BindingsCtx,
+                        i32,
+                        f32,
+                        i32,
+                        i32,
+                        i32,
+                        i32,
+                        i32,
+                        Struct16B,
+                    ) -> Struct16B
+                ),
+                abi_test_exaust_vector_8: get_fn!(
+                    "abi_test_exaust_vector_8",
+                    extern "C" fn(
+                        *mut BindingsCtx,
+                        f32,
+                        i32,
+                        f32,
+                        f32,
+                        f32,
+                        f32,
+                        f32,
+                        f32,
+                        Struct16BF,
+                    ) -> Struct16BF
                 ),
             };
 
@@ -1037,31 +1091,49 @@ mod tests {
     }
 
     // Exhaustion/general calling convention test
-    fn test_exaust_general(funcs: &JitFunctions) -> Result<()> {
+    fn test_exaust_general_6(funcs: &JitFunctions) -> Result<()> {
         let value = Struct16B {
             field1: 0x1122334455667788,
             field2: 0x99AABBCCDDEEFF00,
         };
-        let output = (funcs.abi_test_exaust_general)(std::ptr::null_mut(), 1, 2.5, -3, 4, value);
+        let output =
+            (funcs.abi_test_exaust_general_6)(std::ptr::null_mut(), 1, 2.5, -3, 4, 5, value);
         if output != value {
             anyhow::bail!("Expected {:?}, got {:?}", value, output);
         }
         Ok(())
     }
 
-    fn test_exaust_vector(funcs: &JitFunctions) -> Result<()> {
+    fn test_exaust_general_8(funcs: &JitFunctions) -> Result<()> {
+        let value = Struct16B {
+            field1: 0x1122334455667788,
+            field2: 0x99AABBCCDDEEFF00,
+        };
+        let output =
+            (funcs.abi_test_exaust_general_8)(std::ptr::null_mut(), 1, 2.5, -3, 4, 5, 6, 7, value);
+        if output != value {
+            anyhow::bail!("Expected {:?}, got {:?}", value, output);
+        }
+        Ok(())
+    }
+
+    fn test_exaust_vector_8(funcs: &JitFunctions) -> Result<()> {
         let value = Struct16BF {
             field1: 10.25,
             field2: -0.5,
             field3: 1234.5,
             field4: -1000.0,
         };
-        let output = (funcs.abi_test_exaust_vector)(
+        let output = (funcs.abi_test_exaust_vector_8)(
             std::ptr::null_mut(),
             1.0f32,
             2i32,
             -3.5f32,
             4.25f32,
+            2.54325,
+            8.15124,
+            3.14523,
+            -3.1415,
             value,
         );
         if output != value {
@@ -1454,17 +1526,24 @@ mod tests {
     }
 
     #[test]
-    fn test_exaust_general_jit() -> Result<()> {
+    fn test_exaust_general_6_jit() -> Result<()> {
         let harness = get_test_harness();
         let funcs = harness.functions();
-        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_general(funcs))? }
+        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_general_6(funcs))? }
     }
 
     #[test]
-    fn test_exaust_vector_jit() -> Result<()> {
+    fn test_exaust_general_8_jit() -> Result<()> {
         let harness = get_test_harness();
         let funcs = harness.functions();
-        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_vector(funcs))? }
+        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_general_8(funcs))? }
+    }
+
+    #[test]
+    fn test_exaust_vector_8_jit() -> Result<()> {
+        let harness = get_test_harness();
+        let funcs = harness.functions();
+        unsafe { brane_core::sandbox::try_run(&mut || test_exaust_vector_8(funcs))? }
     }
 
     #[test]

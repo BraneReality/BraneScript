@@ -222,12 +222,24 @@ fn abi_test_multi_params(s4: Struct4B, s8: Struct8B, s16: Struct16B, s24: Struct
     return s24;
 }
 
-// On SystemV x86_64 structs can take up to registers, but should be passed on the stack
+// === Register exaustion tests ===
+// With SystemV structs can take up to registers, but should be passed on the stack
 // if they can't completely be passed in registers. 
-fn abi_test_exaust_general(p1: i32, p2: f32, p3: i32, p3: i32, value: Struct16B) -> Struct16B {
+
+// SystemV register counts:
+// x86_64: 6 general, 8 vector,
+// aarch64: 8 general, 8 vector,
+
+// There is an implicit ctx pointer argument that will consume the first general register
+
+fn abi_test_exaust_general_6(p1: i32, p2: f32, p3: i32, p4: i32, p5: i32, value: Struct16B) -> Struct16B {
     return value;
 }
 
-fn abi_test_exaust_vector(p1: f32, p2: i32, p3: f32, p3: f32, value: Struct16BF) -> Struct16BF {
+fn abi_test_exaust_general_8(p1: i32, p2: f32, p3: i32, p4: i32, p5: i32, p6: i32, p7: i32, value: Struct16B) -> Struct16B {
+    return value;
+}
+
+fn abi_test_exaust_vector_8(p1: f32, p2: i32, p3: f32, p4: f32, p5: f32, p6: f32, p7: f32, p8: f32, value: Struct16BF) -> Struct16BF {
     return value;
 }

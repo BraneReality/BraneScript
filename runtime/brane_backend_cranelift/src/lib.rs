@@ -181,7 +181,8 @@ impl CraneliftJitBackend {
             (None, fn_params[0], fn_params[1..].to_owned())
         };
 
-        let fn_args = { self.reconstruct_fn_args(&fn_params, func, ir, &mut builder)? };
+        let fn_args =
+            { self.reconstruct_fn_args(&fn_params, ret_ptr.is_some(), func, ir, &mut builder)? };
 
         builder.ins().jump(blocks[0], &[]);
         builder.seal_block(entry);
@@ -649,10 +650,10 @@ impl CraneliftJitBackend {
 
                     // If the class is INTEGER, the next available register of the sequence %rdi,
                     // %rsi, %rdx, %rcx, %r8 and %r9 is used.
-                    let mut rem_general = 6;
+                    let mut rem_general = 6i32;
                     // If the class is SSE, the next available vector register is used, the registers
                     // are taken in the order from %xmm0 to %xmm7.
-                    let mut rem_vector = 8;
+                    let mut rem_vector = 8i32;
 
                     if let Some(ret_ty) = &func.sig.ret_ty {
                         match ret_ty {
@@ -665,7 +666,7 @@ impl CraneliftJitBackend {
                                     let ret_ptr = AbiParam::new(self.isa.pointer_type());
                                     sig.returns.push(ret_ptr);
                                     sig.params.push(ret_ptr);
-                                    rem_general -= 1;
+                                    rem_general = 0.max(rem_general - 1);
                                     has_ret_ptr = true;
                                 };
 
@@ -705,9 +706,9 @@ impl CraneliftJitBackend {
                                 let ty = Self::jit_ty(native_type);
                                 sig.params.push(AbiParam::new(ty));
                                 if ty.is_int() {
-                                    rem_general -= 1;
+                                    rem_general = 0.max(rem_general - 1);
                                 } else {
-                                    rem_vector -= 1;
+                                    rem_vector = 0.max(rem_vector - 1);
                                 }
                             }
                             ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
@@ -752,8 +753,16 @@ impl CraneliftJitBackend {
                                                 ArgClass::Memory => unreachable!(),
                                             }
                                         }
-                                        rem_general -= general_consumed;
-                                        rem_vector -= vector_consumed;
+                                        if general_consumed >= rem_general {
+                                            rem_general = 0;
+                                        } else {
+                                            rem_general -= general_consumed;
+                                        }
+                                        if vector_consumed >= rem_vector {
+                                            rem_vector = 0;
+                                        } else {
+                                            rem_vector -= vector_consumed;
+                                        }
                                     }
                                 }
                             }
@@ -774,32 +783,37 @@ impl CraneliftJitBackend {
                                 sig.returns.push(AbiParam::new(Self::jit_ty(native_type)));
                             }
                             ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
-                                let (size, _) = ir.size_align(ret_ty)?;
-
-                                match size {
-                                    0..=8 => sig.returns.push(AbiParam::new(types::I64)),
-                                    9..=16 => {
-                                        sig.returns.push(AbiParam::new(types::I64));
-                                        sig.returns.push(AbiParam::new(types::I64));
+                                if let Some((ty, fields)) =
+                                    FValue::is_homogeneous_simd_aggregate(ret_ty, ir)
+                                    && fields <= 4
+                                {
+                                    // Yes, amd64 can return up to four (4) vector/float registers
+                                    for _ in 0..fields {
+                                        sig.returns.push(AbiParam::new(ty));
                                     }
-                                    17.. => {
-                                        let ret_ptr = AbiParam::special(
-                                            self.isa.pointer_type(),
-                                            ArgumentPurpose::StructReturn,
-                                        );
-                                        sig.params.push(ret_ptr);
-                                        has_ret_ptr = true;
-                                    }
-                                };
+                                } else {
+                                    let (size, _) = ir.size_align(ret_ty)?;
+                                    match size {
+                                        0..=8 => sig.returns.push(AbiParam::new(types::I64)),
+                                        9..=16 => {
+                                            sig.returns.push(AbiParam::new(types::I64));
+                                            sig.returns.push(AbiParam::new(types::I64));
+                                        }
+                                        17.. => {
+                                            let ret_ptr = AbiParam::special(
+                                                self.isa.pointer_type(),
+                                                ArgumentPurpose::StructReturn,
+                                            );
+                                            sig.params.push(ret_ptr);
+                                            has_ret_ptr = true;
+                                        }
+                                    };
+                                }
                             }
                         }
                     }
 
                     sig.params.push(AbiParam::new(self.isa.pointer_type()));
-                    sig.params.push(AbiParam::special(
-                        self.isa.pointer_type(),
-                        ArgumentPurpose::StructArgument(16),
-                    ));
                     let mut ngrn = 1;
                     let mut nsrn = 0;
 
@@ -815,40 +829,67 @@ impl CraneliftJitBackend {
                                 }
                             }
                             ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
-                                let (size, align) = ir.size_align(param)?;
-                                if size <= 16 {
-                                    if ngrn == 7 && size > 8 {
-                                        // Alignment padding
-                                        sig.params.push(AbiParam::new(types::I64));
-                                        ngrn += 1;
+                                if let Some((ty, fields)) =
+                                    FValue::is_homogeneous_simd_aggregate(param, ir)
+                                    && fields <= 4
+                                {
+                                    // Intentionally overflow vector registers to the stack
+                                    if nsrn + fields > 8 {
+                                        while nsrn != 8 {
+                                            sig.params.push(AbiParam::new(types::F32));
+                                            nsrn += 1;
+                                        }
                                     }
-                                    let use_128 = if align == 16 {
-                                        // Align NGRN by 2
-                                        if ngrn % 2 == 1 {
-                                            ngrn += 1;
-                                            true
-                                        } else {
-                                            true
-                                        }
-                                    } else {
-                                        false
-                                    };
 
-                                    if size > 8 {
-                                        if use_128 {
-                                            sig.params.push(AbiParam::new(types::I128));
+                                    for _ in 0..fields {
+                                        if nsrn < 8 || ty.bytes() >= 8 {
+                                            sig.params.push(AbiParam::new(ty));
                                         } else {
-                                            sig.params.push(AbiParam::new(types::I64));
-                                            sig.params.push(AbiParam::new(types::I64));
+                                            // Values passed on the stack must be a multiple of 8bytes wide
+                                            // This is such a hack, but since we know at this point
+                                            // all vector register things will be passed on the
+                                            // stack, we're basically treating this as a general
+                                            // register and bitcasting/packing to and from it.
+                                            sig.params.push(AbiParam::new(types::F64))
                                         }
-                                        ngrn = 8.min(ngrn + 2);
-                                    } else {
-                                        sig.params.push(AbiParam::new(types::I64));
-                                        ngrn = 8.min(ngrn + 1);
+                                        nsrn = 8.min(nsrn + 1);
                                     }
                                 } else {
-                                    sig.params.push(AbiParam::new(self.isa.pointer_type()));
-                                    ngrn = 8.min(ngrn + 1);
+                                    let (size, align) = ir.size_align(param)?;
+                                    if size <= 16 {
+                                        if ngrn == 7 && size > 8 {
+                                            // Alignment padding
+                                            sig.params.push(AbiParam::new(types::I64));
+                                            ngrn = 8.min(ngrn + 1);
+                                        }
+                                        let use_128 = if align == 16 {
+                                            // Align NGRN by 2
+                                            if ngrn % 2 == 1 {
+                                                ngrn += 1;
+                                                true
+                                            } else {
+                                                true
+                                            }
+                                        } else {
+                                            false
+                                        };
+
+                                        if size > 8 {
+                                            if use_128 {
+                                                sig.params.push(AbiParam::new(types::I128));
+                                            } else {
+                                                sig.params.push(AbiParam::new(types::I64));
+                                                sig.params.push(AbiParam::new(types::I64));
+                                            }
+                                            ngrn = 8.min(ngrn + 2);
+                                        } else {
+                                            sig.params.push(AbiParam::new(types::I64));
+                                            ngrn = 8.min(ngrn + 1);
+                                        }
+                                    } else {
+                                        sig.params.push(AbiParam::new(self.isa.pointer_type()));
+                                        ngrn = 8.min(ngrn + 1);
+                                    }
                                 }
                             }
                         }
@@ -980,8 +1021,8 @@ impl CraneliftJitBackend {
             }
             CallingConvention::SystemV => match &triple.architecture {
                 Architecture::X86_64 => {
-                    let mut rem_general = 6;
-                    let mut rem_vector = 8;
+                    let mut rem_general = 6i32;
+                    let mut rem_vector = 8i32;
 
                     if let Some(ret_ty) = &sig.ret_ty {
                         let (size, align) = ir.size_align(ret_ty)?;
@@ -998,19 +1039,20 @@ impl CraneliftJitBackend {
                                 stack_slot,
                                 0,
                             ));
-                            rem_general -= 1;
+                            rem_general = 0.max(rem_general - 1);
                         }
                     }
 
                     arg_values.push(fn_ctx.ctx_ptr);
+                    rem_general = 0.max(rem_general - 1);
 
                     for (arg, arg_ty) in args.into_iter().zip(&sig.param_tys) {
                         if let FValueDesc::Value(_) = arg.desc {
                             arg_values.push(arg.values[0].0);
                             if arg.values[0].1.is_int() {
-                                rem_general -= 1;
+                                rem_general = 0.max(rem_general - 1);
                             } else {
-                                rem_vector -= 1;
+                                rem_vector = 0.max(rem_vector - 1);
                             }
                         } else {
                             let mut pass_as_mem = || -> anyhow::Result<_> {
@@ -1052,7 +1094,7 @@ impl CraneliftJitBackend {
                                 {
                                     pass_as_mem()?;
                                 } else {
-                                    let arg_c = general_consumed + vector_consumed;
+                                    let arg_c = (general_consumed + vector_consumed) as usize;
                                     let current_arg_c = arg_values.len();
                                     arg_values.resize_with(current_arg_c + arg_c, || {
                                         fn_ctx.builder.ins().iconst(types::I64, 0)
@@ -1079,8 +1121,16 @@ impl CraneliftJitBackend {
                                         ir,
                                         fn_ctx,
                                     )?;
-                                    rem_general -= general_consumed;
-                                    rem_vector -= vector_consumed;
+                                    if general_consumed >= rem_general {
+                                        rem_general = 0;
+                                    } else {
+                                        rem_general -= general_consumed;
+                                    }
+                                    if vector_consumed >= rem_vector {
+                                        rem_vector = 0;
+                                    } else {
+                                        rem_vector -= vector_consumed;
+                                    }
                                 }
                             }
                         }
@@ -1107,82 +1157,134 @@ impl CraneliftJitBackend {
 
                     arg_values.push(fn_ctx.ctx_ptr);
                     let mut ngrn = 1;
+                    let mut nsrn = 0;
 
                     for (arg, arg_ty) in args.into_iter().zip(&sig.param_tys) {
                         if let FValueDesc::Value(_) = &arg.desc {
                             arg_values.push(arg.values[0].0);
                             if arg.values[0].1.is_int() {
-                                ngrn += 1;
+                                ngrn = 8.min(ngrn + 1);
+                            } else {
+                                nsrn = 8.min(nsrn + 1);
                             }
                         } else {
-                            let (size, align) = ir.size_align(arg_ty)?;
-                            if size <= 16 {
-                                // Cranelift does not implent ArgumentPurpose::StructArgument
-                                // for aarch64, so if we have a 1-8byte aligned struct with a
-                                // size of 16 bytes but only one general register left, we need
-                                // a way to force cranelift to pass all of it on the stack.
-                                // For this we use "padding arguments" to use up general
-                                // registers. Unfortunatly this does mean we will be forced to
-                                // pass zeroed args since cranelift doesn't allow for undefined
-                                // values.
-                                if ngrn == 7 && size > 8 {
-                                    arg_values.push(fn_ctx.builder.ins().iconst(types::I64, 0));
-                                    ngrn += 1;
+                            if let Some((f_ty, fields)) =
+                                FValue::is_homogeneous_simd_aggregate(arg_ty, ir)
+                                && fields <= 4
+                            {
+                                // Intentionally overflow vector registers to the stack
+                                if nsrn + fields > 8 {
+                                    while nsrn != 8 {
+                                        arg_values.push(fn_ctx.builder.ins().f32const(0f32));
+                                        nsrn += 1;
+                                    }
                                 }
-                                let use_128 = if align == 16 {
-                                    // Align NGRN by 2
-                                    if ngrn % 2 == 1 {
-                                        ngrn = 8.min(ngrn + 1);
-                                        true
-                                    } else {
-                                        true
+
+                                assert_eq!(fields, arg.values.len());
+                                if nsrn < 8 || f_ty.bytes() >= 8 {
+                                    for (value, _, _) in &arg.values {
+                                        arg_values.push(*value);
+                                        nsrn = 8.min(nsrn + 1);
                                     }
                                 } else {
-                                    false
-                                };
+                                    let constant = fn_ctx
+                                        .builder
+                                        .func
+                                        .dfg
+                                        .constants
+                                        .insert(ConstantData::from(V128Imm([0; 16])));
+                                    let constant =
+                                        fn_ctx.builder.ins().vconst(types::F64X2, constant);
+                                    let mut packed = [constant, constant];
+                                    arg.to_packed_args(
+                                        &mut packed,
+                                        &[ArgClass::Vector, ArgClass::Vector],
+                                        ir,
+                                        fn_ctx,
+                                    )?;
 
-                                let mut packed = [
-                                    fn_ctx.builder.ins().iconst(types::I64, 0),
-                                    fn_ctx.builder.ins().iconst(types::I64, 0),
-                                ];
-                                arg.to_packed_args(
-                                    &mut packed,
-                                    &[ArgClass::General, ArgClass::General],
-                                    ir,
-                                    fn_ctx,
-                                )?;
-
-                                if size > 8 {
-                                    if use_128 {
-                                        let lower =
-                                            fn_ctx.builder.ins().uextend(types::I128, packed[0]);
-                                        let higher =
-                                            fn_ctx.builder.ins().uextend(types::I128, packed[1]);
-                                        let higher = fn_ctx.builder.ins().ishl_imm(higher, 64);
-                                        arg_values.push(fn_ctx.builder.ins().band(lower, higher));
-                                    } else {
-                                        arg_values.extend(packed);
+                                    arg_values.push(fn_ctx.builder.ins().extractlane(packed[0], 0));
+                                    if fields > 2 {
+                                        arg_values
+                                            .push(fn_ctx.builder.ins().extractlane(packed[1], 0));
                                     }
-                                    ngrn = 8.min(ngrn + 2);
-                                } else {
-                                    arg_values.push(packed[0]);
-                                    ngrn = 8.min(ngrn + 1);
                                 }
                             } else {
-                                let stack_slot = StackSlotData::new(
-                                    StackSlotKind::ExplicitSlot,
-                                    size as u32,
-                                    align as u8,
-                                );
-                                let stack_slot = fn_ctx.builder.create_sized_stack_slot(stack_slot);
-                                let stack_ptr = fn_ctx.builder.ins().stack_addr(
-                                    self.isa.pointer_type(),
-                                    stack_slot,
-                                    0,
-                                );
-                                arg.store(stack_ptr, 0, ir, fn_ctx)?;
-                                ngrn = 8.min(ngrn + 1);
-                                arg_values.push(stack_ptr);
+                                let (size, align) = ir.size_align(arg_ty)?;
+                                if size <= 16 {
+                                    // Cranelift does not implent ArgumentPurpose::StructArgument
+                                    // for aarch64, so if we have a 1-8byte aligned struct with a
+                                    // size of 16 bytes but only one general register left, we need
+                                    // a way to force cranelift to pass all of it on the stack.
+                                    // For this we use "padding arguments" to use up general
+                                    // registers. Unfortunatly this does mean we will be forced to
+                                    // pass zeroed args since cranelift doesn't allow for undefined
+                                    // values.
+                                    if ngrn == 7 && size > 8 {
+                                        arg_values.push(fn_ctx.builder.ins().iconst(types::I64, 0));
+                                        ngrn += 1;
+                                    }
+                                    let use_128 = if align == 16 {
+                                        // Align NGRN by 2
+                                        if ngrn % 2 == 1 {
+                                            ngrn = 8.min(ngrn + 1);
+                                            true
+                                        } else {
+                                            true
+                                        }
+                                    } else {
+                                        false
+                                    };
+
+                                    let mut packed = [
+                                        fn_ctx.builder.ins().iconst(types::I64, 0),
+                                        fn_ctx.builder.ins().iconst(types::I64, 0),
+                                    ];
+                                    arg.to_packed_args(
+                                        &mut packed,
+                                        &[ArgClass::General, ArgClass::General],
+                                        ir,
+                                        fn_ctx,
+                                    )?;
+
+                                    if size > 8 {
+                                        if use_128 {
+                                            let lower = fn_ctx
+                                                .builder
+                                                .ins()
+                                                .uextend(types::I128, packed[0]);
+                                            let higher = fn_ctx
+                                                .builder
+                                                .ins()
+                                                .uextend(types::I128, packed[1]);
+                                            let higher = fn_ctx.builder.ins().ishl_imm(higher, 64);
+                                            arg_values
+                                                .push(fn_ctx.builder.ins().band(lower, higher));
+                                        } else {
+                                            arg_values.extend(packed);
+                                        }
+                                        ngrn = 8.min(ngrn + 2);
+                                    } else {
+                                        arg_values.push(packed[0]);
+                                        ngrn = 8.min(ngrn + 1);
+                                    }
+                                } else {
+                                    let stack_slot = StackSlotData::new(
+                                        StackSlotKind::ExplicitSlot,
+                                        size as u32,
+                                        align as u8,
+                                    );
+                                    let stack_slot =
+                                        fn_ctx.builder.create_sized_stack_slot(stack_slot);
+                                    let stack_ptr = fn_ctx.builder.ins().stack_addr(
+                                        self.isa.pointer_type(),
+                                        stack_slot,
+                                        0,
+                                    );
+                                    arg.store(stack_ptr, 0, ir, fn_ctx)?;
+                                    ngrn = 8.min(ngrn + 1);
+                                    arg_values.push(stack_ptr);
+                                }
                             }
                         }
                     }
@@ -1311,14 +1413,23 @@ impl CraneliftJitBackend {
                                 Ok(Some(loaded))
                             } else {
                                 let ret_vals = fn_ctx.builder.inst_results(call_inst).to_vec();
-                                let reconstructed = FValue::from_packed_args(
-                                    &ret_vals,
-                                    &[ArgClass::General, ArgClass::General],
-                                    ret_ty,
-                                    ir,
-                                    &mut fn_ctx.builder,
-                                )?;
-                                Ok(Some(reconstructed))
+
+                                if let Some((_, fields)) =
+                                    FValue::is_homogeneous_simd_aggregate(ret_ty, ir)
+                                    && fields <= 4
+                                {
+                                    assert_eq!(fields, ret_vals.len());
+                                    Ok(Some(FValue::from_flattened(&ret_vals, ret_ty, ir)?))
+                                } else {
+                                    let reconstructed = FValue::from_packed_args(
+                                        &ret_vals,
+                                        &[ArgClass::General, ArgClass::General],
+                                        ret_ty,
+                                        ir,
+                                        &mut fn_ctx.builder,
+                                    )?;
+                                    Ok(Some(reconstructed))
+                                }
                             }
                         }
                     },
@@ -1342,6 +1453,7 @@ impl CraneliftJitBackend {
     fn reconstruct_fn_args(
         &self,
         params: &[Value],
+        uses_ret_ptr: bool,
         func: &ir::Function,
         ir: &ir::Module,
         builder: &mut FunctionBuilder,
@@ -1387,8 +1499,12 @@ impl CraneliftJitBackend {
             }
             CallingConvention::SystemV => match &triple.architecture {
                 Architecture::X86_64 => {
-                    let mut rem_general = 6;
-                    let mut rem_vector = 8;
+                    let mut rem_general = 5i32; // Only 5 to account for ctx ptr
+                    let mut rem_vector = 8i32;
+
+                    if uses_ret_ptr {
+                        rem_general -= 1;
+                    }
 
                     let mut params_consumed = 0;
                     for arg in &func.sig.param_tys {
@@ -1398,9 +1514,9 @@ impl CraneliftJitBackend {
                                 let value = FValue::new(params[params_consumed], value_ty);
                                 params_consumed += 1;
                                 if value_ty.is_int() {
-                                    rem_general -= 1;
+                                    rem_general = 0.max(rem_general - 1);
                                 } else {
-                                    rem_vector -= 1;
+                                    rem_vector = 0.max(rem_vector - 1);
                                 }
                                 fn_args.push(value);
                             }
@@ -1435,7 +1551,7 @@ impl CraneliftJitBackend {
                                     {
                                         fn_args.push(load_as_mem()?);
                                     } else {
-                                        let arg_c = general_consumed + vector_consumed;
+                                        let arg_c = (general_consumed + vector_consumed) as usize;
                                         let param_slice =
                                             &params[params_consumed..(arg_c + params_consumed)];
                                         let reconstructed = FValue::from_packed_args(
@@ -1446,8 +1562,16 @@ impl CraneliftJitBackend {
                                             builder,
                                         )?;
                                         params_consumed += arg_c;
-                                        rem_general -= general_consumed;
-                                        rem_vector -= vector_consumed;
+                                        if general_consumed >= rem_general {
+                                            rem_general = 0;
+                                        } else {
+                                            rem_general -= general_consumed;
+                                        }
+                                        if vector_consumed >= rem_vector {
+                                            rem_vector = 0;
+                                        } else {
+                                            rem_vector -= vector_consumed;
+                                        }
                                         fn_args.push(reconstructed);
                                     }
                                 }
@@ -1456,7 +1580,13 @@ impl CraneliftJitBackend {
                     }
                 }
                 Architecture::Aarch64(_) => {
-                    let mut ngrn = 0;
+                    // Incremented by one to account for ctx ptr
+                    let mut ngrn = 1;
+                    let mut nsrn = 0;
+
+                    if uses_ret_ptr {
+                        ngrn += 1;
+                    }
 
                     let mut params_consumed = 0;
                     for arg in &func.sig.param_tys {
@@ -1466,60 +1596,121 @@ impl CraneliftJitBackend {
                                 let value = FValue::new(params[params_consumed], value_ty);
                                 params_consumed += 1;
                                 if value_ty.is_int() {
-                                    ngrn += 1;
+                                    ngrn = 8.min(ngrn + 1);
+                                } else {
+                                    nsrn = 8.min(nsrn + 1);
                                 }
                                 fn_args.push(value);
                             }
                             ir::Ty::Struct(_) | ir::Ty::Enum(_) => {
-                                let (size, align) = ir.size_align(arg)?;
-                                if size <= 16 {
-                                    // Cranelift does not implent ArgumentPurpose::StructArgument
-                                    // for aarch64, so if we have a 1-8byte aligned struct with a
-                                    // size of 16 bytes but only one general register left, we need
-                                    // a way to force cranelift to pass all of it on the stack.
-                                    // For this we use "padding arguments" to use up general
-                                    // registers. Unfortunatly this does mean we will be forced to
-                                    // pass zeroed args since cranelift doesn't allow for undefined
-                                    // values.
-                                    if ngrn == 7 && size > 8 {
-                                        params_consumed += 1; // skip padding arg
-                                        ngrn += 1;
+                                if let Some((f_ty, fields)) =
+                                    FValue::is_homogeneous_simd_aggregate(arg, ir)
+                                    && fields <= 4
+                                {
+                                    // Intentionally overflow vector registers to the stack
+                                    if nsrn + fields > 8 {
+                                        while nsrn != 8 {
+                                            params_consumed += 1; // skip padding arg
+                                            nsrn += 1;
+                                        }
                                     }
-                                    let packed = if align == 16 {
-                                        // Align NGRN by 2
-                                        if ngrn % 2 == 1 {
-                                            ngrn += 1;
+
+                                    if nsrn < 8 || f_ty.bytes() >= 8 {
+                                        fn_args.push(FValue::from_flattened(
+                                            &params[params_consumed..(params_consumed + fields)],
+                                            arg,
+                                            ir,
+                                        )?);
+                                        params_consumed += fields;
+                                        nsrn = 8.min(nsrn + fields);
+                                    } else {
+                                        let constant = builder
+                                            .func
+                                            .dfg
+                                            .constants
+                                            .insert(ConstantData::from(V128Imm([0; 16])));
+                                        let constant = builder.ins().vconst(types::F64X2, constant);
+                                        let mut packed = [constant, constant];
+
+                                        packed[0] = builder.ins().insertlane(
+                                            constant,
+                                            params[params_consumed],
+                                            0,
+                                        );
+                                        params_consumed += 1;
+                                        if fields > 2 {
+                                            packed[1] = builder.ins().insertlane(
+                                                constant,
+                                                params[params_consumed],
+                                                0,
+                                            );
                                             params_consumed += 1;
                                         }
-
-                                        let double = params[params_consumed];
-                                        let low = builder.ins().ireduce(types::I64, double);
-                                        let high = builder.ins().ushr_imm(double, 64);
-                                        let high = builder.ins().ireduce(types::I64, high);
-                                        params_consumed += 1;
-                                        ngrn = 8.min(ngrn + 2);
-                                        [low, high]
-                                    } else if size > 8 {
-                                        params_consumed += 2;
-                                        ngrn = 8.min(ngrn + 2);
-                                        [params[params_consumed - 2], params[params_consumed - 1]]
-                                    } else {
-                                        params_consumed += 1;
-                                        ngrn = 8.min(ngrn + 1);
-                                        [params[params_consumed - 1], Value::from_bits(0xFFFFFFFF)]
-                                    };
-
-                                    fn_args.push(FValue::from_packed_args(
-                                        &packed,
-                                        &[ArgClass::General, ArgClass::General],
-                                        arg,
-                                        ir,
-                                        builder,
-                                    )?);
+                                        fn_args.push(FValue::from_packed_args(
+                                            &packed,
+                                            &[ArgClass::Vector, ArgClass::Vector],
+                                            arg,
+                                            ir,
+                                            builder,
+                                        )?);
+                                    }
                                 } else {
-                                    let ptr = params[params_consumed];
-                                    params_consumed += 1;
-                                    fn_args.push(FValue::load(ptr, 0, arg, ir, builder)?);
+                                    let (size, align) = ir.size_align(arg)?;
+                                    if size <= 16 {
+                                        // Cranelift does not implent ArgumentPurpose::StructArgument
+                                        // for aarch64, so if we have a 1-8byte aligned struct with a
+                                        // size of 16 bytes but only one general register left, we need
+                                        // a way to force cranelift to pass all of it on the stack.
+                                        // For this we use "padding arguments" to use up general
+                                        // registers. Unfortunatly this does mean we will be forced to
+                                        // pass zeroed args since cranelift doesn't allow for undefined
+                                        // values.
+                                        if ngrn == 7 && size > 8 {
+                                            params_consumed += 1; // skip padding arg
+                                            ngrn += 1;
+                                        }
+                                        let packed = if align == 16 {
+                                            // Align NGRN by 2
+                                            if ngrn % 2 == 1 {
+                                                ngrn += 1;
+                                                params_consumed += 1;
+                                            }
+
+                                            let double = params[params_consumed];
+                                            let low = builder.ins().ireduce(types::I64, double);
+                                            let high = builder.ins().ushr_imm(double, 64);
+                                            let high = builder.ins().ireduce(types::I64, high);
+                                            params_consumed += 1;
+                                            ngrn = 8.min(ngrn + 2);
+                                            [low, high]
+                                        } else if size > 8 {
+                                            params_consumed += 2;
+                                            ngrn = 8.min(ngrn + 2);
+                                            [
+                                                params[params_consumed - 2],
+                                                params[params_consumed - 1],
+                                            ]
+                                        } else {
+                                            params_consumed += 1;
+                                            ngrn = 8.min(ngrn + 1);
+                                            [
+                                                params[params_consumed - 1],
+                                                Value::from_bits(0xFFFFFFFF),
+                                            ]
+                                        };
+
+                                        fn_args.push(FValue::from_packed_args(
+                                            &packed,
+                                            &[ArgClass::General, ArgClass::General],
+                                            arg,
+                                            ir,
+                                            builder,
+                                        )?);
+                                    } else {
+                                        let ptr = params[params_consumed];
+                                        params_consumed += 1;
+                                        fn_args.push(FValue::load(ptr, 0, arg, ir, builder)?);
+                                    }
                                 }
                             }
                         }
@@ -1621,26 +1812,34 @@ impl CraneliftJitBackend {
                             }
                         }
                         Architecture::Aarch64(_) => {
-                            let (size, _) = ir.size_align(ret_ty)?;
-                            if let Some(ret_ptr) = ctx.ret_ptr {
-                                ret_obj.store(ret_ptr, 0, ir, ctx)?;
-                                ctx.builder.ins().return_(&[]);
+                            if let Some((_, fields)) =
+                                FValue::is_homogeneous_simd_aggregate(ret_ty, ir)
+                                && fields <= 4
+                            {
+                                // Yes, amd64 can return up to four (4) vector/float registers
+                                ctx.builder.ins().return_(&values);
                             } else {
-                                let mut packed = [
-                                    ctx.builder.ins().iconst(types::I64, 0),
-                                    ctx.builder.ins().iconst(types::I64, 0),
-                                ];
-                                ret_obj.to_packed_args(
-                                    &mut packed,
-                                    &[ArgClass::General, ArgClass::General],
-                                    ir,
-                                    ctx,
-                                )?;
-
-                                if size > 8 {
-                                    ctx.builder.ins().return_(&packed);
+                                let (size, _) = ir.size_align(ret_ty)?;
+                                if let Some(ret_ptr) = ctx.ret_ptr {
+                                    ret_obj.store(ret_ptr, 0, ir, ctx)?;
+                                    ctx.builder.ins().return_(&[]);
                                 } else {
-                                    ctx.builder.ins().return_(&[packed[0]]);
+                                    let mut packed = [
+                                        ctx.builder.ins().iconst(types::I64, 0),
+                                        ctx.builder.ins().iconst(types::I64, 0),
+                                    ];
+                                    ret_obj.to_packed_args(
+                                        &mut packed,
+                                        &[ArgClass::General, ArgClass::General],
+                                        ir,
+                                        ctx,
+                                    )?;
+
+                                    if size > 8 {
+                                        ctx.builder.ins().return_(&packed);
+                                    } else {
+                                        ctx.builder.ins().return_(&[packed[0]]);
+                                    }
                                 }
                             }
                         }
@@ -2798,34 +2997,66 @@ impl FValue {
         }
     }
 
-    // If an agregate type only contains the same type of floating
-    // point variable and none of the addressable fields overlap
+    // If an agregate type only contains the same type of vector
+    // register stored variables and none of the addressable fields overlap
     //
     // # Returns
     //
     // Returns the base type that constructs this agregate, as well as the number of uniquely
     // addressable fields
-    pub fn is_homogeneous_float(&self) -> Option<(Type, usize)> {
-        if self.values.len() == 0 {
-            return None;
-        }
-
-        // You'll notice I don't account for enums here. That's because they all have
-        // integer discriminants and I am *not* storing discriminants in floats. So
-        // they will all fail this condition, therefore we don't need to do any branching.
-        let mut indicies = HashSet::new();
-        let ty = self.values[0].1;
-        if !ty.is_float() {
-            return None;
-        }
-        indicies.insert(self.values[0].2);
-        for (_, next_ty, byte) in &self.values[1..] {
-            if ty != *next_ty {
-                return None;
+    pub fn is_homogeneous_simd_aggregate(ty: &ir::Ty, ir: &ir::Module) -> Option<(Type, usize)> {
+        let (ty, fields) = match ty {
+            ir::Ty::Native(nt) => {
+                let ty = CraneliftJitBackend::jit_ty(nt);
+                if !(ty.is_float() || ty.is_vector()) {
+                    return None;
+                }
+                (ty, 1)
             }
-            indicies.insert(*byte);
-        }
-        Some((ty, indicies.len()))
+            ir::Ty::Struct(id) => {
+                let Some(def) = ir.get_struct(*id) else {
+                    return None;
+                };
+                let Some(first) = def.members.first() else {
+                    return None;
+                };
+                let Some((base_ty, mut fields)) =
+                    Self::is_homogeneous_simd_aggregate(&first.ty, ir)
+                else {
+                    return None;
+                };
+                for m in &def.members[1..] {
+                    let Some((m_ty, m_fields)) = Self::is_homogeneous_simd_aggregate(&m.ty, ir)
+                    else {
+                        return None;
+                    };
+                    if m_ty != base_ty {
+                        return None;
+                    }
+                    fields += m_fields;
+                }
+                (base_ty, fields)
+            }
+            ir::Ty::Enum(id) => {
+                let Some(def) = ir.get_enum(*id) else {
+                    return None;
+                };
+                // if there's more then one variant, we have an int discriminant
+                if def.variants.len() > 1 {
+                    return None;
+                }
+                let Some(ir::EnumVariant {
+                    id: _,
+                    ty: Some(inner_ty),
+                }) = def.variants.first()
+                else {
+                    return None;
+                };
+
+                return Self::is_homogeneous_simd_aggregate(inner_ty, ir);
+            }
+        };
+        Some((ty, fields))
     }
 
     pub fn value_count(ty: &ir::Ty, module: &ir::Module) -> Result<usize> {
