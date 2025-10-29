@@ -289,7 +289,7 @@ mod fault_tests {
                     }
                     #[cfg(target_arch = "aarch64")]
                     {
-                        std::arch::asm!("uqdiv xzr, 42, x0", options(nomem, nostack));
+                        std::arch::asm!("mov x1, #0\nudiv x0, x0, x1", options(nomem, nostack));
                         // Should trigger divide by zero
                     }
                     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]

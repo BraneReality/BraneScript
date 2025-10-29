@@ -16,4 +16,4 @@ windows = { version = "0.62.0", features = ["Win32", "Win32_Foundation", "Win32_
 
 [target.'cfg(unix)'.dependencies]
 libc = {version = "0.2.175", features = ["extra_traits"]}
-setjmp = "0.1.4"
+setjmp = { git = "https://github.com/WireWhiz/setjmp.rs", branch = "support-cross-complie" }

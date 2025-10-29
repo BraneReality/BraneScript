@@ -5,6 +5,7 @@ use std::{collections::HashMap, fmt::Display, ops::Range, path::PathBuf, sync::A
 pub enum Uri {
     Unknown,
     File(PathBuf),
+    Custom(usize),
 }
 
 impl Default for Uri {
@@ -18,18 +19,21 @@ impl Display for Uri {
         match self {
             Uri::Unknown => write!(f, "unknown"),
             Uri::File(path_buf) => write!(f, "file://{}", path_buf.to_string_lossy()),
+            Uri::Custom(id) => write!(f, "custom://{:X}", id),
         }
     }
 }
 
 pub struct SourceManager {
     sources: HashMap<Uri, String>,
+    custom_count: usize,
 }
 
 impl SourceManager {
     pub fn new() -> SourceManager {
         SourceManager {
             sources: HashMap::new(),
+            custom_count: 0,
         }
     }
 
@@ -41,6 +45,7 @@ impl SourceManager {
             Uri::File(path_buf) => {
                 self.load_from_file(path_buf)?;
             }
+            Uri::Custom(_) => {}
         }
         Ok(())
     }
@@ -52,6 +57,27 @@ impl SourceManager {
 
         let _ = self.sources.insert(key.clone(), text);
         Ok(key)
+    }
+
+    pub fn add_custom(&mut self, content: String) -> anyhow::Result<Uri> {
+        let id = Uri::Custom(self.custom_count);
+        self.custom_count += 1;
+        let _ = self.sources.insert(id.clone(), content);
+
+        Ok(id)
+    }
+
+    pub fn update_custom(&mut self, key: &Uri, content: String) -> anyhow::Result<()> {
+        let Uri::Custom(_) = key else {
+            bail!("Can only manually update custom uris");
+        };
+        let source = self
+            .sources
+            .get_mut(key)
+            .ok_or_else(|| anyhow!("Source for {} not found!", key))?;
+        *source = content;
+
+        Ok(())
     }
 
     pub fn get(&self, key: &Uri) -> anyhow::Result<&String> {

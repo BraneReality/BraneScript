@@ -14,10 +14,9 @@
 #[cfg(test)]
 mod tests {
     use brane_core::BindingsCtx;
-    use branec_source::{SourceManager, Uri};
+    use branec_source::SourceManager;
     use std::collections::HashMap;
     use std::mem;
-    use std::path::Path;
 
     use anyhow::Result;
     use brane_backend_cranelift::cranelift_jit::JITModule;
@@ -72,35 +71,266 @@ mod tests {
         Variant2,
     }
 
+    #[allow(dead_code)]
     #[repr(u8)]
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub enum EnumEmpty256 {
-        V1, V2, V3, V4, V5, V6, V7, V8, V9, V10,
-        V11, V12, V13, V14, V15, V16, V17, V18, V19, V20,
-        V21, V22, V23, V24, V25, V26, V27, V28, V29, V30,
-        V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-        V41, V42, V43, V44, V45, V46, V47, V48, V49, V50,
-        V51, V52, V53, V54, V55, V56, V57, V58, V59, V60,
-        V61, V62, V63, V64, V65, V66, V67, V68, V69, V70,
-        V71, V72, V73, V74, V75, V76, V77, V78, V79, V80,
-        V81, V82, V83, V84, V85, V86, V87, V88, V89, V90,
-        V91, V92, V93, V94, V95, V96, V97, V98, V99, V100,
-        V101, V102, V103, V104, V105, V106, V107, V108, V109, V110,
-        V111, V112, V113, V114, V115, V116, V117, V118, V119, V120,
-        V121, V122, V123, V124, V125, V126, V127, V128, V129, V130,
-        V131, V132, V133, V134, V135, V136, V137, V138, V139, V140,
-        V141, V142, V143, V144, V145, V146, V147, V148, V149, V150,
-        V151, V152, V153, V154, V155, V156, V157, V158, V159, V160,
-        V161, V162, V163, V164, V165, V166, V167, V168, V169, V170,
-        V171, V172, V173, V174, V175, V176, V177, V178, V179, V180,
-        V181, V182, V183, V184, V185, V186, V187, V188, V189, V190,
-        V191, V192, V193, V194, V195, V196, V197, V198, V199, V200,
-        V201, V202, V203, V204, V205, V206, V207, V208, V209, V210,
-        V211, V212, V213, V214, V215, V216, V217, V218, V219, V220,
-        V221, V222, V223, V224, V225, V226, V227, V228, V229, V230,
-        V231, V232, V233, V234, V235, V236, V237, V238, V239, V240,
-        V241, V242, V243, V244, V245, V246, V247, V248, V249, V250,
-        V251, V252, V253, V254, V255, V256,
+        V1,
+        V2,
+        V3,
+        V4,
+        V5,
+        V6,
+        V7,
+        V8,
+        V9,
+        V10,
+        V11,
+        V12,
+        V13,
+        V14,
+        V15,
+        V16,
+        V17,
+        V18,
+        V19,
+        V20,
+        V21,
+        V22,
+        V23,
+        V24,
+        V25,
+        V26,
+        V27,
+        V28,
+        V29,
+        V30,
+        V31,
+        V32,
+        V33,
+        V34,
+        V35,
+        V36,
+        V37,
+        V38,
+        V39,
+        V40,
+        V41,
+        V42,
+        V43,
+        V44,
+        V45,
+        V46,
+        V47,
+        V48,
+        V49,
+        V50,
+        V51,
+        V52,
+        V53,
+        V54,
+        V55,
+        V56,
+        V57,
+        V58,
+        V59,
+        V60,
+        V61,
+        V62,
+        V63,
+        V64,
+        V65,
+        V66,
+        V67,
+        V68,
+        V69,
+        V70,
+        V71,
+        V72,
+        V73,
+        V74,
+        V75,
+        V76,
+        V77,
+        V78,
+        V79,
+        V80,
+        V81,
+        V82,
+        V83,
+        V84,
+        V85,
+        V86,
+        V87,
+        V88,
+        V89,
+        V90,
+        V91,
+        V92,
+        V93,
+        V94,
+        V95,
+        V96,
+        V97,
+        V98,
+        V99,
+        V100,
+        V101,
+        V102,
+        V103,
+        V104,
+        V105,
+        V106,
+        V107,
+        V108,
+        V109,
+        V110,
+        V111,
+        V112,
+        V113,
+        V114,
+        V115,
+        V116,
+        V117,
+        V118,
+        V119,
+        V120,
+        V121,
+        V122,
+        V123,
+        V124,
+        V125,
+        V126,
+        V127,
+        V128,
+        V129,
+        V130,
+        V131,
+        V132,
+        V133,
+        V134,
+        V135,
+        V136,
+        V137,
+        V138,
+        V139,
+        V140,
+        V141,
+        V142,
+        V143,
+        V144,
+        V145,
+        V146,
+        V147,
+        V148,
+        V149,
+        V150,
+        V151,
+        V152,
+        V153,
+        V154,
+        V155,
+        V156,
+        V157,
+        V158,
+        V159,
+        V160,
+        V161,
+        V162,
+        V163,
+        V164,
+        V165,
+        V166,
+        V167,
+        V168,
+        V169,
+        V170,
+        V171,
+        V172,
+        V173,
+        V174,
+        V175,
+        V176,
+        V177,
+        V178,
+        V179,
+        V180,
+        V181,
+        V182,
+        V183,
+        V184,
+        V185,
+        V186,
+        V187,
+        V188,
+        V189,
+        V190,
+        V191,
+        V192,
+        V193,
+        V194,
+        V195,
+        V196,
+        V197,
+        V198,
+        V199,
+        V200,
+        V201,
+        V202,
+        V203,
+        V204,
+        V205,
+        V206,
+        V207,
+        V208,
+        V209,
+        V210,
+        V211,
+        V212,
+        V213,
+        V214,
+        V215,
+        V216,
+        V217,
+        V218,
+        V219,
+        V220,
+        V221,
+        V222,
+        V223,
+        V224,
+        V225,
+        V226,
+        V227,
+        V228,
+        V229,
+        V230,
+        V231,
+        V232,
+        V233,
+        V234,
+        V235,
+        V236,
+        V237,
+        V238,
+        V239,
+        V240,
+        V241,
+        V242,
+        V243,
+        V244,
+        V245,
+        V246,
+        V247,
+        V248,
+        V249,
+        V250,
+        V251,
+        V252,
+        V253,
+        V254,
+        V255,
+        V256,
     }
 
     #[repr(transparent)]
@@ -361,17 +591,18 @@ mod tests {
         ///
         /// This is a convenience method that handles the entire compilation pipeline.
         /// Adjust the implementation to match your actual API.
-        pub fn from_script_file(script_path: &Path) -> Result<Self> {
+        pub fn from_script_file() -> Result<Self> {
             let mut ctx = CompileContext {
                 emitter: branec_emitter::ConsoleEmitter::new(),
                 sources: SourceManager::new(),
                 loaded_modules: Default::default(),
             };
 
-            let module = ctx.emit_module(
-                &Uri::File(script_path.to_path_buf()),
-                vec!["test_mod".into()],
-            )?;
+            let test_source = ctx
+                .sources
+                .add_custom(include_str!("../../tests/c_abi.bscript").to_string())?;
+
+            let module = ctx.emit_module(&test_source, vec!["test_mod".into()])?;
 
             println!("Emitted module:\n{}", module);
             println!("Jitting...");
@@ -383,57 +614,6 @@ mod tests {
         /// Get reference to the loaded functions
         pub fn functions(&self) -> &JitFunctions {
             &self.functions
-        }
-    }
-
-    // ============================================================================
-    // TEST RESULTS TRACKING
-    // ============================================================================
-
-    #[derive(Debug, Default)]
-    pub struct TestResults {
-        passed: Vec<String>,
-        failed: Vec<(String, String)>, // (test_name, error_message)
-    }
-
-    impl TestResults {
-        pub fn add(&mut self, name: &str, result: Result<()>) {
-            match result {
-                Ok(()) => self.passed.push(name.to_string()),
-                Err(e) => self.failed.push((name.to_string(), e.to_string())),
-            }
-        }
-
-        pub fn passed_count(&self) -> usize {
-            self.passed.len()
-        }
-
-        pub fn failed_count(&self) -> usize {
-            self.failed.len()
-        }
-
-        pub fn total_count(&self) -> usize {
-            self.passed.len() + self.failed.len()
-        }
-
-        pub fn is_success(&self) -> bool {
-            self.failed.is_empty()
-        }
-
-        pub fn print_summary(&self) {
-            println!("\n========== ABI Test Results ==========");
-            println!("Total:  {}", self.total_count());
-            println!("Passed: {} ✓", self.passed_count());
-            println!("Failed: {} ✗", self.failed_count());
-
-            if !self.failed.is_empty() {
-                println!("\nFailed tests:");
-                for (name, error) in &self.failed {
-                    println!("  ✗ {}: {}", name, error);
-                }
-            }
-
-            println!("======================================\n");
         }
     }
 
@@ -862,14 +1042,7 @@ mod tests {
             field1: 0x1122334455667788,
             field2: 0x99AABBCCDDEEFF00,
         };
-        let output = (funcs.abi_test_exaust_general)(
-            std::ptr::null_mut(),
-            1,
-            2.5,
-            -3,
-            4,
-            value,
-        );
+        let output = (funcs.abi_test_exaust_general)(std::ptr::null_mut(), 1, 2.5, -3, 4, value);
         if output != value {
             anyhow::bail!("Expected {:?}, got {:?}", value, output);
         }
@@ -1013,19 +1186,7 @@ mod tests {
     }
 
     static TEST_HARNESS: std::sync::LazyLock<AbiTestHarness> = std::sync::LazyLock::new(|| {
-        let script_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("tests")
-            .join("c_abi.bscript");
-
-        if script_path.exists() {
-            AbiTestHarness::from_script_file(&script_path).expect("Unable to create test harness")
-        } else {
-            panic!(
-                "Test script not found at {}. Please create the ABI test script first.",
-                script_path.display()
-            )
-        }
+        AbiTestHarness::from_script_file().expect("Unable to create test harness")
     });
 
     // Helper to load harness for tests
@@ -1359,54 +1520,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    // ============================================================================
-    // DEBUGGING UTILITIES
-    // ============================================================================
-
-    /// Print the memory layout of a value (useful for debugging ABI issues)
-    pub fn print_memory_layout<T>(name: &str, value: &T) {
-        let ptr = value as *const T as *const u8;
-        let size = mem::size_of::<T>();
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, size) };
-
-        println!("{} ({} bytes):", name, size);
-        for (i, chunk) in bytes.chunks(8).enumerate() {
-            print!("  {:04x}: ", i * 8);
-            for byte in chunk {
-                print!("{:02x} ", byte);
-            }
-            println!();
-        }
-    }
-
-    /// Compare two values byte-by-byte (useful for debugging mismatches)
-    pub fn compare_memory_layout<T>(name1: &str, val1: &T, name2: &str, val2: &T) {
-        let ptr1 = val1 as *const T as *const u8;
-        let ptr2 = val2 as *const T as *const u8;
-        let size = mem::size_of::<T>();
-        let bytes1 = unsafe { std::slice::from_raw_parts(ptr1, size) };
-        let bytes2 = unsafe { std::slice::from_raw_parts(ptr2, size) };
-
-        println!("Comparing {} vs {} ({} bytes):", name1, name2, size);
-        let mut has_diff = false;
-        for i in 0..size {
-            if bytes1[i] != bytes2[i] {
-                println!(
-                    "  Byte {}: {} = {:02x}, {} = {:02x} ✗",
-                    i, name1, bytes1[i], name2, bytes2[i]
-                );
-                has_diff = true;
-            }
-        }
-        if !has_diff {
-            println!("  All bytes match ✓");
-        }
-    }
-
-    /// Get the discriminant byte of an enum (for debugging)
-    pub unsafe fn get_enum_discriminant<T>(value: &T) -> u8 {
-        *(value as *const T as *const u8)
     }
 }
