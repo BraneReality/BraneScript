@@ -57,6 +57,8 @@ pub fn prune_phi_nodes(module: &mut Module) -> Result<usize> {
         }
     }
 
+    // TODO enable with flag
+    /*
     println!("removed mappings:");
     for (before, after) in removed.iter() {
         println!("{} -> {}", before, after);
@@ -66,6 +68,7 @@ pub fn prune_phi_nodes(module: &mut Module) -> Result<usize> {
     for (before, after) in shifted.iter() {
         println!("{} -> {}", before, after);
     }
+    */
 
     for func in module.functions.iter_mut() {
         for block in func.blocks.iter_mut() {

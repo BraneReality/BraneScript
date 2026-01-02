@@ -1,6 +1,4 @@
-use crate::{
-    FnOverride, FnOverrideKind, FunctionCtx, IdentScope, RValue, SSAStruct, TemplateId, TyPattern,
-};
+use crate::{FnOverride, FnOverrideKind, FunctionCtx, IdentTree, RValue, SSAStruct, TyPattern};
 use anyhow::{bail, Result};
 use brane_core::ir;
 use std::rc::Rc;
@@ -8,13 +6,9 @@ use std::rc::Rc;
 pub fn intrinsic_op(
     temp_args: impl IntoIterator<Item = TyPattern>,
     arg_tys: impl IntoIterator<Item = ir::NativeType>,
-    template_count: &mut TemplateId,
     callback: impl Fn(&[ir::Ty], &[RValue], &mut FunctionCtx) -> Result<Option<RValue>> + 'static,
 ) -> FnOverride {
-    let id = *template_count;
-    *template_count += 1;
     FnOverride {
-        id,
         temp_args: temp_args.into_iter().collect(),
         arg_tys: arg_tys
             .into_iter()
@@ -29,38 +23,32 @@ pub fn define_bin_op_for<'a>(
     tys: impl IntoIterator<Item = &'a ir::NativeType>,
     ret_ty: Option<ir::NativeType>,
     op: ir::BinaryOp,
-    template_count: &mut TemplateId,
-    root: &mut IdentScope,
+    root: &mut IdentTree,
 ) {
     for ty in tys {
         let ty = ty.clone();
         let ret_ty = ret_ty.clone();
-        root.insert_override(
+        root.insert_fn(
             ident.clone(),
-            intrinsic_op(
-                [],
-                [ty.clone(), ty.clone()],
-                template_count,
-                move |_, args, ctx| {
-                    let [RValue::Value(left, l_ty), RValue::Value(right, r_ty)] = args else {
-                        unreachable!("incorrect binary intrinsic sig");
-                    };
-                    assert_eq!(ty, *l_ty);
-                    assert_eq!(ty, *r_ty);
+            intrinsic_op([], [ty.clone(), ty.clone()], move |_, args, ctx| {
+                let [RValue::Value(left, l_ty), RValue::Value(right, r_ty)] = args else {
+                    unreachable!("incorrect binary intrinsic sig");
+                };
+                assert_eq!(ty, *l_ty);
+                assert_eq!(ty, *r_ty);
 
-                    Ok(Some(RValue::Value(
-                        ctx.emit_op(ir::Op::Binary {
-                            op: op,
-                            left: *left,
-                            right: *right,
-                        })?,
-                        ret_ty
-                            .as_ref()
-                            .map(|ty| ty.clone())
-                            .unwrap_or_else(|| ty.clone()),
-                    )))
-                },
-            ),
+                Ok(Some(RValue::Value(
+                    ctx.emit_op(ir::Op::Binary {
+                        op: op,
+                        left: *left,
+                        right: *right,
+                    })?,
+                    ret_ty
+                        .as_ref()
+                        .map(|ty| ty.clone())
+                        .unwrap_or_else(|| ty.clone()),
+                )))
+            }),
         )
         .unwrap();
     }
@@ -68,15 +56,13 @@ pub fn define_bin_op_for<'a>(
 
 pub fn define_ieq_op_for<'a>(
     tys: impl IntoIterator<Item = &'a ir::NativeType> + Clone,
-    template_count: &mut TemplateId,
-    root: &mut IdentScope,
+    root: &mut IdentTree,
 ) {
     define_bin_op_for(
         "eq",
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::SCmp(ir::CmpTy::Eq),
-        template_count,
         root,
     );
     define_bin_op_for(
@@ -84,23 +70,20 @@ pub fn define_ieq_op_for<'a>(
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::SCmp(ir::CmpTy::Ne),
-        template_count,
         root,
     );
 }
 
 pub fn define_scmp_op_for<'a>(
     tys: impl IntoIterator<Item = &'a ir::NativeType> + Clone,
-    template_count: &mut TemplateId,
-    root: &mut IdentScope,
+    root: &mut IdentTree,
 ) {
-    define_ieq_op_for(tys.clone(), template_count, root);
+    define_ieq_op_for(tys.clone(), root);
     define_bin_op_for(
         "ge",
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::SCmp(ir::CmpTy::Ge),
-        template_count,
         root,
     );
     define_bin_op_for(
@@ -108,23 +91,20 @@ pub fn define_scmp_op_for<'a>(
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::SCmp(ir::CmpTy::Gt),
-        template_count,
         root,
     );
 }
 
 pub fn define_ucmp_op_for<'a>(
     tys: impl IntoIterator<Item = &'a ir::NativeType> + Clone,
-    template_count: &mut TemplateId,
-    root: &mut IdentScope,
+    root: &mut IdentTree,
 ) {
-    define_ieq_op_for(tys.clone(), template_count, root);
+    define_ieq_op_for(tys.clone(), root);
     define_bin_op_for(
         "ge",
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::UCmp(ir::CmpTy::Ge),
-        template_count,
         root,
     );
     define_bin_op_for(
@@ -132,22 +112,19 @@ pub fn define_ucmp_op_for<'a>(
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::UCmp(ir::CmpTy::Gt),
-        template_count,
         root,
     );
 }
 
 pub fn define_fcmp_op_for<'a>(
     tys: impl IntoIterator<Item = &'a ir::NativeType> + Clone,
-    template_count: &mut TemplateId,
-    root: &mut IdentScope,
+    root: &mut IdentTree,
 ) {
     define_bin_op_for(
         "eq",
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::FCmp(ir::CmpTy::Eq),
-        template_count,
         root,
     );
     define_bin_op_for(
@@ -155,7 +132,6 @@ pub fn define_fcmp_op_for<'a>(
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::FCmp(ir::CmpTy::Ne),
-        template_count,
         root,
     );
     define_bin_op_for(
@@ -163,7 +139,6 @@ pub fn define_fcmp_op_for<'a>(
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::FCmp(ir::CmpTy::Ge),
-        template_count,
         root,
     );
     define_bin_op_for(
@@ -171,138 +146,73 @@ pub fn define_fcmp_op_for<'a>(
         tys.clone(),
         Some(ir::NativeType::Bool),
         ir::BinaryOp::FCmp(ir::CmpTy::Gt),
-        template_count,
         root,
     );
 }
 
-pub fn populate(root: &mut IdentScope, template_count: &mut TemplateId) {
+pub fn populate(root: &mut IdentTree) {
     use ir::NativeType::*;
     let ints = [U8, I8, U16, I16, U32, I32, U64, I64];
     let unsigned = [U8, U16, U32, U64];
     let signed = [I8, I16, I32, I64];
     let floats = [F64, F32];
 
-    define_bin_op_for("add", &ints, None, ir::BinaryOp::IAdd, template_count, root);
-    define_bin_op_for(
-        "add",
-        &floats,
-        None,
-        ir::BinaryOp::FAdd,
-        template_count,
-        root,
-    );
+    define_bin_op_for("add", &ints, None, ir::BinaryOp::IAdd, root);
+    define_bin_op_for("add", &floats, None, ir::BinaryOp::FAdd, root);
 
-    define_bin_op_for("sub", &ints, None, ir::BinaryOp::ISub, template_count, root);
-    define_bin_op_for(
-        "sub",
-        &floats,
-        None,
-        ir::BinaryOp::FSub,
-        template_count,
-        root,
-    );
+    define_bin_op_for("sub", &ints, None, ir::BinaryOp::ISub, root);
+    define_bin_op_for("sub", &floats, None, ir::BinaryOp::FSub, root);
 
-    define_bin_op_for("mul", &ints, None, ir::BinaryOp::IMul, template_count, root);
-    define_bin_op_for(
-        "mul",
-        &floats,
-        None,
-        ir::BinaryOp::FMul,
-        template_count,
-        root,
-    );
+    define_bin_op_for("mul", &ints, None, ir::BinaryOp::IMul, root);
+    define_bin_op_for("mul", &floats, None, ir::BinaryOp::FMul, root);
 
-    define_bin_op_for(
-        "div",
-        &signed,
-        None,
-        ir::BinaryOp::SDiv,
-        template_count,
-        root,
-    );
-    define_bin_op_for(
-        "div",
-        &unsigned,
-        None,
-        ir::BinaryOp::UDiv,
-        template_count,
-        root,
-    );
-    define_bin_op_for(
-        "div",
-        &floats,
-        None,
-        ir::BinaryOp::FDiv,
-        template_count,
-        root,
-    );
+    define_bin_op_for("div", &signed, None, ir::BinaryOp::SDiv, root);
+    define_bin_op_for("div", &unsigned, None, ir::BinaryOp::UDiv, root);
+    define_bin_op_for("div", &floats, None, ir::BinaryOp::FDiv, root);
 
-    define_bin_op_for(
-        "rem",
-        &signed,
-        None,
-        ir::BinaryOp::SRem,
-        template_count,
-        root,
-    );
-    define_bin_op_for(
-        "rem",
-        &unsigned,
-        None,
-        ir::BinaryOp::URem,
-        template_count,
-        root,
-    );
+    define_bin_op_for("rem", &signed, None, ir::BinaryOp::SRem, root);
+    define_bin_op_for("rem", &unsigned, None, ir::BinaryOp::URem, root);
 
-    define_ieq_op_for(&[Bool], template_count, root);
-    define_scmp_op_for(&signed, template_count, root);
-    define_ucmp_op_for(&unsigned, template_count, root);
-    define_fcmp_op_for(&floats, template_count, root);
+    define_ieq_op_for(&[Bool], root);
+    define_scmp_op_for(&signed, root);
+    define_ucmp_op_for(&unsigned, root);
+    define_fcmp_op_for(&floats, root);
 
     // TODO bitwise operators
 
-    root.insert_override(
+    root.insert_fn(
         "slice",
-        intrinsic_op(
-            [TyPattern::Any],
-            [ir::NativeType::U32],
-            template_count,
-            |tys, args, ctx| {
-                let [ty] = tys else {
-                    unreachable!("incorrect slice template args");
-                };
-                let [RValue::Value(len, ir::NativeType::U32)] = args else {
-                    unreachable!("incorrect slice args");
-                };
-                let (stride, _) = ctx.mod_ctx.module.size_align(ty)?;
+        intrinsic_op([TyPattern::Any], [ir::NativeType::U32], |tys, args, ctx| {
+            let [ty] = tys else {
+                unreachable!("incorrect slice template args");
+            };
+            let [RValue::Value(len, ir::NativeType::U32)] = args else {
+                unreachable!("incorrect slice args");
+            };
+            let (stride, _) = ctx.mod_ctx.module.size_align(ty)?;
 
-                let bytes = ctx.emit_op(ir::Op::Binary {
-                    op: ir::BinaryOp::IMul,
-                    left: *len,
-                    right: ir::Value::const_u32(stride as u32),
-                })?;
+            let bytes = ctx.emit_op(ir::Op::Binary {
+                op: ir::BinaryOp::IMul,
+                left: *len,
+                right: ir::Value::const_u32(stride as u32),
+            })?;
 
-                let data = ctx.emit_op(ir::Op::Unary {
-                    op: ir::UnaryOp::Alloc,
-                    value: bytes,
-                })?;
+            let data = ctx.emit_op(ir::Op::Unary {
+                op: ir::UnaryOp::Alloc,
+                value: bytes,
+            })?;
 
-                Ok(Some(RValue::Struct(SSAStruct::new_slice(
-                    RValue::Value(data, ir::NativeType::Ptr(true, Some(Box::new(ty.clone())))),
-                    RValue::Value(*len, ir::NativeType::U32),
-                    &mut ctx.mod_ctx.module,
-                )?)))
-            },
-        ),
+            Ok(Some(RValue::Struct(SSAStruct::new_slice(
+                RValue::Value(data, ir::NativeType::Ptr(true, Some(Box::new(ty.clone())))),
+                RValue::Value(*len, ir::NativeType::U32),
+                &mut ctx.mod_ctx.module,
+            )?)))
+        }),
     )
     .unwrap();
 
-    root.insert_override("index", {
-        let id = *template_count;
-        *template_count += 1;
+    root.insert_fn("index", {
         FnOverride {
-            id,
             temp_args: vec![],
             arg_tys: vec![
                 TyPattern::Any,

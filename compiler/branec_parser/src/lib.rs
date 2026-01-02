@@ -2,7 +2,7 @@ pub mod ast;
 use ast::*;
 
 use branec_source::Span;
-use chumsky::input::{SliceInput, StrInput};
+use chumsky::input::{MapExtra, SliceInput, StrInput};
 use chumsky::prelude::*;
 use chumsky::{IterParser, Parser, error::Rich, extra, text};
 
@@ -251,7 +251,7 @@ where
                 span,
             })
         })
-        .labelled("number")
+        .labelled("integer")
         .padded_by(ws_or_comment());
 
     let float = text::digits(10)
@@ -275,12 +275,12 @@ where
                 span,
             })
         })
-        .labelled("number")
+        .labelled("float")
         .padded_by(ws_or_comment());
 
     let literal = choice((
         float,
-        int,
+        int.clone(),
         choice((
             escapeable_char()
                 .padded_by(just("\'"))
@@ -290,6 +290,7 @@ where
             token("true").to(LiteralKind::Bool(true)),
             token("false").to(LiteralKind::Bool(false)),
         ))
+        .labelled("Boolean")
         .map_with(|kind, e| Literal {
             kind,
             span: e.span(),
@@ -335,9 +336,24 @@ where
         token("f32").map(|_| NativeTy::F32),
         token("f64").map(|_| NativeTy::F64),
         token("bool").map(|_| NativeTy::Bool),
-        token("char").map(|_| NativeTy::Char),
-        token("string").map(|_| NativeTy::String),
     ));
+
+    let array = ty
+        .clone()
+        .then_ignore(token(";"))
+        .then(int)
+        .delimited_by(token("["), token("]"))
+        .try_map_with(|(ty, len), e| {
+            let span: Span = e.span();
+            Ok(TyKind::Array(
+                Box::new(ty),
+                len.kind
+                    .as_unsigned_int()
+                    .ok_or_else(|| Rich::custom(span.clone(), "Unexpected"))?
+                    as u32,
+                span,
+            ))
+        });
 
     let field_def = ident.clone().then_ignore(token(":")).then(ty.clone());
 
@@ -345,17 +361,22 @@ where
         choice((
             token("*")
                 .ignore_then(token("mut").or_not())
+                .then(
+                    choice((
+                        ty.clone().map(|ty| Some(Box::new(ty))),
+                        token("any").map(|_| None),
+                    ))
+                    .delimited_by(token("["), token("]")),
+                )
+                .map(|(is_mut, ty)| TyKind::Slice(is_mut.is_some(), ty)),
+            token("*")
+                .ignore_then(token("mut").or_not())
                 .then(choice((
                     ty.clone().map(|ty| Some(Box::new(ty))),
                     token("void").map(|_| None),
                 )))
                 .map(|(is_mut, ty)| TyKind::Ptr(is_mut.is_some(), ty)),
-            choice((
-                ty.clone().map(|ty| Some(Box::new(ty))),
-                token("void").map(|_| None),
-            ))
-            .delimited_by(token("["), token("]"))
-            .map(|ty| TyKind::Slice(true, ty)),
+            array,
             ty.clone()
                 .map(|ty| Box::new(ty))
                 .separated_by(token(","))
@@ -606,8 +627,8 @@ where
             })
         });
 
-    let function_def = token("fn")
-        .ignore_then(ident.clone())
+    let function_def = choice((token("fn").to(false), token("node").to(true)))
+        .then(ident.clone())
         .then(template_params.or_not())
         .then(
             field_def
@@ -619,7 +640,8 @@ where
         .then(token("->").ignore_then(ty.clone()).or_not())
         .then(block.clone())
         .map_with(
-            |((((ident, template_params), params), ret_ty), body), e| Function {
+            |(((((is_node_def, ident), template_params), params), ret_ty), body), e| Function {
+                is_node_def,
                 span: e.span(),
                 ident,
                 params,
@@ -628,37 +650,6 @@ where
                 template_params: template_params.unwrap_or_default(),
             },
         );
-
-    let pipeline_stage = choice((
-        block.clone().map(|b| PipelineStage::Block(b)),
-        function_def.clone().map(|f| PipelineStage::Fn(f)),
-    ));
-
-    let pipeline_def = token("pipe")
-        .ignore_then(ident.clone())
-        .then(
-            field_def
-                .clone()
-                .separated_by(token(","))
-                .collect()
-                .delimited_by(token("("), token(")")),
-        )
-        .then(token("->").ignore_then(ty.clone()).or_not())
-        .then(
-            pipeline_stage
-                .separated_by(token(","))
-                .collect()
-                .delimited_by(token("["), token("]")),
-        )
-        .map_with(|(((ident, params), ret_ty), stages), e| {
-            DefKind::Pipeline(Pipeline {
-                span: e.span(),
-                ident,
-                params,
-                ret_ty,
-                stages,
-            })
-        });
 
     let mut def = Recursive::declare();
 
@@ -672,30 +663,19 @@ where
         )
         .map(|(ident, defs)| DefKind::Namespace(ident, defs));
 
-    let link_def = token("link")
-        .ignore_then(string_literal())
+    let use_def = token("using")
+        .to_span()
+        .then(path.clone())
         .then_ignore(token(";"))
-        .map_with(|link, e| {
-            DefKind::Link(Ident {
-                span: e.span(),
-                text: link,
-            })
-        });
-
-    let use_def = token("use")
-        .ignore_then(path.clone())
-        .then_ignore(token(";"))
-        .map(|path| DefKind::Use(path));
+        .map(|(token_span, path)| DefKind::Using(token_span, path));
 
     def.define(
         choice((
             struct_def,
             enum_def,
             function_def.map(|f| DefKind::Function(f)),
-            pipeline_def,
             namespace,
             use_def,
-            link_def,
         ))
         .map_with(|kind, e| Def {
             kind,

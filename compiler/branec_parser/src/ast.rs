@@ -1,5 +1,8 @@
-use branec_source::Span;
-use std::fmt::{self, Display};
+use branec_source::{Span, Uri};
+use std::{
+    fmt::{self, Display},
+    sync::Arc,
+};
 
 #[derive(Clone)]
 pub enum LiteralKind {
@@ -16,6 +19,130 @@ pub enum LiteralKind {
     Bool(bool),
     Char(char),
     String(String),
+}
+
+impl LiteralKind {
+    pub fn as_i8(&self) -> Option<i8> {
+        if let LiteralKind::I8(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_i16(&self) -> Option<i16> {
+        if let LiteralKind::I16(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_i32(&self) -> Option<i32> {
+        if let LiteralKind::I32(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        if let LiteralKind::I64(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_u8(&self) -> Option<u8> {
+        if let LiteralKind::U8(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_u16(&self) -> Option<u16> {
+        if let LiteralKind::U16(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        if let LiteralKind::U32(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        if let LiteralKind::U64(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_f32(&self) -> Option<f32> {
+        if let LiteralKind::F32(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_f64(&self) -> Option<f64> {
+        if let LiteralKind::F64(value) = self {
+            Some(*value)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_signed_int(&self) -> Option<i64> {
+        match self {
+            LiteralKind::I8(v) => Some(*v as i64),
+            LiteralKind::I16(v) => Some(*v as i64),
+            LiteralKind::I32(v) => Some(*v as i64),
+            LiteralKind::I64(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    pub fn as_unsigned_int(&self) -> Option<u64> {
+        match self {
+            LiteralKind::U8(v) => Some(*v as u64),
+            LiteralKind::U16(v) => Some(*v as u64),
+            LiteralKind::U32(v) => Some(*v as u64),
+            LiteralKind::U64(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    pub fn as_int(&self) -> Option<i128> {
+        match self {
+            LiteralKind::U8(v) => Some(*v as i128),
+            LiteralKind::U16(v) => Some(*v as i128),
+            LiteralKind::U32(v) => Some(*v as i128),
+            LiteralKind::U64(v) => Some(*v as i128),
+            LiteralKind::I8(v) => Some(*v as i128),
+            LiteralKind::I16(v) => Some(*v as i128),
+            LiteralKind::I32(v) => Some(*v as i128),
+            LiteralKind::I64(v) => Some(*v as i128),
+            _ => None,
+        }
+    }
+
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            LiteralKind::F32(v) => Some(*v as f64),
+            LiteralKind::F64(v) => Some(*v),
+            _ => None,
+        }
+    }
 }
 
 impl Display for LiteralKind {
@@ -99,8 +226,6 @@ pub enum NativeTy {
     F32,
     F64,
     Bool,
-    Char,
-    String,
 }
 
 impl Display for NativeTy {
@@ -117,8 +242,6 @@ impl Display for NativeTy {
             NativeTy::F32 => write!(f, "f32"),
             NativeTy::F64 => write!(f, "f64"),
             NativeTy::Bool => write!(f, "bool"),
-            NativeTy::Char => write!(f, "char"),
-            NativeTy::String => write!(f, "string"),
         }
     }
 }
@@ -126,13 +249,15 @@ impl Display for NativeTy {
 #[derive(PartialEq, Clone)]
 pub enum TyKind {
     Native(NativeTy),
+    /// (element type, length, span)
+    Array(Box<Ty>, u32, Span),
     /// (is mut, type)
     Ptr(bool, Option<Box<Ty>>),
     /// (is mut, type)
     Slice(bool, Option<Box<Ty>>),
-    Path(Path),
     Tuple(Vec<Box<Ty>>),
     Struct(Vec<(Ident, Box<Ty>)>),
+    Path(Path),
     //TODO Fn,Pipe
 }
 
@@ -140,6 +265,7 @@ impl Display for TyKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TyKind::Native(n) => write!(f, "{}", n),
+            TyKind::Array(ty, len, _) => write!(f, "[{}; {}]", ty, len),
             TyKind::Ptr(is_mut, ty) => match (is_mut, ty) {
                 (true, Some(t)) => write!(f, "*mut {}", t),
                 (false, Some(t)) => write!(f, "*const {}", t),
@@ -147,10 +273,10 @@ impl Display for TyKind {
                 (false, None) => write!(f, "*const ?"),
             },
             TyKind::Slice(is_mut, ty) => match (is_mut, ty) {
-                (true, Some(t)) => write!(f, "[mut {}]", t),
-                (false, Some(t)) => write!(f, "[{}]", t),
-                (true, None) => write!(f, "[mut ?]"),
-                (false, None) => write!(f, "[?]"),
+                (true, Some(t)) => write!(f, "*mut [{}]", t),
+                (false, Some(t)) => write!(f, "*[{}]", t),
+                (true, None) => write!(f, "*mut [?]"),
+                (false, None) => write!(f, "*[?]"),
             },
             TyKind::Path(p) => write!(f, "{}", p),
             TyKind::Tuple(items) => {
@@ -244,6 +370,18 @@ pub struct Path {
     pub span: Span,
 }
 
+impl Path {
+    pub fn empty() -> Self {
+        Path {
+            segments: vec![],
+            span: Span {
+                range: Default::default(),
+                source: Arc::new(Uri::Unknown),
+            },
+        }
+    }
+}
+
 impl Display for Path {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let segments: Vec<String> = self.segments.iter().map(|seg| seg.to_string()).collect();
@@ -281,6 +419,7 @@ pub struct Function {
     pub ret_ty: Option<Ty>,
     pub body: Block,
     pub template_params: Vec<TemplateParam>,
+    pub is_node_def: bool,
 }
 
 #[derive(Clone)]
@@ -321,28 +460,12 @@ pub struct Block {
 }
 
 #[derive(Clone)]
-pub enum PipelineStage {
-    Block(Block),
-    Fn(Function),
-}
-
-#[derive(Clone)]
-pub struct Pipeline {
-    pub ident: Ident,
-    pub span: Span,
-    pub params: Vec<(Ident, Ty)>,
-    pub ret_ty: Option<Ty>,
-    pub stages: Vec<PipelineStage>,
-}
-
-#[derive(Clone)]
 pub enum DefKind {
     Struct(Struct),
     Enum(Enum),
     Function(Function),
-    Pipeline(Pipeline),
-    Link(Ident),
-    Use(Path),
+    /// (span of "using" token, ident path)
+    Using(Span, Path),
     Namespace(Ident, Vec<Def>),
 }
 
@@ -357,8 +480,6 @@ impl Def {
             DefKind::Struct(s) => Some(&s.ident),
             DefKind::Enum(e) => Some(&e.ident),
             DefKind::Function(f) => Some(&f.ident),
-            DefKind::Pipeline(p) => Some(&p.ident),
-            DefKind::Link(l) => Some(l),
             DefKind::Namespace(n, _) => Some(n),
             _ => None,
         }
@@ -602,51 +723,13 @@ impl Display for Block {
     }
 }
 
-impl Display for PipelineStage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PipelineStage::Block(b) => write!(f, "{}", b),
-            PipelineStage::Fn(fun) => write!(f, "{}", fun),
-        }
-    }
-}
-
-impl Display for Pipeline {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = String::new();
-        s.push_str(&format!("pipeline {}", self.ident));
-        s.push('(');
-        for (i, (id, ty)) in self.params.iter().enumerate() {
-            if i > 0 {
-                s.push_str(", ");
-            }
-            s.push_str(&format!("{}: {}", id, ty));
-        }
-        s.push(')');
-        if let Some(ret) = &self.ret_ty {
-            s.push_str(&format!(" -> {}", ret));
-        }
-        s.push_str(" { ");
-        for (i, st) in self.stages.iter().enumerate() {
-            if i > 0 {
-                s.push_str(" ");
-            }
-            s.push_str(&format!("{}", st));
-        }
-        s.push_str(" }");
-        write!(f, "{}", s)
-    }
-}
-
 impl Display for DefKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DefKind::Struct(s) => write!(f, "{}", s),
             DefKind::Enum(e) => write!(f, "{}", e),
             DefKind::Function(fn_) => write!(f, "{}", fn_),
-            DefKind::Pipeline(p) => write!(f, "{}", p),
-            DefKind::Link(id) => write!(f, "link {}", id),
-            DefKind::Use(p) => write!(f, "use {};", p),
+            DefKind::Using(_, p) => write!(f, "using {};", p),
             DefKind::Namespace(id, defs) => {
                 let mut s = String::new();
                 s.push_str(&format!("namespace {} {{ ", id));

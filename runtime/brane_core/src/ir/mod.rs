@@ -3,14 +3,14 @@ use anyhow::{anyhow, bail};
 pub type StructId = u64;
 pub type EnumId = u64;
 pub type FnId = i64;
-pub type PipeId = i64;
+pub type NodeId = i64;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Ref {
     Struct(StructId),
     Enum(EnumId),
     Function(FnId),
-    Pipeline(PipeId),
+    Pipeline(NodeId),
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
@@ -531,30 +531,29 @@ pub struct Function {
     pub blocks: Vec<Block>,
 }
 
-pub struct IRPipeline {
+pub struct Node {
     pub id: String,
-    pub input: Vec<Ty>,
-    pub output: Option<Ty>,
-    /// Function ids
-    pub stages: Vec<i32>,
+    pub update_fn: FnId,
 }
 
 pub struct Module {
     pub id: String,
+    pub function_imports: Vec<String>,
     pub structs: Vec<Struct>,
     pub enums: Vec<Enum>,
     pub functions: Vec<Function>,
-    pub pipelines: Vec<IRPipeline>,
+    pub nodes: Vec<Node>,
 }
 
 impl Module {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
+            function_imports: Default::default(),
             structs: Default::default(),
             enums: Default::default(),
             functions: Default::default(),
-            pipelines: Default::default(),
+            nodes: Default::default(),
         }
     }
 
@@ -590,8 +589,8 @@ impl Module {
         self.functions.get(id as usize)
     }
 
-    pub fn get_pipeline(&self, id: PipeId) -> Option<&IRPipeline> {
-        self.pipelines.get(id as usize)
+    pub fn get_node(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.get(id as usize)
     }
 
     // Recursively convert a type to a vec of every native type value paired with it's byte offset.
@@ -643,9 +642,9 @@ impl Module {
                     "*{} {}",
                     if *is_mut { "mut" } else { "const" },
                     if let Some(inner_ty) = inner_ty {
-                        &self.ty_string(inner_ty)
+                        self.ty_string(inner_ty)
                     } else {
-                        "()"
+                        "()".into()
                     }
                 ),
                 nt => nt.to_string(),
@@ -674,9 +673,9 @@ impl Module {
                                 "{}{}",
                                 m.id,
                                 if let Some(ty) = &m.ty {
-                                    &format!(": {}", self.ty_string(ty))
+                                    format!(": {}", self.ty_string(ty))
                                 } else {
-                                    ""
+                                    "".into()
                                 }
                             ))
                             .collect::<Vec<_>>()
@@ -926,26 +925,9 @@ impl fmt::Display for Function {
     }
 }
 
-impl fmt::Display for IRPipeline {
+impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(pipe \"{}\" ", self.id)?;
-        write!(f, "(")?;
-        for (i, ty) in self.input.iter().enumerate() {
-            if i > 0 {
-                write!(f, " ")?;
-            }
-            write!(f, "{}", ty)?;
-        }
-        write!(f, ") ")?;
-        match &self.output {
-            Some(ty) => write!(f, "{}", ty)?,
-            None => write!(f, "nil")?,
-        }
-        write!(f, " (stages")?;
-        for stage in &self.stages {
-            write!(f, " {}", stage)?;
-        }
-        write!(f, "))")
+        write!(f, "(node \"{}\" update({}))", self.id, self.update_fn)
     }
 }
 
@@ -993,6 +975,9 @@ impl fmt::Display for Enum {
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(module \"{}\"", self.id)?;
+        if self.function_imports.len() > 0 {
+            write!(f, "\n(import\n  {}\n)", self.function_imports.join(",\n  "))?;
+        }
         for (i, s) in self.structs.iter().enumerate() {
             write!(f, "\n{}: {}", i, s)?;
         }
@@ -1002,8 +987,8 @@ impl fmt::Display for Module {
         for (i, func) in self.functions.iter().enumerate() {
             write!(f, "\n{}: {}", i, func)?;
         }
-        for (i, pipe) in self.pipelines.iter().enumerate() {
-            write!(f, "\n{}: {}", i, pipe)?;
+        for (i, node) in self.nodes.iter().enumerate() {
+            write!(f, "\n{}: {}", i, node)?;
         }
         write!(f, ")")
     }

@@ -13,7 +13,7 @@
 
 #[cfg(test)]
 mod tests {
-    use brane_core::BindingsCtx;
+    use brane_core::ExecutionCtx;
     use branec_source::SourceManager;
     use std::collections::HashMap;
     use std::mem;
@@ -21,7 +21,7 @@ mod tests {
     use anyhow::Result;
     use brane_backend_cranelift::cranelift_jit::JITModule;
     use brane_backend_cranelift::cranelift_module::FuncId;
-    use brane_backend_cranelift::CraneliftJitBackend;
+    use brane_backend_cranelift::{CraneliftJitBackend, LoadedModule};
     use branec::CompileContext;
 
     // ============================================================================
@@ -415,34 +415,34 @@ mod tests {
 
     /// Container for all JIT-compiled ABI test functions
     pub struct JitFunctions {
-        pub abi_test_struct_4b: extern "C" fn(*mut BindingsCtx, Struct4B) -> Struct4B,
-        pub abi_test_struct_8b: extern "C" fn(*mut BindingsCtx, Struct8B) -> Struct8B,
-        pub abi_test_struct_16b: extern "C" fn(*mut BindingsCtx, Struct16B) -> Struct16B,
-        pub abi_test_struct_16f: extern "C" fn(*mut BindingsCtx, Struct16BF) -> Struct16BF,
-        pub abi_test_struct_24b: extern "C" fn(*mut BindingsCtx, Struct24B) -> Struct24B,
-        pub abi_test_enum_empty_2: extern "C" fn(*mut BindingsCtx, EnumEmpty2) -> EnumEmpty2,
-        pub abi_test_enum_empty_256: extern "C" fn(*mut BindingsCtx, EnumEmpty256) -> EnumEmpty256,
-        pub abi_test_enum_single_4b: extern "C" fn(*mut BindingsCtx, EnumSingle4B) -> EnumSingle4B,
-        pub abi_test_enum_single_8b: extern "C" fn(*mut BindingsCtx, EnumSingle8B) -> EnumSingle8B,
+        pub abi_test_struct_4b: extern "C" fn(*mut ExecutionCtx, Struct4B) -> Struct4B,
+        pub abi_test_struct_8b: extern "C" fn(*mut ExecutionCtx, Struct8B) -> Struct8B,
+        pub abi_test_struct_16b: extern "C" fn(*mut ExecutionCtx, Struct16B) -> Struct16B,
+        pub abi_test_struct_16f: extern "C" fn(*mut ExecutionCtx, Struct16BF) -> Struct16BF,
+        pub abi_test_struct_24b: extern "C" fn(*mut ExecutionCtx, Struct24B) -> Struct24B,
+        pub abi_test_enum_empty_2: extern "C" fn(*mut ExecutionCtx, EnumEmpty2) -> EnumEmpty2,
+        pub abi_test_enum_empty_256: extern "C" fn(*mut ExecutionCtx, EnumEmpty256) -> EnumEmpty256,
+        pub abi_test_enum_single_4b: extern "C" fn(*mut ExecutionCtx, EnumSingle4B) -> EnumSingle4B,
+        pub abi_test_enum_single_8b: extern "C" fn(*mut ExecutionCtx, EnumSingle8B) -> EnumSingle8B,
         pub abi_test_enum_single_16b:
-            extern "C" fn(*mut BindingsCtx, EnumSingle16B) -> EnumSingle16B,
+            extern "C" fn(*mut ExecutionCtx, EnumSingle16B) -> EnumSingle16B,
         pub abi_test_enum_single_24b:
-            extern "C" fn(*mut BindingsCtx, EnumSingle24B) -> EnumSingle24B,
-        pub abi_test_enum_multi_4b: extern "C" fn(*mut BindingsCtx, EnumMulti4B) -> EnumMulti4B,
-        pub abi_test_enum_multi_8b: extern "C" fn(*mut BindingsCtx, EnumMulti8B) -> EnumMulti8B,
-        pub abi_test_enum_multi_16b: extern "C" fn(*mut BindingsCtx, EnumMulti16B) -> EnumMulti16B,
-        pub abi_test_enum_multi_24b: extern "C" fn(*mut BindingsCtx, EnumMulti24B) -> EnumMulti24B,
+            extern "C" fn(*mut ExecutionCtx, EnumSingle24B) -> EnumSingle24B,
+        pub abi_test_enum_multi_4b: extern "C" fn(*mut ExecutionCtx, EnumMulti4B) -> EnumMulti4B,
+        pub abi_test_enum_multi_8b: extern "C" fn(*mut ExecutionCtx, EnumMulti8B) -> EnumMulti8B,
+        pub abi_test_enum_multi_16b: extern "C" fn(*mut ExecutionCtx, EnumMulti16B) -> EnumMulti16B,
+        pub abi_test_enum_multi_24b: extern "C" fn(*mut ExecutionCtx, EnumMulti24B) -> EnumMulti24B,
         pub abi_test_enum_mixed_4b_8b:
-            extern "C" fn(*mut BindingsCtx, EnumMixed4B8B) -> EnumMixed4B8B,
+            extern "C" fn(*mut ExecutionCtx, EnumMixed4B8B) -> EnumMixed4B8B,
         pub abi_test_enum_mixed_4b_8b_16b:
-            extern "C" fn(*mut BindingsCtx, EnumMixed4B8B16B) -> EnumMixed4B8B16B,
-        pub abi_test_enum_mixed_all: extern "C" fn(*mut BindingsCtx, EnumMixedAll) -> EnumMixedAll,
+            extern "C" fn(*mut ExecutionCtx, EnumMixed4B8B16B) -> EnumMixed4B8B16B,
+        pub abi_test_enum_mixed_all: extern "C" fn(*mut ExecutionCtx, EnumMixedAll) -> EnumMixedAll,
         pub abi_test_multi_params:
-            extern "C" fn(*mut BindingsCtx, Struct4B, Struct8B, Struct16B, Struct24B) -> Struct24B,
+            extern "C" fn(*mut ExecutionCtx, Struct4B, Struct8B, Struct16B, Struct24B) -> Struct24B,
         pub abi_test_exaust_general_6:
-            extern "C" fn(*mut BindingsCtx, i32, f32, i32, i32, i32, Struct16B) -> Struct16B,
+            extern "C" fn(*mut ExecutionCtx, i32, f32, i32, i32, i32, Struct16B) -> Struct16B,
         pub abi_test_exaust_general_8: extern "C" fn(
-            *mut BindingsCtx,
+            *mut ExecutionCtx,
             i32,
             f32,
             i32,
@@ -453,7 +453,7 @@ mod tests {
             Struct16B,
         ) -> Struct16B,
         pub abi_test_exaust_vector_8: extern "C" fn(
-            *mut BindingsCtx,
+            *mut ExecutionCtx,
             f32,
             i32,
             f32,
@@ -515,80 +515,80 @@ mod tests {
             let functions = JitFunctions {
                 abi_test_struct_4b: get_fn!(
                     "abi_test_struct_4b",
-                    extern "C" fn(*mut BindingsCtx, Struct4B) -> Struct4B
+                    extern "C" fn(*mut ExecutionCtx, Struct4B) -> Struct4B
                 ),
                 abi_test_struct_8b: get_fn!(
                     "abi_test_struct_8b",
-                    extern "C" fn(*mut BindingsCtx, Struct8B) -> Struct8B
+                    extern "C" fn(*mut ExecutionCtx, Struct8B) -> Struct8B
                 ),
                 abi_test_struct_16b: get_fn!(
                     "abi_test_struct_16b",
-                    extern "C" fn(*mut BindingsCtx, Struct16B) -> Struct16B
+                    extern "C" fn(*mut ExecutionCtx, Struct16B) -> Struct16B
                 ),
                 abi_test_struct_16f: get_fn!(
                     "abi_test_struct_16f",
-                    extern "C" fn(*mut BindingsCtx, Struct16BF) -> Struct16BF
+                    extern "C" fn(*mut ExecutionCtx, Struct16BF) -> Struct16BF
                 ),
                 abi_test_struct_24b: get_fn!(
                     "abi_test_struct_24b",
-                    extern "C" fn(*mut BindingsCtx, Struct24B) -> Struct24B
+                    extern "C" fn(*mut ExecutionCtx, Struct24B) -> Struct24B
                 ),
                 abi_test_enum_empty_2: get_fn!(
                     "abi_test_enum_empty_2",
-                    extern "C" fn(*mut BindingsCtx, EnumEmpty2) -> EnumEmpty2
+                    extern "C" fn(*mut ExecutionCtx, EnumEmpty2) -> EnumEmpty2
                 ),
                 abi_test_enum_empty_256: get_fn!(
                     "abi_test_enum_empty_256",
-                    extern "C" fn(*mut BindingsCtx, EnumEmpty256) -> EnumEmpty256
+                    extern "C" fn(*mut ExecutionCtx, EnumEmpty256) -> EnumEmpty256
                 ),
                 abi_test_enum_single_4b: get_fn!(
                     "abi_test_enum_single_4b",
-                    extern "C" fn(*mut BindingsCtx, EnumSingle4B) -> EnumSingle4B
+                    extern "C" fn(*mut ExecutionCtx, EnumSingle4B) -> EnumSingle4B
                 ),
                 abi_test_enum_single_8b: get_fn!(
                     "abi_test_enum_single_8b",
-                    extern "C" fn(*mut BindingsCtx, EnumSingle8B) -> EnumSingle8B
+                    extern "C" fn(*mut ExecutionCtx, EnumSingle8B) -> EnumSingle8B
                 ),
                 abi_test_enum_single_16b: get_fn!(
                     "abi_test_enum_single_16b",
-                    extern "C" fn(*mut BindingsCtx, EnumSingle16B) -> EnumSingle16B
+                    extern "C" fn(*mut ExecutionCtx, EnumSingle16B) -> EnumSingle16B
                 ),
                 abi_test_enum_single_24b: get_fn!(
                     "abi_test_enum_single_24b",
-                    extern "C" fn(*mut BindingsCtx, EnumSingle24B) -> EnumSingle24B
+                    extern "C" fn(*mut ExecutionCtx, EnumSingle24B) -> EnumSingle24B
                 ),
                 abi_test_enum_multi_4b: get_fn!(
                     "abi_test_enum_multi_4b",
-                    extern "C" fn(*mut BindingsCtx, EnumMulti4B) -> EnumMulti4B
+                    extern "C" fn(*mut ExecutionCtx, EnumMulti4B) -> EnumMulti4B
                 ),
                 abi_test_enum_multi_8b: get_fn!(
                     "abi_test_enum_multi_8b",
-                    extern "C" fn(*mut BindingsCtx, EnumMulti8B) -> EnumMulti8B
+                    extern "C" fn(*mut ExecutionCtx, EnumMulti8B) -> EnumMulti8B
                 ),
                 abi_test_enum_multi_16b: get_fn!(
                     "abi_test_enum_multi_16b",
-                    extern "C" fn(*mut BindingsCtx, EnumMulti16B) -> EnumMulti16B
+                    extern "C" fn(*mut ExecutionCtx, EnumMulti16B) -> EnumMulti16B
                 ),
                 abi_test_enum_multi_24b: get_fn!(
                     "abi_test_enum_multi_24b",
-                    extern "C" fn(*mut BindingsCtx, EnumMulti24B) -> EnumMulti24B
+                    extern "C" fn(*mut ExecutionCtx, EnumMulti24B) -> EnumMulti24B
                 ),
                 abi_test_enum_mixed_4b_8b: get_fn!(
                     "abi_test_enum_mixed_4b_8b",
-                    extern "C" fn(*mut BindingsCtx, EnumMixed4B8B) -> EnumMixed4B8B
+                    extern "C" fn(*mut ExecutionCtx, EnumMixed4B8B) -> EnumMixed4B8B
                 ),
                 abi_test_enum_mixed_4b_8b_16b: get_fn!(
                     "abi_test_enum_mixed_4b_8b_16b",
-                    extern "C" fn(*mut BindingsCtx, EnumMixed4B8B16B) -> EnumMixed4B8B16B
+                    extern "C" fn(*mut ExecutionCtx, EnumMixed4B8B16B) -> EnumMixed4B8B16B
                 ),
                 abi_test_enum_mixed_all: get_fn!(
                     "abi_test_enum_mixed_all",
-                    extern "C" fn(*mut BindingsCtx, EnumMixedAll) -> EnumMixedAll
+                    extern "C" fn(*mut ExecutionCtx, EnumMixedAll) -> EnumMixedAll
                 ),
                 abi_test_multi_params: get_fn!(
                     "abi_test_multi_params",
                     extern "C" fn(
-                        *mut BindingsCtx,
+                        *mut ExecutionCtx,
                         Struct4B,
                         Struct8B,
                         Struct16B,
@@ -598,7 +598,7 @@ mod tests {
                 abi_test_exaust_general_6: get_fn!(
                     "abi_test_exaust_general_6",
                     extern "C" fn(
-                        *mut BindingsCtx,
+                        *mut ExecutionCtx,
                         i32,
                         f32,
                         i32,
@@ -610,7 +610,7 @@ mod tests {
                 abi_test_exaust_general_8: get_fn!(
                     "abi_test_exaust_general_8",
                     extern "C" fn(
-                        *mut BindingsCtx,
+                        *mut ExecutionCtx,
                         i32,
                         f32,
                         i32,
@@ -624,7 +624,7 @@ mod tests {
                 abi_test_exaust_vector_8: get_fn!(
                     "abi_test_exaust_vector_8",
                     extern "C" fn(
-                        *mut BindingsCtx,
+                        *mut ExecutionCtx,
                         f32,
                         i32,
                         f32,
@@ -656,13 +656,16 @@ mod tests {
                 .sources
                 .add_custom(include_str!("../../tests/c_abi.bscript").to_string())?;
 
-            let module = ctx.emit_module(&test_source, vec!["test_mod".into()])?;
+            let module = ctx.emit_module("test_mod".into(), &test_source)?;
 
             println!("Emitted module:\n{}", module);
             println!("Jitting...");
-            let mut jit = CraneliftJitBackend::default();
-            let (fn_map, module) = jit.jit(module)?;
-            Self::from_jit_module(module, fn_map)
+            let jit = CraneliftJitBackend::default();
+            let LoadedModule {
+                functions,
+                jit_module,
+            } = jit.jit(module)?;
+            Self::from_jit_module(jit_module, functions)
         }
 
         /// Get reference to the loaded functions

@@ -4,6 +4,7 @@ use std::{collections::HashMap, fmt::Display, ops::Range, path::PathBuf, sync::A
 #[derive(Clone, Eq, PartialEq, PartialOrd, Hash, Debug)]
 pub enum Uri {
     Unknown,
+    StdLib,
     File(PathBuf),
     Custom(usize),
 }
@@ -18,6 +19,7 @@ impl Display for Uri {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Uri::Unknown => write!(f, "unknown"),
+            Uri::StdLib => write!(f, "stdlib"),
             Uri::File(path_buf) => write!(f, "file://{}", path_buf.to_string_lossy()),
             Uri::Custom(id) => write!(f, "custom://{:X}", id),
         }
@@ -39,13 +41,10 @@ impl SourceManager {
 
     pub fn refresh(&mut self, key: Uri) -> anyhow::Result<()> {
         match key {
-            Uri::Unknown => {
-                bail!("cannot refresh unknown uri");
-            }
             Uri::File(path_buf) => {
                 self.load_from_file(path_buf)?;
             }
-            Uri::Custom(_) => {}
+            _ => {}
         }
         Ok(())
     }

@@ -9,6 +9,8 @@ branec_source = { path = "../branec_source/" }
 branec_parser = { path = "../branec_parser/" }
 branec_emitter = { path = "../branec_emitter/" }
 
+
 chumsky.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
 

@@ -1,5 +1,8 @@
+use brane_core::runtime::{JitBackend, ModuleId};
 use cranelift_codegen::ir::immediates::V128Imm;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, RwLock};
 use target_lexicon::{Architecture, CallingConvention};
 
 use anyhow::{Result, anyhow, bail};
@@ -25,6 +28,8 @@ pub use cranelift_module;
 
 pub struct CraneliftJitBackend {
     pub isa: isa::OwnedTargetIsa,
+    pub next_module_id: AtomicUsize,
+    pub loaded_modules: RwLock<HashMap<ModuleId, Arc<LoadedModule>>>,
 }
 
 impl Default for CraneliftJitBackend {
@@ -39,12 +44,53 @@ impl Default for CraneliftJitBackend {
             .finish(settings::Flags::new(flag_builder))
             .expect("Unable to build ISA");
 
-        Self { isa }
+        Self {
+            isa,
+            next_module_id: AtomicUsize::new(0),
+            loaded_modules: Default::default(),
+        }
+    }
+}
+
+pub struct LoadedModule {
+    pub functions: HashMap<String, FuncId>,
+    pub jit_module: cranelift_jit::JITModule,
+}
+
+impl JitBackend for CraneliftJitBackend {
+    type ModuleTy = LoadedModule;
+
+    fn load(&self, module: ir::Module) -> anyhow::Result<brane_core::runtime::ModuleId> {
+        let module = self.jit(module)?;
+        let id = self
+            .next_module_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.loaded_modules
+            .write()
+            .unwrap()
+            .insert(id, Arc::new(module));
+        Ok(id)
+    }
+
+    fn get_module(&self, module: ModuleId) -> Option<Arc<Self::ModuleTy>> {
+        self.loaded_modules.read().unwrap().get(&module).cloned()
+    }
+}
+
+impl brane_core::runtime::LoadedModule for LoadedModule {
+    fn get_fn(&self, name: &str) -> Option<*const u8> {
+        self.functions
+            .get(name)
+            .map(|f_id| self.jit_module.get_finalized_function(*f_id))
+    }
+
+    fn get_function_names(&self) -> impl Iterator<Item = &str> {
+        self.functions.iter().map(|f| f.0.as_str())
     }
 }
 
 impl CraneliftJitBackend {
-    pub fn jit(&mut self, module: ir::Module) -> Result<(HashMap<String, FuncId>, JITModule)> {
+    pub fn jit(&self, module: ir::Module) -> Result<LoadedModule> {
         let jit_module = JITModule::new(JITBuilder::with_isa(
             self.isa.clone(),
             cranelift_module::default_libcall_names(),
@@ -66,7 +112,7 @@ impl CraneliftJitBackend {
                 .module
                 .declare_function(&func.id, Linkage::Export, &signature)
                 .map_err(|e| anyhow!("Failed to declare function {}", e))?;
-            println!("Declared function `{}` with sig {}", func.id, signature);
+            //println!("Declared function `{}` with sig {}", func.id, signature);
             ctx.fn_map.push((func.id.clone(), fn_id));
             signatures.push((signature, has_ret_ptr));
         }
@@ -107,7 +153,8 @@ impl CraneliftJitBackend {
                     .context(codegen.func.clone())
                 })?;
             let cs = self.isa.to_capstone()?;
-            println!(
+            /* TODO enable with flags
+             * println!(
                 "Emitted function {} (in map as ({}, {})):\n{}",
                 func.id,
                 ctx.fn_map[index].0,
@@ -116,17 +163,20 @@ impl CraneliftJitBackend {
                     .compiled_code()
                     .unwrap()
                     .disassemble(Some(&codegen.func.params), &cs)?
-            );
+            );*/
             ctx.module.clear_context(&mut codegen);
         }
 
         ctx.module.finalize_definitions()?;
 
-        Ok((ctx.fn_map.into_iter().collect(), ctx.module))
+        Ok(LoadedModule {
+            functions: ctx.fn_map.into_iter().collect(),
+            jit_module: ctx.module,
+        })
     }
 
     fn jit_fn(
-        &mut self,
+        &self,
         func: &ir::Function,
         sig: Signature,
         ret_ptr: bool,
@@ -169,10 +219,12 @@ impl CraneliftJitBackend {
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
+        /*
         println!(
             "jitting fn {} with sig: {}",
             func.id, builder.func.signature
         );
+        */
 
         let fn_params = builder.block_params(entry);
         let (ret_ptr, ctx_ptr, fn_params) = if ret_ptr {
@@ -190,6 +242,7 @@ impl CraneliftJitBackend {
         let mut ctx = FunctionCtx {
             mod_ctx: module,
             builder,
+            entry_block_id: entry,
             block_values: Default::default(),
             blocks: blocks.clone(),
             ptr_ty,
@@ -213,7 +266,8 @@ impl CraneliftJitBackend {
                         let res = match op {
                             ir::UnaryOp::INeg => ctx.builder.ins().ineg(value),
                             ir::UnaryOp::FNeg => ctx.builder.ins().fneg(value),
-                            ir::UnaryOp::Alloc => todo!(), // Some(ctx.builder.ins().iconst(types::I32, 0)),
+                            // TODO swap with call to runtime linked function from runtime
+                            ir::UnaryOp::Alloc => ctx.builder.ins().iconst(types::I32, 032),
                         };
                         let ty = ctx.builder.func.dfg.value_type(res);
                         Some(FValue::new(res, ty))
@@ -360,7 +414,7 @@ impl CraneliftJitBackend {
         let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
         let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
-        let entry = ctx.blocks[0];
+        let entry = ctx.entry_block_id;
         let bindings = ctx.builder.block_params(entry)[0];
 
         let mul_shift = match ctx.ptr_bytes {
@@ -389,7 +443,7 @@ impl CraneliftJitBackend {
         let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
         let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
-        let entry = ctx.blocks[0];
+        let entry = ctx.entry_block_id;
         let bindings = ctx.builder.block_params(entry)[0];
 
         let mul_shift = match ctx.ptr_bytes {
@@ -560,7 +614,7 @@ impl CraneliftJitBackend {
 
                 if let Some(ret_ty) = &func.sig.ret_ty {
                     let mut ret_struct = |size: usize| {
-                        println!("sig for returning struct of size {}", size);
+                        //println!("sig for returning struct of size {}", size);
                         match size {
                             0 => unreachable!(),
                             1 => sig.returns.push(AbiParam::new(types::I8)),
@@ -606,7 +660,7 @@ impl CraneliftJitBackend {
 
                 for param in &func.sig.param_tys {
                     let mut pass_struct = |size: usize| {
-                        println!("passing struct of size {} as arg", size);
+                        //println!("passing struct of size {} as arg", size);
                         match size {
                             0 => unreachable!(),
                             1 => sig.params.push(AbiParam::new(types::I8)),
@@ -1876,6 +1930,7 @@ struct FunctionCtx<'a> {
     ctx_ptr: Value,
     ret_ptr: Option<Value>,
     blocks: Vec<Block>,
+    entry_block_id: Block,
     block_values: HashMap<Block, Vec<Option<FValue>>>,
     block_args: HashMap<Block, Vec<FValue>>,
     ptr_ty: Type,

@@ -1,0 +1,16 @@
+
+struct TestData {
+    float a;
+    int b;
+}
+
+node test_node(
+    // The published data of this node, type is not statically enforced yet
+    value: *mut TestData,
+    // Args as requested by the node graph data
+    args: *[*mut any],
+    // Node graph data
+    ctx: *mut NodeCtx,
+) {
+    
+}

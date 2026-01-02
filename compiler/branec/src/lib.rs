@@ -17,15 +17,18 @@ mod passes;
 pub struct CompileContext<E: DiagnosticEmitter> {
     pub emitter: E,
     pub sources: SourceManager,
-    pub loaded_modules: HashMap<Uri, Vec<ast::Def>>,
+    pub loaded_modules: HashMap<Uri, IdentTree>,
 }
 
 impl<E: DiagnosticEmitter> CompileContext<E> {
-    pub fn emit_module(
-        &mut self,
-        module_uri: &Uri,
-        module_namespace: Vec<String>,
-    ) -> anyhow::Result<ir::Module> {
+    /// Load sandbox safe intrinsics and standard library
+    pub fn load_std(&mut self) {
+        let mut namespace = IdentTree::new_namespace();
+        intrinsics::populate(&mut namespace);
+        self.loaded_modules.insert(Uri::StdLib, namespace);
+    }
+
+    pub fn emit_module(&mut self, name: String, module_uri: &Uri) -> anyhow::Result<ir::Module> {
         let defs = {
             self.sources.refresh(module_uri.clone())?;
             let source = self.sources.get(module_uri)?;
@@ -69,74 +72,19 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
         };
 
-        self.loaded_modules.insert(module_uri.clone(), defs.clone());
+        let mut root_namespace = IdentTree::new_namespace();
+        root_namespace.insert_import(Some(Uri::StdLib), ast::Path::empty())?;
 
         let mut module_ctx = ModuleCtx {
-            module: ir::Module::new("DEFAULT"),
+            module: ir::Module::new(name),
             uses: Default::default(), //TODO
-            module_namespace,
             current_namespace: Vec::new(),
             module_uri: module_uri.clone(),
-            template_count: 0,
-            type_instances: HashMap::new(),
-            fn_instances: HashMap::new(),
         };
-
-        let mut namespace = IdentScope::default();
-        intrinsics::populate(&mut namespace, &mut module_ctx.template_count);
 
         let mut registration_error = false;
         for def in &defs {
-            match &def.kind {
-                ast::DefKind::Link(ident) => todo!("Have not implemented module links yet"),
-                ast::DefKind::Use(path) => todo!("Have not implemented use statements yet"),
-                ast::DefKind::Struct(object) => {
-                    let id = module_ctx.template_count;
-                    module_ctx.template_count += 1;
-
-                    if let Some(existing) = namespace.defs.insert(
-                        object.ident.text.clone(),
-                        Template::Struct(object.clone(), id),
-                    ) {
-                        let message = emt::error("duplicate identifiers", &self.sources)
-                            .err_at(object.ident.span.clone(), "already defined");
-                        if let Some(ext_ident) = existing.first_ident() {
-                            message
-                                .warning_at(ext_ident.span.clone(), "was defined here")
-                                .emit(&self.emitter)?;
-                        } else {
-                            message.emit(&self.emitter)?;
-                        }
-                        registration_error = true;
-                    }
-                }
-                ast::DefKind::Enum(object) => {
-                    let id = module_ctx.template_count;
-                    module_ctx.template_count += 1;
-
-                    if let Some(existing) = namespace.defs.insert(
-                        object.ident.text.clone(),
-                        Template::Enum(object.clone(), id),
-                    ) {
-                        let message = emt::error("duplicate identifiers", &self.sources)
-                            .err_at(object.ident.span.clone(), "already defined");
-                        if let Some(ext_ident) = existing.first_ident() {
-                            message
-                                .info_at(ext_ident.span.clone(), "was defined here")
-                                .emit(&self.emitter)?;
-                        } else {
-                            message.emit(&self.emitter)?;
-                        }
-                        registration_error = true;
-                    }
-                }
-                ast::DefKind::Function(_) | ast::DefKind::Pipeline(_) => {
-                    // Do we want to pre-define these?
-                }
-                ast::DefKind::Namespace(ident, defs) => {
-                    todo!("Haven't implemented namespaces yet")
-                }
-            }
+            registration_error |= !self.add_def_to_namespace(def.clone(), &mut root_namespace)?;
         }
 
         if registration_error {
@@ -144,63 +92,261 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
 
         for def in defs {
-            match &def.kind {
-                ast::DefKind::Function(function) => {
-                    let _ = self.emit_fn(function, &namespace, &mut module_ctx)?;
-                }
-                //ast::DefKind::Pipeline(pipeline) => pipeline.ident.text.as_str(),
-                _ => {}
-            }
+            self.emit_pass(def, &mut module_ctx, &root_namespace)?;
         }
 
-        println!("pre-prune:\n{}", module_ctx.module);
+        // TODO enable printing with flags
+        //println!("pre-prune:\n{}", module_ctx.module);
         passes::prune_phi_nodes(&mut module_ctx.module)?;
-        println!("post-prune:\n{}", module_ctx.module);
+        //println!("post-prune:\n{}", module_ctx.module);
 
         Ok(module_ctx.module)
     }
 
-    pub fn resolve_template<'a>(
+    pub fn emit_pass(
+        &mut self,
+        def: ast::Def,
+        module_ctx: &mut ModuleCtx,
+        root_namespace: &IdentTree,
+    ) -> Result<()> {
+        match &def.kind {
+            ast::DefKind::Function(function) => {
+                let _ = self.emit_fn(function, module_ctx, &root_namespace)?;
+            }
+            //ast::DefKind::Pipeline(pipeline) => pipeline.ident.text.as_str(),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // Returns false if it failed to add the object or any of it's children to the namespace
+    pub fn add_def_to_namespace(&self, def: ast::Def, namespace: &mut IdentTree) -> Result<bool> {
+        Ok(match &def.kind {
+            ast::DefKind::Using(using_span, path) => {
+                match namespace.insert_import(None, path.clone()) {
+                    Ok(_) => true,
+                    Err(_) => {
+                        // TODO find the conflicting ident and add to debug message
+                        emt::error("duplicate identifiers", &self.sources)
+                            .err_at(using_span.clone(), "already defined")
+                            .emit(&self.emitter)?;
+                        false
+                    }
+                }
+            }
+            ast::DefKind::Struct(object) => {
+                match namespace.insert_struct(object.clone()) {
+                    Ok(_) => true,
+                    Err(_) => {
+                        // TODO find the conflicting ident and add to debug message
+                        emt::error("duplicate identifiers", &self.sources)
+                            .err_at(object.ident.span.clone(), "already defined")
+                            .emit(&self.emitter)?;
+                        false
+                    }
+                }
+            }
+            ast::DefKind::Enum(object) => {
+                match namespace.insert_enum(object.clone()) {
+                    Ok(_) => true,
+                    Err(_) => {
+                        // TODO find the conflicting ident and add to debug message
+                        emt::error("duplicate identifiers", &self.sources)
+                            .err_at(object.ident.span.clone(), "already defined")
+                            .emit(&self.emitter)?;
+                        false
+                    }
+                }
+            }
+            ast::DefKind::Function(_) => {
+                // Do we want to pre-define these?
+                true
+            }
+            ast::DefKind::Namespace(ident, defs) => {
+                let mut sub_ns = IdentTree::new_namespace();
+                let mut insert_success = true;
+                for def in defs {
+                    insert_success &= self.add_def_to_namespace(def.clone(), &mut sub_ns)?;
+                }
+                insert_success &= namespace.insert_child(&ident.text, sub_ns).is_ok();
+                insert_success
+            }
+        })
+    }
+
+    fn find_identified<'a, 's>(
+        &'s self,
+        path: &[ast::PathSegment],
+        mut current_ns: IdentTreeCursor<'a>,
+    ) -> Result<&'a IdentTarget>
+    where
+        's: 'a,
+    {
+        if let Ok(res) = self.find_identified_in_namespace(path, current_ns.value()) {
+            return Ok(res);
+        }
+
+        let IdentTree::Namespace {
+            ref imports,
+            children: _,
+        } = current_ns.value()
+        else {
+            unreachable!("Namespace was not a namespace");
+        };
+
+        for (uri, i_path) in imports {
+            match uri {
+                Some(uri) => {
+                    let mod_ns = self
+                        .loaded_modules
+                        .get(uri)
+                        .ok_or_else(|| anyhow!("module \"{}\" was not found", uri))?;
+
+                    let mut mod_cursor = mod_ns.get_cursor();
+                    mod_cursor.set_scope_from_path(i_path)?;
+                    if let Ok(res) = self.find_identified_in_namespace(path, mod_cursor.value()) {
+                        return Ok(res);
+                    }
+                }
+                None => {
+                    // Not quite sure what to do here tbh
+                }
+            }
+        }
+
+        // Walk up the module scope
+        if !current_ns.is_root() {
+            current_ns.exit();
+            return self.find_identified(path, current_ns);
+        }
+
+        bail!("could not find identifier",);
+    }
+
+    fn find_identified_in_namespace<'a>(
         &self,
         path: &[ast::PathSegment],
-        namespace: &'a IdentScope,
-    ) -> Result<&'a Template> {
+        namespace: &'a IdentTree,
+    ) -> Result<&'a IdentTarget> {
         let Some(segment) = path.first() else {
             unreachable!("unexpected end of path");
         };
 
-        // TODO check if segment has template args, they're not allowed for modules
-        if let Some(sub_namespace) = namespace.sub_scopes.get(&segment.ident.text) {
-            if path.len() < 2 {
-                bail!("Expected defintion not namespace");
-            }
-            return self.resolve_template(&path[1..path.len()], sub_namespace);
-        }
+        let IdentTree::Namespace {
+            imports: _,
+            ref children,
+        } = namespace
+        else {
+            unreachable!("Namespace was not a namespace");
+        };
 
-        if let Some(temp) = namespace.defs.get(&segment.ident.text) {
-            return Ok(temp);
+        let Some(found) = children.get(&segment.ident.text) else {
+            let error = "Failed to resolve path";
+            /* this isn't the main function so ignore for now I guess
+            emt::error(&error, &self.sources)
+                .err_at(segment.ident.span.clone(), "Not found")
+                .emit(&self.emitter)?;
+            */
+            return Err(anyhow!(error));
+        };
+
+        match found {
+            IdentTree::Namespace {
+                imports: _,
+                children: _,
+            } => {
+                if path.len() < 2 {
+                    emt::error("Cannot directly reference namespaces", &self.sources)
+                        .err_at(
+                            segment.ident.span.clone(),
+                            "cannot directly reference namespaces",
+                        )
+                        .emit(&self.emitter)?;
+                    bail!("Cannot directly reference namespaces");
+                }
+
+                self.find_identified_in_namespace(&path[1..path.len()], found)
+            }
+            IdentTree::Def(ident_target) => {
+                if path.len() > 1 {
+                    let err = format!("{} is not a namespace", segment.ident);
+                    emt::error(&err, &self.sources)
+                        .err_at(segment.ident.span.clone(), "not a namespace")
+                        .emit(&self.emitter)?;
+                    bail!("Expected defintion not namespace");
+                }
+                Ok(ident_target)
+            }
         }
-        let error = "Failed to resolve path";
-        emt::error(&error, &self.sources)
-            .err_at(segment.ident.span.clone(), "Not found")
-            .emit(&self.emitter)?;
-        Err(anyhow!(error))
     }
 
     pub fn emit_fn(
         &mut self,
         function: &ast::Function,
-        namespace: &IdentScope,
         module: &mut ModuleCtx,
+        root_ns: &IdentTree,
     ) -> Result<u32> {
+        if function.is_node_def {
+            if function.params.len() != 3 {
+                emt::error("Node defintion must have 3 arguments", &self.sources)
+                    .err_at(function.ident.span.clone(), "Must have 3 arguments")
+                    .emit(&self.emitter)?;
+                return Err(anyhow!("Node def error"));
+            }
+
+            if !matches!(
+                &function.params[0],
+                (
+                    _,
+                    ast::Ty {
+                        span: _,
+                        kind: ast::TyKind::Ptr(true, _)
+                    }
+                )
+            ) {
+                emt::error(
+                    "Node fn first argument must be a mutable pointer",
+                    &self.sources,
+                )
+                .err_at(
+                    function.params[0].1.span.clone(),
+                    "must be a mutable pointer",
+                )
+                .emit(&self.emitter);
+                return Err(anyhow!("Node def error"));
+            }
+
+            if !matches!(
+                &function.params[1],
+                (
+                    _,
+                    ast::Ty {
+                        span: _,
+                        kind: ast::TyKind::Slice(false, _)
+                    }
+                )
+            ) {
+                emt::error(
+                    "Node fn second argument must be an immutable slice",
+                    &self.sources,
+                )
+                .err_at(
+                    function.params[1].1.span.clone(),
+                    "must be a mutable pointer",
+                )
+                .emit(&self.emitter);
+                return Err(anyhow!("Node def error"));
+            }
+        }
+
         let params = function
             .params
             .iter()
-            .map(|(ident, ty)| Ok((ident, self.emit_ty(ty, namespace, module)?)))
+            .map(|(ident, ty)| Ok((ident, self.emit_ty(ty, root_ns, module)?)))
             .collect::<Result<Vec<_>>>()?;
 
         let return_ty = match &function.ret_ty {
-            Some(ty) => Some(self.emit_ty(ty, namespace, module)?),
+            Some(ty) => Some(self.emit_ty(ty, root_ns, module)?),
             None => None,
         };
 
@@ -244,7 +390,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 );
             }
 
-            self.emit_block(&function.body, namespace, &mut fn_ctx)?;
+            self.emit_block(&function.body, root_ns, &mut fn_ctx)?;
 
             fn_ctx.end_scope();
 
@@ -259,11 +405,11 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     pub fn emit_block(
         &mut self,
         code_block: &ast::Block,
-        namespace: &IdentScope,
+        root_ns: &IdentTree,
         ctx: &mut FunctionCtx,
     ) -> Result<()> {
         for stmt in code_block.statements.iter() {
-            self.emit_stmt(stmt, namespace, ctx)?;
+            self.emit_stmt(stmt, root_ns, ctx)?;
         }
 
         Ok(())
@@ -272,7 +418,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     pub fn emit_stmt(
         &mut self,
         stmt: &ast::Stmt,
-        namespace: &IdentScope,
+        root_ns: &IdentTree,
         ctx: &mut FunctionCtx,
     ) -> Result<()> {
         if ctx.current_block.is_none() {
@@ -286,20 +432,20 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
         match &stmt.kind {
             ast::StmtKind::Expression(expr) => {
-                self.emit_r_value(expr, namespace, ctx)?;
+                self.emit_r_value(expr, root_ns, ctx)?;
             }
             ast::StmtKind::Assign(dest, src) => {
-                let d = self.emit_l_value(dest, namespace, ctx)?;
+                let d = self.emit_l_value(dest, root_ns, ctx)?;
                 let src = self
-                    .emit_r_value(src, namespace, ctx)?
+                    .emit_r_value(src, root_ns, ctx)?
                     .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                 self.store(&d, src, ctx)?;
             }
             ast::StmtKind::VariableDef(ty, ident, expr) => {
                 let src = self
-                    .emit_r_value(expr, namespace, ctx)?
+                    .emit_r_value(expr, root_ns, ctx)?
                     .ok_or_else(|| anyhow!("Expression does not return value!"))?;
-                let ty = self.emit_ty(ty, namespace, &mut ctx.mod_ctx)?;
+                let ty = self.emit_ty(ty, root_ns, &mut ctx.mod_ctx)?;
                 if ty != src.ty() {
                     bail!("expected type {} but found {}", ty, src.ty());
                 }
@@ -307,7 +453,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::StmtKind::If(cond, body, else_stmt) => {
                 let cond = self
-                    .emit_r_value(cond, namespace, ctx)?
+                    .emit_r_value(cond, root_ns, ctx)?
                     .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                 let RValue::Value(cond, ir::NativeType::Bool) = cond else {
                     bail!("If condition must be a bool, but was {}", cond.ty());
@@ -320,13 +466,13 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let join_block = ctx.create_block()?;
                 ctx.end_block_jump_if(cond, body_block, else_block.unwrap_or(join_block));
                 ctx.start_block(body_block)?;
-                self.emit_stmt(&body, namespace, ctx)?;
+                self.emit_stmt(&body, root_ns, ctx)?;
                 if ctx.current_block.is_some() {
                     ctx.end_block_jump(join_block);
                 }
                 if let (Some(else_block), Some(else_stmt)) = (else_block, else_stmt) {
                     ctx.start_block(else_block)?;
-                    self.emit_stmt(&else_stmt, namespace, ctx)?;
+                    self.emit_stmt(&else_stmt, root_ns, ctx)?;
                     if ctx.current_block.is_some() {
                         ctx.end_block_jump(join_block);
                     }
@@ -340,14 +486,14 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 ctx.end_block_jump(cond_block);
                 ctx.start_block(cond_block)?;
                 let cond = self
-                    .emit_r_value(cond, namespace, ctx)?
+                    .emit_r_value(cond, root_ns, ctx)?
                     .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                 let RValue::Value(cond, ir::NativeType::Bool) = cond else {
                     bail!("While condition must be a bool, but was {}", cond.ty());
                 };
                 ctx.end_block_jump_if(cond, body_block, finally_block);
                 ctx.start_block(body_block)?;
-                self.emit_stmt(body, namespace, ctx)?;
+                self.emit_stmt(body, root_ns, ctx)?;
                 if ctx.current_block.is_some() {
                     ctx.end_block_jump(cond_block);
                 }
@@ -355,7 +501,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::StmtKind::Match(_span, expr, match_branches) => {
                 let cond = self
-                    .emit_r_value(expr, namespace, ctx)?
+                    .emit_r_value(expr, root_ns, ctx)?
                     .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                 match cond {
                     RValue::Value(index, ty) => {
@@ -382,7 +528,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             ctx.start_block(block)?;
                             ctx.start_scope();
 
-                            self.emit_stmt(&match_branch.body, namespace, ctx)?;
+                            self.emit_stmt(&match_branch.body, root_ns, ctx)?;
                             ctx.end_scope();
                             if ctx.current_block.is_some() {
                                 ctx.end_block_jump(join_block);
@@ -463,7 +609,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                     ctx.define_variable(data_label.text, variant_data);
                                 }
 
-                                self.emit_stmt(&match_branch.body, namespace, ctx)?;
+                                self.emit_stmt(&match_branch.body, root_ns, ctx)?;
 
                                 ctx.end_scope();
                                 ctx.end_block_jump(join_block);
@@ -473,7 +619,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             // No index type, no branching
                             assert!(layout.index_ty.is_none() && index.is_none());
                             let match_branch = &match_branches[0];
-                            self.emit_stmt(&match_branch.body, namespace, ctx)?
+                            self.emit_stmt(&match_branch.body, root_ns, ctx)?
                         }
                     }
                     RValue::Struct(_) => bail!("Cannot match on structs!"),
@@ -482,7 +628,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             ast::StmtKind::Block(block) => {
                 ctx.start_scope();
                 for stmt in block.statements.iter() {
-                    self.emit_stmt(stmt, namespace, ctx)?;
+                    self.emit_stmt(stmt, root_ns, ctx)?;
                 }
                 ctx.end_scope();
             }
@@ -490,7 +636,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let body = match expr {
                     Some(expr) => Some({
                         let value = self
-                            .emit_r_value(expr, namespace, ctx)?
+                            .emit_r_value(expr, root_ns, ctx)?
                             .ok_or_else(|| anyhow!("Expression does not return value!"))?;
                         let value_ty = value.ty();
                         if Some(&value_ty.clone()) != ctx.function.sig.ret_ty.as_ref() {
@@ -524,7 +670,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     pub fn emit_r_value(
         &mut self,
         expr: &ast::Expr,
-        namespace: &IdentScope,
+        root_ns: &IdentTree,
         ctx: &mut FunctionCtx,
     ) -> Result<Option<RValue>> {
         match &expr.kind {
@@ -585,7 +731,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::ExprKind::Ref(expr) => todo!(),
             ast::ExprKind::Deref(expr) => {
-                let ptr = self.emit_r_value(expr, namespace, ctx)?;
+                let ptr = self.emit_r_value(expr, root_ns, ctx)?;
                 let Some(RValue::Value(ptr, ir::NativeType::Ptr(_, inner_ty))) = ptr else {
                     bail!("Cannot dereference non-pointer value");
                 };
@@ -601,13 +747,13 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     args.iter()
                         .try_fold(Vec::new(), |mut args, arg| -> Result<Vec<_>> {
                             args.push(
-                                self.emit_r_value(arg, namespace, ctx)?
+                                self.emit_r_value(arg, root_ns, ctx)?
                                     .ok_or_else(|| anyhow!("Expression does not return value!"))?,
                             );
                             Ok(args)
                         })?;
                 let arg_tys = args.iter().map(|rv| rv.ty()).collect::<Vec<_>>();
-                let callable = self.emit_callable(&callable, &arg_tys, namespace, ctx)?;
+                let callable = self.emit_callable(&callable, &arg_tys, root_ns, ctx)?;
 
                 match callable {
                     Callable::IntrinsicFn(template_args, callback) => {
@@ -622,7 +768,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     fn emit_l_value(
         &mut self,
         expr: &ast::Expr,
-        namespace: &IdentScope,
+        root_ns: &IdentTree,
         ctx: &mut FunctionCtx,
     ) -> Result<LValue> {
         match &expr.kind {
@@ -644,7 +790,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::ExprKind::Ref(expr) => todo!(),
             ast::ExprKind::Deref(expr) => {
-                let ptr = self.emit_r_value(expr, namespace, ctx)?;
+                let ptr = self.emit_r_value(expr, root_ns, ctx)?;
                 let Some(RValue::Value(ptr, ir::NativeType::Ptr(_, inner_ty))) = ptr else {
                     bail!("Cannot dereference non-pointer value");
                 };
@@ -662,13 +808,14 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         &mut self,
         expr: &ast::Expr,
         args: &[ir::Ty],
-        namespace: &IdentScope,
+        root_ns: &IdentTree,
         ctx: &mut FunctionCtx,
     ) -> Result<Callable> {
         match &expr.kind {
             ast::ExprKind::Path(path) => {
-                let Template::Fn(fn_temp) = self.resolve_template(&path.segments, namespace)?
-                else {
+                let mut c = root_ns.get_cursor();
+                c.set_scope(&ctx.mod_ctx.current_namespace);
+                let IdentTarget::Fn(fn_temp) = self.find_identified(&path.segments, c)? else {
                     bail!("{} was not function", path);
                 };
 
@@ -678,7 +825,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .unwrap()
                     .template_args
                     .iter()
-                    .map(|ast::TemplateArg(ty)| self.emit_ty(ty, namespace, &mut ctx.mod_ctx))
+                    .map(|ast::TemplateArg(ty)| self.emit_ty(ty, root_ns, &mut ctx.mod_ctx))
                     .collect::<Result<Vec<_>>>()?;
 
                 for o in fn_temp.iter() {
@@ -943,7 +1090,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         }
     }
 
-    pub fn emit_ty(&self, ty: &Ty, namespace: &IdentScope, ctx: &mut ModuleCtx) -> Result<ir::Ty> {
+    pub fn emit_ty(&self, ty: &Ty, root_ns: &IdentTree, ctx: &mut ModuleCtx) -> Result<ir::Ty> {
         match &ty.kind {
             ast::TyKind::Native(native_ty) => Ok(match native_ty {
                 ast::NativeTy::I8 => ir::Ty::Native(ir::NativeType::I8),
@@ -957,38 +1104,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 ast::NativeTy::F32 => ir::Ty::Native(ir::NativeType::F32),
                 ast::NativeTy::F64 => ir::Ty::Native(ir::NativeType::F64),
                 ast::NativeTy::Bool => ir::Ty::Native(ir::NativeType::Bool),
-                ast::NativeTy::Char => ir::Ty::Native(ir::NativeType::U32),
-                ast::NativeTy::String => {
-                    let emitted_ptr_ty = ir::Ty::Native(ir::NativeType::Ptr(
-                        true,
-                        Some(Box::new(ir::Ty::Native(ir::NativeType::U32))),
-                    ));
-                    let emitted_len_ty = ir::Ty::Native(ir::NativeType::U32);
-
-                    let emitted_fields = vec![
-                        ir::StructMember {
-                            id: Some("ptr".to_string()),
-                            ty: emitted_ptr_ty,
-                        },
-                        ir::StructMember {
-                            id: Some("len".to_string()),
-                            ty: emitted_len_ty,
-                        },
-                    ];
-
-                    let struct_index = ctx.module.structs.len();
-                    ctx.module.structs.push(ir::Struct {
-                        id: Some("slice".into()),
-                        members: emitted_fields,
-                        packed: false,
-                    });
-
-                    ir::Ty::Struct(struct_index as u64)
-                }
             }),
             ast::TyKind::Ptr(is_mut, inner_ty) => {
                 let emitted_inner_ty = match inner_ty {
-                    Some(inner) => Some(Box::new(self.emit_ty(inner.as_ref(), namespace, ctx)?)),
+                    Some(inner) => Some(Box::new(self.emit_ty(inner.as_ref(), root_ns, ctx)?)),
                     None => None,
                 };
                 Ok(ir::Ty::Native(ir::NativeType::Ptr(
@@ -1001,7 +1120,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .iter()
                     .enumerate()
                     .map(|(_index, elem)| {
-                        let emitted_ty = self.emit_ty(elem.as_ref(), namespace, ctx)?;
+                        let emitted_ty = self.emit_ty(elem.as_ref(), root_ns, ctx)?;
                         Ok(ir::StructMember {
                             id: None,
                             ty: emitted_ty,
@@ -1032,7 +1151,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let emitted_fields = fields
                     .iter()
                     .map(|(field_name, field_ty)| {
-                        let emitted_ty = self.emit_ty(field_ty.as_ref(), namespace, ctx)?;
+                        let emitted_ty = self.emit_ty(field_ty.as_ref(), root_ns, ctx)?;
                         Ok(ir::StructMember {
                             id: Some(field_name.text.clone()),
                             ty: emitted_ty,
@@ -1061,25 +1180,23 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             }
             ast::TyKind::Slice(_is_mut, inner_ty) => {
                 let inner_ty = match inner_ty {
-                    Some(inner_ty) => Some(self.emit_ty(&inner_ty, namespace, ctx)?),
+                    Some(inner_ty) => Some(self.emit_ty(&inner_ty, root_ns, ctx)?),
                     None => None,
                 };
 
                 SSAStruct::slice_ty(inner_ty, &mut ctx.module).map(|ty| ir::Ty::Struct(ty))
             }
             ast::TyKind::Path(path) => {
-                let template = self.resolve_template(&path.segments, namespace)?;
+                let mut c = root_ns.get_cursor();
+                c.set_scope(&ctx.current_namespace);
+                let template = self.find_identified(&path.segments, c)?;
                 match &template {
-                    Template::Struct(s, t_id) => {
-                        if let Some(memoized) = ctx.type_instances.get(t_id) {
-                            return Ok(memoized.clone());
-                        }
-
+                    IdentTarget::Struct(s) => {
                         let emitted_fields = s
                             .fields
                             .iter()
                             .map(|(field_name, field_ty)| {
-                                let emitted_ty = self.emit_ty(field_ty, namespace, ctx)?;
+                                let emitted_ty = self.emit_ty(field_ty, root_ns, ctx)?;
                                 Ok(ir::StructMember {
                                     id: Some(field_name.text.clone()),
                                     ty: emitted_ty,
@@ -1108,11 +1225,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
                         Ok(ir::Ty::Struct(struct_index as u64))
                     }
-                    Template::Enum(e, t_id) => {
-                        if let Some(memoized) = ctx.type_instances.get(t_id) {
-                            println!("returning memoized enum {}", memoized);
-                            return Ok(memoized.clone());
-                        }
+                    IdentTarget::Enum(e) => {
                         let emitted_varaints = e
                             .variants
                             .iter()
@@ -1120,7 +1233,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 Ok(ir::EnumVariant {
                                     id: field_name.text.clone(),
                                     ty: match field_ty {
-                                        Some(ty) => Some(self.emit_ty(ty, namespace, ctx)?),
+                                        Some(ty) => Some(self.emit_ty(ty, root_ns, ctx)?),
                                         None => None,
                                     },
                                 })
@@ -1136,7 +1249,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             .enumerate()
                             .find(|(_, s)| s.variants == emitted_varaints && s.id == id)
                         {
-                            println!("found existing enum: {}", existing_index);
+                            //println!("found existing enum: {}", existing_index);
                             return Ok(ir::Ty::Enum(existing_index as u64));
                         }
 
@@ -1147,12 +1260,13 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                             packed: false,
                         });
 
-                        println!("emitted new enum: {}", enum_index);
+                        //println!("emitted new enum: {}", enum_index);
                         Ok(ir::Ty::Enum(enum_index as u64))
                     }
                     _ => bail!("Path does not reference a valid type"),
                 }
             }
+            ast::TyKind::Array(ty, _, span) => todo!(),
         }
     }
 }
@@ -1161,55 +1275,194 @@ pub struct ModuleCtx {
     pub module: ir::Module,
     pub module_uri: Uri,
     pub uses: HashMap<String, String>,
-    pub module_namespace: Vec<String>,
     pub current_namespace: Vec<String>,
-
-    pub template_count: TemplateId,
-    pub type_instances: HashMap<TemplateId, ir::Ty>,
-    pub fn_instances: HashMap<TemplateId, ir::FnId>,
 }
 
-#[derive(Default)]
-pub struct IdentScope {
-    pub sub_scopes: HashMap<String, IdentScope>,
-    pub defs: HashMap<String, Template>,
+pub enum IdentTree {
+    Namespace {
+        imports: Vec<(Option<Uri>, ast::Path)>,
+        children: HashMap<String, IdentTree>,
+    },
+    Def(IdentTarget),
 }
 
-impl IdentScope {
-    pub fn insert_override(
+pub enum IdentTarget {
+    Struct(ast::Struct),
+    Enum(ast::Enum),
+    Node(ast::Function),
+    Fn(Vec<FnOverride>),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum IdentInsertError {
+    #[error("Invalid (likely non-namespace) IdentTree was used as the target of an insert")]
+    InvalidInsertTarget,
+    #[error("Identifier was already defined in this namespace")]
+    AlreadyDefined,
+}
+
+impl IdentTree {
+    pub fn new_namespace() -> Self {
+        Self::Namespace {
+            imports: Vec::new(),
+            children: Default::default(),
+        }
+    }
+
+    pub fn insert_import(
+        &mut self,
+        uri: Option<Uri>,
+        path: ast::Path,
+    ) -> Result<(), IdentInsertError> {
+        if let IdentTree::Namespace {
+            ref mut imports,
+            children: _,
+        } = self
+        {
+            let ne = (uri, path);
+            if !imports.contains(&ne) {
+                imports.push(ne);
+            } else {
+                return Err(IdentInsertError::AlreadyDefined);
+            }
+            Ok(())
+        } else {
+            Err(IdentInsertError::InvalidInsertTarget)
+        }
+    }
+
+    pub fn insert_fn(
         &mut self,
         ident: impl Into<String>,
-        fn_override: FnOverride,
-    ) -> Result<()> {
+        func: FnOverride,
+    ) -> Result<(), IdentInsertError> {
         let ident = ident.into();
-        if let Some(temp) = self.defs.get_mut(&ident) {
-            let Template::Fn(overrides) = temp else {
-                bail!("{} is already defined and is not a function!", ident);
+        let IdentTree::Namespace {
+            ref mut children,
+            imports: _,
+        } = self
+        else {
+            return Err(IdentInsertError::InvalidInsertTarget);
+        };
+        if let Some(ref mut current) = children.get_mut(&ident) {
+            let IdentTree::Def(IdentTarget::Fn(ref mut overrides)) = current else {
+                return Err(IdentInsertError::AlreadyDefined);
             };
-            // maybe pre-check for ambiquity here?
-            overrides.push(fn_override);
+            overrides.push(func);
         } else {
-            self.defs.insert(ident, Template::Fn(vec![fn_override]));
+            children.insert(ident, IdentTree::Def(IdentTarget::Fn(vec![func])));
         }
-
         Ok(())
+    }
+
+    pub fn insert_struct(&mut self, obj: ast::Struct) -> Result<(), IdentInsertError> {
+        let IdentTree::Namespace {
+            ref mut children,
+            imports: _,
+        } = self
+        else {
+            return Err(IdentInsertError::InvalidInsertTarget);
+        };
+        if let Some(_) = children.get_mut(&obj.ident.text) {
+            return Err(IdentInsertError::AlreadyDefined);
+        } else {
+            children.insert(
+                obj.ident.text.clone(),
+                IdentTree::Def(IdentTarget::Struct(obj)),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn insert_enum(&mut self, obj: ast::Enum) -> Result<(), IdentInsertError> {
+        let IdentTree::Namespace {
+            ref mut children,
+            imports: _,
+        } = self
+        else {
+            return Err(IdentInsertError::InvalidInsertTarget);
+        };
+        if let Some(_) = children.get_mut(&obj.ident.text) {
+            return Err(IdentInsertError::AlreadyDefined);
+        } else {
+            children.insert(
+                obj.ident.text.clone(),
+                IdentTree::Def(IdentTarget::Enum(obj)),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn insert_node(&mut self, obj: ast::Function) -> Result<(), IdentInsertError> {
+        assert!(obj.is_node_def, "Must be a node def function");
+        let IdentTree::Namespace {
+            ref mut children,
+            imports: _,
+        } = self
+        else {
+            return Err(IdentInsertError::InvalidInsertTarget);
+        };
+        if let Some(_) = children.get_mut(&obj.ident.text) {
+            return Err(IdentInsertError::AlreadyDefined);
+        } else {
+            children.insert(
+                obj.ident.text.clone(),
+                IdentTree::Def(IdentTarget::Node(obj)),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn insert_child(
+        &mut self,
+        ident: impl Into<String>,
+        child: IdentTree,
+    ) -> Result<(), IdentInsertError> {
+        let ident = ident.into();
+        let IdentTree::Namespace {
+            ref mut children,
+            imports: _,
+        } = self
+        else {
+            return Err(IdentInsertError::InvalidInsertTarget);
+        };
+        if let Some(_) = children.get_mut(&ident) {
+            return Err(IdentInsertError::AlreadyDefined);
+        } else {
+            children.insert(ident, child);
+        }
+        Ok(())
+    }
+
+    fn get_child(&self, namespace: &str) -> Option<&IdentTree> {
+        let IdentTree::Namespace {
+            ref children,
+            imports: _,
+        } = self
+        else {
+            return None;
+        };
+        if let Some(ns) = children.get(namespace) {
+            return Some(ns);
+        }
+        None
+    }
+
+    pub fn get_cursor(&self) -> IdentTreeCursor {
+        IdentTreeCursor {
+            tree_root: self,
+            scope_stack: Vec::new(),
+        }
     }
 }
 
-pub enum Template {
-    Struct(ast::Struct, TemplateId),
-    Enum(ast::Enum, TemplateId),
-    Fn(Vec<FnOverride>),
-    Pipeline(ast::Pipeline, TemplateId),
-}
-
-impl Template {
+impl IdentTarget {
     /// Returns the ident for this template, or in the case of functions, the first function
     pub fn first_ident(&self) -> Option<&ast::Ident> {
         Some(match self {
-            Template::Struct(obj, _) => &obj.ident,
-            Template::Enum(obj, _) => &obj.ident,
-            Template::Fn(fn_overrides) => match &fn_overrides
+            IdentTarget::Struct(obj) => &obj.ident,
+            IdentTarget::Enum(obj) => &obj.ident,
+            IdentTarget::Fn(fn_overrides) => match &fn_overrides
                 .first()
                 .expect("Expecting function overrides to contain at least one function")
                 .kind
@@ -1217,12 +1470,60 @@ impl Template {
                 FnOverrideKind::Ast(function) => &function.ident,
                 FnOverrideKind::Intrinsic(_) => return None,
             },
-            Template::Pipeline(pipeline, _) => &pipeline.ident,
+            IdentTarget::Node(function) => &function.ident,
         })
     }
 }
 
-pub type TemplateId = usize;
+#[derive(Clone)]
+struct IdentTreeCursor<'a> {
+    tree_root: &'a IdentTree,
+    scope_stack: Vec<&'a IdentTree>,
+}
+
+impl<'a> IdentTreeCursor<'a> {
+    pub fn value(&self) -> &'a IdentTree {
+        if let Some(scope) = self.scope_stack.last() {
+            scope
+        } else {
+            self.tree_root
+        }
+    }
+
+    pub fn enter(&mut self, namespace: &str) -> Result<()> {
+        let scope = self.value();
+        if let Some(new_scope) = scope.get_child(namespace) {
+            self.scope_stack.push(new_scope);
+            Ok(())
+        } else {
+            bail!("{} not found", namespace);
+        }
+    }
+
+    pub fn exit(&mut self) {
+        self.scope_stack.pop();
+    }
+
+    pub fn set_scope(&mut self, path: &[String]) -> Result<()> {
+        self.scope_stack.clear();
+        for p in path {
+            self.enter(p)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_scope_from_path(&mut self, path: &ast::Path) -> Result<()> {
+        self.scope_stack.clear();
+        for p in &path.segments {
+            self.enter(&p.ident.text)?;
+        }
+        Ok(())
+    }
+
+    fn is_root(&self) -> bool {
+        return self.scope_stack.is_empty();
+    }
+}
 
 pub enum TyPattern {
     Any,
@@ -1230,7 +1531,6 @@ pub enum TyPattern {
 }
 
 pub struct FnOverride {
-    pub id: TemplateId,
     pub temp_args: Vec<TyPattern>,
     pub arg_tys: Vec<TyPattern>,
     pub kind: FnOverrideKind,
@@ -1883,7 +2183,7 @@ impl SSAStruct {
             members: emitted_fields,
             packed: false,
         };
-        println!("emitted slice ty Struct({}), {}", struct_index, new_struct);
+        //println!("emitted slice ty Struct({}), {}", struct_index, new_struct);
         module.structs.push(new_struct);
 
         Ok(struct_index as ir::StructId)
