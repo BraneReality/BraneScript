@@ -140,9 +140,11 @@ impl Store {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AllocationError {
+    #[error("Out of memory")]
     OutOfMemory,
+    #[error("OS failed to allocate page")]
     OsFailedToAllocatePage,
 }
 

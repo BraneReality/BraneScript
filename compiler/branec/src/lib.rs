@@ -73,7 +73,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         };
 
         let mut root_namespace = IdentTree::new_namespace();
-        root_namespace.insert_import(Some(Uri::StdLib), ast::Path::empty())?;
+        root_namespace.insert_import(Some(Uri::StdLib), None)?;
 
         let mut module_ctx = ModuleCtx {
             module: ir::Module::new(name),
@@ -90,6 +90,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         if registration_error {
             bail!("Failed to register names");
         }
+
+        self.loaded_modules
+            .insert(module_uri.clone(), root_namespace.clone());
 
         for def in defs {
             self.emit_pass(def, &mut module_ctx, &root_namespace)?;
@@ -122,8 +125,13 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     // Returns false if it failed to add the object or any of it's children to the namespace
     pub fn add_def_to_namespace(&self, def: ast::Def, namespace: &mut IdentTree) -> Result<bool> {
         Ok(match &def.kind {
-            ast::DefKind::Using(using_span, path) => {
-                match namespace.insert_import(None, path.clone()) {
+            ast::DefKind::Using(using_span, path, from) => {
+                let from = match from {
+                    Some(text) => Some(Uri::parse(text)?),
+                    None => None,
+                };
+                println!("inserting import from {:?} ns {:?}", from, path);
+                match namespace.insert_import(from, path.clone()) {
                     Ok(_) => true,
                     Err(_) => {
                         // TODO find the conflicting ident and add to debug message
@@ -203,7 +211,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         .ok_or_else(|| anyhow!("module \"{}\" was not found", uri))?;
 
                     let mut mod_cursor = mod_ns.get_cursor();
-                    mod_cursor.set_scope_from_path(i_path)?;
+                    if let Some(path) = i_path {
+                        mod_cursor.set_scope_from_path(path)?;
+                    }
+                    println!("Searching module {}", uri);
                     if let Ok(res) = self.find_identified_in_namespace(path, mod_cursor.value()) {
                         return Ok(res);
                     }
@@ -220,7 +231,19 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             return self.find_identified(path, current_ns);
         }
 
-        bail!("could not find identifier",);
+        let message = format!(
+            "could not find identifier \"{}\"",
+            path.iter()
+                .map(|seg| seg.to_string())
+                .collect::<Vec<_>>()
+                .join("::")
+        );
+
+        emt::error(&message, &self.sources)
+            .err_at(path.last().unwrap().ident.span.clone(), "not found")
+            .emit(&self.emitter)?;
+
+        bail!("{}", message);
     }
 
     fn find_identified_in_namespace<'a>(
@@ -729,19 +752,40 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 }
                 bail!("path {} not found!", path);
             }
-            ast::ExprKind::Ref(expr) => todo!(),
+            ast::ExprKind::Ref(expr) => match self.emit_l_value(expr, root_ns, ctx)? {
+                // TODO preserve pointer mutability
+                LValue::Ptr(value, ty) => Ok(Some(RValue::Value(
+                    value,
+                    ir::NativeType::Ptr(true, ty.map(|ty| Box::new(ty))),
+                ))),
+                LValue::Variable(_) => {
+                    bail!("Cannot reference stack values since in Brane Script they are temp values with no defined address. Use allocaitons")
+                }
+            },
             ast::ExprKind::Deref(expr) => {
                 let ptr = self.emit_r_value(expr, root_ns, ctx)?;
                 let Some(RValue::Value(ptr, ir::NativeType::Ptr(_, inner_ty))) = ptr else {
                     bail!("Cannot dereference non-pointer value");
                 };
                 let Some(inner_ty) = inner_ty else {
-                    bail!("Cannot dereference pointer with unknown type, cast it to a known type first");
+                    bail!("Cannot dereference pointer with unknown type as r-value, cast it to a known type first");
                 };
-                let ptr = LValue::Ptr(ptr, *inner_ty);
+                let ptr = LValue::Ptr(ptr, Some(*inner_ty));
                 self.load(&ptr, ctx).map(|v| Some(v))
             }
-            ast::ExprKind::Field(expr, path_segment) => todo!(),
+            ast::ExprKind::Field(expr, path_segment) => {
+                let Some(RValue::Struct(object)) = self.emit_r_value(&expr, root_ns, ctx)? else {
+                    bail!("Cannot access fields of non struct value");
+                };
+                let name = &path_segment.ident.text;
+                let field_index = object
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, (id, _))| if id == name { Some(i) } else { None })
+                    .ok_or_else(|| anyhow!("No field named {}", name))?;
+                Ok(Some(object.fields[field_index].1.as_ref().clone()))
+            }
             ast::ExprKind::Call(callable, args) => {
                 let args: Vec<RValue> =
                     args.iter()
@@ -761,6 +805,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     }
                 }
             }
+            ast::ExprKind::ImplcitSelfCall(expr, path_segment, exprs) => {
+                todo!("Implicit self calls not implemented yet!")
+            }
         }
     }
 
@@ -775,7 +822,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
             ast::ExprKind::Struct(_, _)
             | ast::ExprKind::Literal(_)
             | ast::ExprKind::Array(_)
-            | ast::ExprKind::Tuple(_) => {
+            | ast::ExprKind::Tuple(_)
+            | ast::ExprKind::Call(_, _)
+            | ast::ExprKind::ImplcitSelfCall(_, _, _) => {
                 bail!("Temporary value does not have a memory address")
             }
             ast::ExprKind::Path(path) => {
@@ -794,13 +843,16 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let Some(RValue::Value(ptr, ir::NativeType::Ptr(_, inner_ty))) = ptr else {
                     bail!("Cannot dereference non-pointer value");
                 };
-                let Some(inner_ty) = inner_ty else {
-                    bail!("Cannot dereference pointer with unknown type, cast it to a known type first");
-                };
-                Ok(LValue::Ptr(ptr, *inner_ty))
+                Ok(LValue::Ptr(ptr, inner_ty.map(|ty| ty.as_ref().clone())))
             }
-            ast::ExprKind::Field(expr, path_segment) => todo!(),
-            ast::ExprKind::Call(expr, exprs) => todo!(),
+            ast::ExprKind::Field(expr, path_segment) => {
+                let self_val = self.emit_l_value(expr, root_ns, ctx)?;
+                self.get_struct_field(
+                    &self_val,
+                    StructFieldId::Name(path_segment.ident.text.clone()),
+                    ctx,
+                )
+            }
         }
     }
 
@@ -831,7 +883,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 for o in fn_temp.iter() {
                     if o.valid_for(&temp_args, args) {
                         match &o.kind {
-                            FnOverrideKind::Ast(function) => todo!(),
+                            FnOverrideKind::Ast(function) => {
+                                todo!("Can't call inter-module functions yet")
+                            }
                             FnOverrideKind::Intrinsic(callback) => {
                                 return Ok(Callable::IntrinsicFn(temp_args, callback.clone()));
                             }
@@ -852,6 +906,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .emit(&self.emitter)?;
                 bail!(error_msg);
             }
+            // TODO account for function pointers
             _ => bail!("expression is not callable!"),
         }
     }
@@ -864,7 +919,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 }
                 RValue::Struct(SSAStruct { fields, def_id: _ }) => {
                     for (i, (_, value)) in fields.iter().enumerate() {
-                        let dest = self.get_struct_field(&lvalue, i, ctx)?;
+                        let dest = self.get_struct_field(&lvalue, StructFieldId::Index(i), ctx)?;
                         self.store(&dest, value.as_ref().clone(), ctx)?;
                     }
                 }
@@ -907,7 +962,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                     right: ir::Value::const_u32(v_offset as u32),
                                 })?);
                                 self.store(
-                                    &LValue::Ptr(variant_ptr.unwrap(), inner.ty()),
+                                    &LValue::Ptr(variant_ptr.unwrap(), Some(inner.ty())),
                                     inner,
                                     ctx,
                                 )?;
@@ -923,7 +978,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 right: ir::Value::const_u32(layout.variants[0].1 as u32),
                             })?);
                             self.store(
-                                &LValue::Ptr(variant_ptr.unwrap(), inner.ty()),
+                                &LValue::Ptr(variant_ptr.unwrap(), Some(inner.ty())),
                                 inner.clone(),
                                 ctx,
                             )?;
@@ -940,106 +995,118 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
     fn load(&mut self, lvalue: &LValue, ctx: &mut FunctionCtx) -> Result<RValue> {
         match lvalue {
-            LValue::Ptr(ptr, ty) => match ty {
-                ir::Ty::Struct(def_id) => {
-                    let def_id = *def_id;
-                    let struct_def = ctx
-                        .mod_ctx
-                        .module
-                        .get_struct(def_id)
-                        .cloned()
-                        .ok_or_else(|| anyhow!("Invalid struct ID: {}", def_id))?;
-                    let fields = struct_def
-                        .members
-                        .iter()
-                        .enumerate()
-                        .map(|(i, member)| {
-                            let field_lvalue = self.get_struct_field(lvalue, i, ctx)?;
-                            let field_value = self.load(&field_lvalue, ctx)?;
-                            Ok((member.id.clone().unwrap_or_default(), Box::new(field_value)))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    Ok(RValue::Struct(SSAStruct { fields, def_id }))
-                }
-                ir::Ty::Enum(def_id) => {
-                    let def_id = *def_id;
-                    let enum_def = ctx
-                        .mod_ctx
-                        .module
-                        .get_enum(def_id)
-                        .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
-                    let variant_tys = enum_def
-                        .variants
-                        .iter()
-                        .map(|v| v.ty.clone())
-                        .collect::<Vec<_>>();
-                    let layout = enum_def.layout(&ctx.mod_ctx.module)?;
-
-                    let index = match &layout.index_ty {
-                        Some(index_ty) => Some(ctx.emit_op(ir::Op::Load {
-                            ptr: *ptr,
-                            ty: index_ty.clone(),
-                        })?),
-                        None => None,
-                    };
-
-                    let mut variants = Vec::new();
-
-                    if let (Some(index_ty), Some(index)) = (&layout.index_ty, &index) {
-                        let branches = (0..variant_tys.len())
-                            .into_iter()
-                            .map(|i| Ok((i as u128, ctx.create_block()?)))
+            LValue::Ptr(ptr, ty) => {
+                let Some(ty) = ty else {
+                    bail!("Can't load pointer with unknown type");
+                };
+                match ty {
+                    ir::Ty::Struct(def_id) => {
+                        let def_id = *def_id;
+                        let struct_def = ctx
+                            .mod_ctx
+                            .module
+                            .get_struct(def_id)
+                            .cloned()
+                            .ok_or_else(|| anyhow!("Invalid struct ID: {}", def_id))?;
+                        let fields = struct_def
+                            .members
+                            .iter()
+                            .enumerate()
+                            .map(|(i, member)| {
+                                let field_lvalue =
+                                    self.get_struct_field(lvalue, StructFieldId::Index(i), ctx)?;
+                                let field_value = self.load(&field_lvalue, ctx)?;
+                                Ok((member.id.clone().unwrap_or_default(), Box::new(field_value)))
+                            })
                             .collect::<Result<Vec<_>>>()?;
+                        Ok(RValue::Struct(SSAStruct { fields, def_id }))
+                    }
+                    ir::Ty::Enum(def_id) => {
+                        let def_id = *def_id;
+                        let enum_def = ctx
+                            .mod_ctx
+                            .module
+                            .get_enum(def_id)
+                            .ok_or_else(|| anyhow!("Invalid enum ID: {}", def_id))?;
+                        let variant_tys = enum_def
+                            .variants
+                            .iter()
+                            .map(|v| v.ty.clone())
+                            .collect::<Vec<_>>();
+                        let layout = enum_def.layout(&ctx.mod_ctx.module)?;
 
-                        let join_block = ctx.create_block()?;
-                        ctx.end_block_jump_map(index_ty, *index, join_block, branches.clone())?;
-                        for (((_cond, block), variant), (_, v_offset)) in
-                            branches.into_iter().zip(variant_tys).zip(layout.variants)
-                        {
-                            ctx.start_block(block)?;
-                            variants.push(match &variant {
+                        let index = match &layout.index_ty {
+                            Some(index_ty) => Some(ctx.emit_op(ir::Op::Load {
+                                ptr: *ptr,
+                                ty: index_ty.clone(),
+                            })?),
+                            None => None,
+                        };
+
+                        let mut variants = Vec::new();
+
+                        if let (Some(index_ty), Some(index)) = (&layout.index_ty, &index) {
+                            let branches = (0..variant_tys.len())
+                                .into_iter()
+                                .map(|i| Ok((i as u128, ctx.create_block()?)))
+                                .collect::<Result<Vec<_>>>()?;
+
+                            let join_block = ctx.create_block()?;
+                            ctx.end_block_jump_map(index_ty, *index, join_block, branches.clone())?;
+                            for (((_cond, block), variant), (_, v_offset)) in
+                                branches.into_iter().zip(variant_tys).zip(layout.variants)
+                            {
+                                ctx.start_block(block)?;
+                                variants.push(match &variant {
+                                    Some(inner) => {
+                                        let variant_ptr = ctx.emit_op(ir::Op::Binary {
+                                            op: ir::BinaryOp::IAdd,
+                                            left: *ptr,
+                                            right: ir::Value::const_u32(v_offset as u32),
+                                        })?;
+                                        Some(self.load(
+                                            &LValue::Ptr(variant_ptr, Some(inner.clone())),
+                                            ctx,
+                                        )?)
+                                    }
+                                    None => None,
+                                });
+                                ctx.end_block_jump(join_block);
+                            }
+                            ctx.start_block(join_block)?;
+                        } else if variant_tys.len() == 1 {
+                            variants.push(match &variant_tys[0] {
                                 Some(inner) => {
                                     let variant_ptr = ctx.emit_op(ir::Op::Binary {
                                         op: ir::BinaryOp::IAdd,
                                         left: *ptr,
-                                        right: ir::Value::const_u32(v_offset as u32),
+                                        right: ir::Value::const_u32(layout.variants[0].1 as u32),
                                     })?;
-                                    Some(self.load(&LValue::Ptr(variant_ptr, inner.clone()), ctx)?)
+                                    Some(self.load(
+                                        &LValue::Ptr(variant_ptr, Some(inner.clone())),
+                                        ctx,
+                                    )?)
                                 }
                                 None => None,
                             });
-                            ctx.end_block_jump(join_block);
                         }
-                        ctx.start_block(join_block)?;
-                    } else if variant_tys.len() == 1 {
-                        variants.push(match &variant_tys[0] {
-                            Some(inner) => {
-                                let variant_ptr = ctx.emit_op(ir::Op::Binary {
-                                    op: ir::BinaryOp::IAdd,
-                                    left: *ptr,
-                                    right: ir::Value::const_u32(layout.variants[0].1 as u32),
-                                })?;
-                                Some(self.load(&LValue::Ptr(variant_ptr, inner.clone()), ctx)?)
-                            }
-                            None => None,
-                        });
-                    }
 
-                    Ok(RValue::Enum(SSAEnum {
-                        variants,
-                        index,
-                        def_id,
-                        index_ty: layout.index_ty,
-                    }))
+                        Ok(RValue::Enum(SSAEnum {
+                            variants,
+                            index,
+                            def_id,
+                            index_ty: layout.index_ty,
+                        }))
+                    }
+                    ir::Ty::Native(nt) => {
+                        let value = ctx.emit_op(ir::Op::Load {
+                            ptr: *ptr,
+                            ty: nt.clone(),
+                        })?;
+                        Ok(RValue::Value(value, nt.clone()))
+                    }
                 }
-                ir::Ty::Native(nt) => {
-                    let value = ctx.emit_op(ir::Op::Load {
-                        ptr: *ptr,
-                        ty: nt.clone(),
-                    })?;
-                    Ok(RValue::Value(value, nt.clone()))
-                }
-            },
+            }
             LValue::Variable(path) => ctx.get_variable_at_path(path),
         }
     }
@@ -1047,12 +1114,12 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     fn get_struct_field(
         &mut self,
         lvalue: &LValue,
-        index: usize,
+        field: StructFieldId,
         ctx: &mut FunctionCtx,
     ) -> Result<LValue> {
         match lvalue {
             LValue::Ptr(ptr, ty) => {
-                let ir::Ty::Struct(ty) = ty else {
+                let Some(ir::Ty::Struct(ty)) = ty else {
                     bail!("Cannot get field of non struct value")
                 };
                 let s_ty = ctx
@@ -1061,6 +1128,19 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .get_struct(*ty)
                     .ok_or_else(|| anyhow!("invalid struct"))?;
                 let layout = s_ty.layout(&ctx.mod_ctx.module)?;
+                let index = match field {
+                    StructFieldId::Index(index) => index,
+                    StructFieldId::Name(name) => s_ty
+                        .members
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, m)| {
+                            m.id.as_ref()
+                                .map(|id| if *id == name { Some(i) } else { None })
+                                .flatten()
+                        })
+                        .ok_or_else(|| anyhow!("No field named {}", name))?,
+                };
                 let offset = layout
                     .byte_offsets
                     .get(index)
@@ -1072,11 +1152,20 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                         left: *ptr,
                         right: ir::Value::const_u32(*offset as u32),
                     })?,
-                    field_ty,
+                    Some(field_ty),
                 ))
             }
             LValue::Variable(items) => match ctx.get_variable_at_path(&items)? {
                 RValue::Struct(SSAStruct { fields, def_id: _ }) => {
+                    let index = match field {
+                        StructFieldId::Index(index) => index,
+                        StructFieldId::Name(name) => fields
+                            .iter()
+                            .enumerate()
+                            .find_map(|(i, (id, _))| if *id == name { Some(i) } else { None })
+                            .ok_or_else(|| anyhow!("No field named {}", name))?,
+                    };
+
                     if let Some((ident, _)) = fields.get(index) {
                         let mut field_path = items.clone();
                         field_path.push(VariablePathSegment::StructField(ident.clone()));
@@ -1278,14 +1367,16 @@ pub struct ModuleCtx {
     pub current_namespace: Vec<String>,
 }
 
+#[derive(Clone)]
 pub enum IdentTree {
     Namespace {
-        imports: Vec<(Option<Uri>, ast::Path)>,
+        imports: Vec<(Option<Uri>, Option<ast::Path>)>,
         children: HashMap<String, IdentTree>,
     },
     Def(IdentTarget),
 }
 
+#[derive(Clone)]
 pub enum IdentTarget {
     Struct(ast::Struct),
     Enum(ast::Enum),
@@ -1312,7 +1403,7 @@ impl IdentTree {
     pub fn insert_import(
         &mut self,
         uri: Option<Uri>,
-        path: ast::Path,
+        path: Option<ast::Path>,
     ) -> Result<(), IdentInsertError> {
         if let IdentTree::Namespace {
             ref mut imports,
@@ -1496,7 +1587,7 @@ impl<'a> IdentTreeCursor<'a> {
             self.scope_stack.push(new_scope);
             Ok(())
         } else {
-            bail!("{} not found", namespace);
+            bail!("child namespace {} not found", namespace);
         }
     }
 
@@ -1525,11 +1616,13 @@ impl<'a> IdentTreeCursor<'a> {
     }
 }
 
+#[derive(Clone)]
 pub enum TyPattern {
     Any,
     Exact(ir::Ty),
 }
 
+#[derive(Clone)]
 pub struct FnOverride {
     pub temp_args: Vec<TyPattern>,
     pub arg_tys: Vec<TyPattern>,
@@ -1568,6 +1661,7 @@ impl FnOverride {
     }
 }
 
+#[derive(Clone)]
 pub enum FnOverrideKind {
     Ast(ast::Function),
     Intrinsic(IntrinsicFn),
@@ -2126,6 +2220,12 @@ impl RValue {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum StructFieldId {
+    Index(usize),
+    Name(String),
+}
+
 #[derive(Clone)]
 pub struct SSAStruct {
     pub fields: Vec<(String, Box<RValue>)>,
@@ -2276,9 +2376,9 @@ impl SSAEnum {
 /// Values with a memory address or settable value
 #[derive(Clone)]
 enum LValue {
-    /// Runtime memory address and inner type
-    Ptr(ir::Value, ir::Ty),
-    /// Compile time variable or emulated struct
+    /// Runtime memory address and inner type TODO add mut
+    Ptr(ir::Value, Option<ir::Ty>),
+    // Labeled variable reference or emulated struct values
     Variable(Vec<VariablePathSegment>),
 }
 

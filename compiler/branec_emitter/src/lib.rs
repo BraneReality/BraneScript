@@ -183,7 +183,11 @@ impl<'src> Diagnostic for DiagnosticBuilder<'src> {
             // Find next line, and then backtrack past the newline to get the end of the current
             // line
             let next_line = Self::advance_lines(1, cursor, &source_text);
-            s.span.range.end = span.range.end.max(next_line.buf_index - 2);
+            let mut end = next_line.buf_index as i64 - 2;
+            if end < 0 {
+                end = 0;
+            }
+            s.span.range.end = span.range.end.max(end as usize);
         }
 
         if let Some(s) = current_snippet {

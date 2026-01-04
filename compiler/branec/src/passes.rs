@@ -146,6 +146,11 @@ pub fn map_values(block: &mut Block, map: &mut HashMap<Value, Value>) {
                     }
                 }
             }
+            Op::Cast {
+                src,
+                from_ty: _,
+                to_ty: _,
+            } => replace(src, map),
         }
     }
 

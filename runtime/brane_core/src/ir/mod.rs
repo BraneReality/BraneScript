@@ -1,5 +1,7 @@
 use anyhow::{anyhow, bail};
 
+mod parser;
+
 pub type StructId = u64;
 pub type EnumId = u64;
 pub type FnId = i64;
@@ -251,6 +253,11 @@ pub enum Op {
     Store {
         src: Value,
         ptr: Value,
+    },
+    Cast {
+        src: Value,
+        from_ty: NativeType,
+        to_ty: NativeType,
     },
     Unary {
         op: UnaryOp,
@@ -546,6 +553,15 @@ pub enum Uri {
     StdLib,
     File(PathBuf),
     Custom(usize),
+}
+
+impl Uri {
+    pub fn parse(text: impl AsRef<str>) -> anyhow::Result<Uri> {
+        let p = parser::uri_parser();
+        chumsky::Parser::parse(&p, text.as_ref())
+            .into_result()
+            .map_err(|e| anyhow!("Failed to parse Uri: {:?}", e))
+    }
 }
 
 impl Default for Uri {
@@ -881,6 +897,11 @@ impl fmt::Display for Op {
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
+            Op::Cast {
+                src,
+                from_ty,
+                to_ty,
+            } => write!(f, "(cast {} from {} to {})", src, from_ty, to_ty),
         }
     }
 }

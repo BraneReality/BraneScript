@@ -167,24 +167,12 @@ where
     one_of("01234567")
 }
 
-pub fn parser<'src, I>()
--> impl Parser<'src, I, Vec<Def>, extra::Full<Rich<'src, char, Span>, (), ()>>
+pub fn int_literal<'src, I>()
+-> impl Parser<'src, I, Literal, extra::Full<Rich<'src, char, Span>, (), ()>> + Clone
 where
     I: StrInput<'src, Token = char, Span = Span, Slice = &'src str>,
 {
-    let mut ty = Recursive::declare();
-    let mut expr = Recursive::declare();
-
-    let ident = text::unicode::ident()
-        .to_slice()
-        .labelled("identifier")
-        .map_with(|i: &str, e| Ident {
-            text: i.to_string(),
-            span: e.span(),
-        })
-        .padded_by(ws_or_comment());
-
-    let int = text::digits(10)
+    text::digits(10)
         .to_slice()
         .then(
             choice((
@@ -252,7 +240,15 @@ where
             })
         })
         .labelled("integer")
-        .padded_by(ws_or_comment());
+        .padded_by(ws_or_comment())
+}
+
+pub fn literal<'src, I>()
+-> impl Parser<'src, I, Literal, extra::Full<Rich<'src, char, Span>, (), ()>> + Clone
+where
+    I: StrInput<'src, Token = char, Span = Span, Slice = &'src str>,
+{
+    let int = int_literal();
 
     let float = text::digits(10)
         .then_ignore(just("."))
@@ -278,7 +274,7 @@ where
         .labelled("float")
         .padded_by(ws_or_comment());
 
-    let literal = choice((
+    choice((
         float,
         int.clone(),
         choice((
@@ -295,7 +291,27 @@ where
             kind,
             span: e.span(),
         }),
-    ));
+    ))
+}
+
+pub fn parser<'src, I>()
+-> impl Parser<'src, I, Vec<Def>, extra::Full<Rich<'src, char, Span>, (), ()>>
+where
+    I: StrInput<'src, Token = char, Span = Span, Slice = &'src str>,
+{
+    let mut ty = Recursive::declare();
+    let mut expr = Recursive::declare();
+
+    let ident = text::unicode::ident()
+        .to_slice()
+        .labelled("identifier")
+        .map_with(|i: &str, e| Ident {
+            text: i.to_string(),
+            span: e.span(),
+        })
+        .padded_by(ws_or_comment());
+
+    let literal = literal();
 
     let template_param = ident.clone().map(|ident| TemplateParam(ident));
     let template_arg = ty.clone().map(|t| TemplateArg(t));
@@ -341,7 +357,7 @@ where
     let array = ty
         .clone()
         .then_ignore(token(";"))
-        .then(int)
+        .then(int_literal())
         .delimited_by(token("["), token("]"))
         .try_map_with(|(ty, len), e| {
             let span: Span = e.span();
@@ -363,8 +379,8 @@ where
                 .ignore_then(token("mut").or_not())
                 .then(
                     choice((
-                        ty.clone().map(|ty| Some(Box::new(ty))),
                         token("any").map(|_| None),
+                        ty.clone().map(|ty| Some(Box::new(ty))),
                     ))
                     .delimited_by(token("["), token("]")),
                 )
@@ -372,8 +388,8 @@ where
             token("*")
                 .ignore_then(token("mut").or_not())
                 .then(choice((
+                    token("any").map(|_| None),
                     ty.clone().map(|ty| Some(Box::new(ty))),
-                    token("void").map(|_| None),
                 )))
                 .map(|(is_mut, ty)| TyKind::Ptr(is_mut.is_some(), ty)),
             array,
@@ -452,14 +468,29 @@ where
             kind,
         }));
 
-    let mut field = Recursive::declare();
-    field.define(atom.foldl_with(
+    let implicit_call = atom.foldl_with(
+        token(".")
+            .ignore_then(path_segment.clone())
+            .then(
+                expr.clone()
+                    .separated_by(token(","))
+                    .collect()
+                    .delimited_by(token("("), token(")")),
+            )
+            .repeated(),
+        |self_expr, (path, mut args), e| Expr {
+            kind: ExprKind::ImplcitSelfCall(Box::new(self_expr), path, args),
+            span: e.span(),
+        },
+    );
+
+    let field = implicit_call.foldl_with(
         token(".").ignore_then(path_segment).repeated(),
         |expr, field, e| Expr {
             kind: ExprKind::Field(Box::new(expr), field),
             span: e.span(),
         },
-    ));
+    );
 
     let mut call = Recursive::declare();
     call.define(
@@ -665,9 +696,10 @@ where
 
     let use_def = token("using")
         .to_span()
-        .then(path.clone())
+        .then(token("*").to(None).or(path.clone().map(|p| Some(p))))
+        .then(token("from").ignore_then(string_literal()).or_not())
         .then_ignore(token(";"))
-        .map(|(token_span, path)| DefKind::Using(token_span, path));
+        .map(|((token_span, path), src_mod)| DefKind::Using(token_span, path, src_mod));
 
     def.define(
         choice((

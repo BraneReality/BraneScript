@@ -456,6 +456,52 @@ impl CraneliftJitBackend {
                                 .load(ctx.ptr_ty, MemFlags::trusted(), fn_ptr, 0);
                         self.call_fn(Callable::Pointer(fn_ptr, sig), &input, ir, &mut ctx)?
                     }
+                    ir::Op::Cast {
+                        src,
+                        from_ty,
+                        to_ty,
+                    } => {
+                        let (from, _, _) = self.jit_value(src, &mut ctx)?;
+
+                        let rt_to_ty = Self::jit_ty(to_ty);
+
+                        let to = if from_ty.is_int() && to_ty.is_int() {
+                            if from_ty.size() < to_ty.size() {
+                                if from_ty.is_unsigned() {
+                                    ctx.builder.ins().uextend(rt_to_ty, from)
+                                } else {
+                                    ctx.builder.ins().sextend(rt_to_ty, from)
+                                }
+                            } else if from_ty.size() > to_ty.size() {
+                                ctx.builder.ins().ireduce(rt_to_ty, from)
+                            } else {
+                                from
+                            }
+                        } else if from_ty.is_float() && to_ty.is_float() {
+                            if from_ty.size() < to_ty.size() {
+                                ctx.builder.ins().fdemote(rt_to_ty, from)
+                            } else if from_ty.size() > to_ty.size() {
+                                ctx.builder.ins().fpromote(rt_to_ty, from)
+                            } else {
+                                from
+                            }
+                        } else if from_ty.is_int() && to_ty.is_float() {
+                            if from_ty.is_unsigned() {
+                                ctx.builder.ins().fcvt_from_uint(rt_to_ty, from)
+                            } else {
+                                ctx.builder.ins().fcvt_from_sint(rt_to_ty, from)
+                            }
+                        } else if from_ty.is_float() && to_ty.is_int() {
+                            if from_ty.is_unsigned() {
+                                ctx.builder.ins().fcvt_to_uint(rt_to_ty, from)
+                            } else {
+                                ctx.builder.ins().fcvt_to_sint(rt_to_ty, from)
+                            }
+                        } else {
+                            unreachable!();
+                        };
+                        Some(FValue::new(to, rt_to_ty))
+                    }
                 };
                 ctx.block_values
                     .get_mut(&Block::from_u32(block_id as u32))

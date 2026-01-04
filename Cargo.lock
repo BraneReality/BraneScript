@@ -170,11 +170,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bimap",
+ "chumsky",
  "defer",
  "libc",
  "region",
  "serde",
  "setjmp",
+ "thiserror",
  "windows",
 ]
 

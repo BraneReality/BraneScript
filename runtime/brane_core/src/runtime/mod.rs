@@ -10,6 +10,7 @@ use crate::{
 
 pub trait LoadedModule {
     fn get_fn(&self, id: ir::FnId) -> Option<memory::FnId>;
+
     fn get_fn_by_name(&self, name: impl AsRef<str>) -> Option<memory::FnId>;
     fn get_fn_names(&self) -> impl Iterator<Item = &str>;
 }
@@ -26,7 +27,7 @@ pub struct Runtime<B: JitBackend> {
     backend: B,
     pub store: Store,
     name_to_module: RwLock<HashMap<String, ModuleId>>,
-    uri_to_module: RwLock<HashMap<ir::Uri, ModuleId>>,
+    uri_to_module: RwLock<bimap::BiMap<Arc<ir::Uri>, ModuleId>>,
     module_sources: RwLock<HashMap<ModuleId, Arc<ir::Module>>>,
 }
 
@@ -59,7 +60,10 @@ impl<B: JitBackend> Runtime<B> {
         let id = self.backend.load(module, self)?;
 
         self.name_to_module.write().unwrap().insert(name, id);
-        self.uri_to_module.write().unwrap().insert(uri, id);
+        self.uri_to_module
+            .write()
+            .unwrap()
+            .insert(Arc::new(uri), id);
         self.module_sources.write().unwrap().insert(id, stored_src);
         Ok(id)
     }
@@ -68,8 +72,16 @@ impl<B: JitBackend> Runtime<B> {
         self.backend.get_module(module)
     }
 
-    pub fn find_module_by_uri(&self, name: &ir::Uri) -> Option<ModuleId> {
-        self.uri_to_module.read().unwrap().get(name).cloned()
+    pub fn find_module_by_uri(&self, uri: &ir::Uri) -> Option<ModuleId> {
+        self.uri_to_module.read().unwrap().get_by_left(uri).cloned()
+    }
+
+    pub fn module_uri(&self, module: ModuleId) -> Option<Arc<ir::Uri>> {
+        self.uri_to_module
+            .read()
+            .unwrap()
+            .get_by_right(&module)
+            .cloned()
     }
 
     pub fn find_module_by_name(&self, name: impl AsRef<str>) -> Option<ModuleId> {
@@ -89,8 +101,8 @@ pub enum BindingError {
 
 #[repr(C)]
 pub struct ExecutionCtx {
-    bindings: Box<PageTable>,
-    fn_bindings: *const FnTable,
+    pub bindings: Box<PageTable>,
+    pub fn_bindings: *const FnTable,
 
     owned_pages: Vec<Page>,
     shared_pages: Vec<Arc<Page>>,

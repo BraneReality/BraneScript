@@ -178,7 +178,7 @@ impl Display for Literal {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Ident {
     pub span: Span,
     pub text: String,
@@ -205,7 +205,7 @@ impl Display for TemplateParam {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct TemplateArg(pub Ty);
 
 impl Display for TemplateArg {
@@ -247,7 +247,7 @@ impl Display for NativeTy {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum TyKind {
     Native(NativeTy),
     /// (element type, length, span)
@@ -308,7 +308,7 @@ impl Display for TyKind {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Ty {
     pub span: Span,
     pub kind: TyKind,
@@ -336,7 +336,10 @@ pub enum ExprKind {
     Ref(Box<Expr>),
     Deref(Box<Expr>),
     Field(Box<Expr>, PathSegment),
+    /// (Function Value, Args)
     Call(Box<Expr>, Vec<Expr>),
+    /// (Self, Function Name, Args)
+    ImplcitSelfCall(Box<Expr>, PathSegment, Vec<Expr>),
 }
 
 #[derive(Clone)]
@@ -345,7 +348,7 @@ pub struct Expr {
     pub kind: ExprKind,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct PathSegment {
     pub ident: Ident,
     pub template_args: Vec<TemplateArg>,
@@ -365,7 +368,7 @@ impl Display for PathSegment {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Path {
     pub segments: Vec<PathSegment>,
     pub span: Span,
@@ -465,8 +468,9 @@ pub enum DefKind {
     Struct(Struct),
     Enum(Enum),
     Function(Function),
-    /// (span of "using" token, ident path)
-    Using(Span, Path),
+    /// (span of "using" token, ident path, module URI string)
+    /// MODULE URI STRING IS TEMPORARY FOR TESTING UNTIL BETTER SOLUTION
+    Using(Span, Option<Path>, Option<String>),
     Namespace(Ident, Vec<Def>),
 }
 
@@ -535,16 +539,24 @@ impl Display for ExprKind {
             ExprKind::Deref(e) => write!(f, "*{}", e),
             ExprKind::Field(e, seg) => write!(f, "{}.{}", e, seg),
             ExprKind::Call(e, args) => {
-                let mut s = String::new();
-                s.push_str(&format!("{}(", e));
+                write!(f, "{}(", e)?;
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 {
-                        s.push_str(", ");
+                        write!(f, ", ")?;
                     }
-                    s.push_str(&format!("{}", a));
+                    write!(f, "{}", a)?;
                 }
-                s.push(')');
-                write!(f, "{}", s)
+                write!(f, ")")
+            }
+            ExprKind::ImplcitSelfCall(expr, path_segment, exprs) => {
+                write!(f, "{}.{}(", expr, path_segment)?;
+                for (i, a) in exprs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", a)?;
+                }
+                write!(f, ")")
             }
         }
     }
@@ -730,7 +742,20 @@ impl Display for DefKind {
             DefKind::Struct(s) => write!(f, "{}", s),
             DefKind::Enum(e) => write!(f, "{}", e),
             DefKind::Function(fn_) => write!(f, "{}", fn_),
-            DefKind::Using(_, p) => write!(f, "using {};", p),
+            DefKind::Using(_, p, from) => write!(
+                f,
+                "using {}{};",
+                if let Some(p) = p {
+                    format!("{}", p)
+                } else {
+                    "*".into()
+                },
+                if let Some(from) = from {
+                    format!(" from {}", from)
+                } else {
+                    "".into()
+                }
+            ),
             DefKind::Namespace(id, defs) => {
                 let mut s = String::new();
                 s.push_str(&format!("namespace {} {{ ", id));

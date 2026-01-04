@@ -150,6 +150,54 @@ pub fn define_fcmp_op_for<'a>(
     );
 }
 
+pub fn define_as_op_for<'a>(root: &mut IdentTree) {
+    use ir::NativeType::*;
+    let tys = [
+        U8,
+        I8,
+        U16,
+        I16,
+        U32,
+        I32,
+        U64,
+        I64,
+        F64,
+        F32,
+        Ptr(false, None),
+    ];
+
+    for from_ty in tys {
+        root.insert_fn(
+            "as",
+            intrinsic_op([TyPattern::Any], [from_ty], |temp_tys, args, ctx| {
+                let [to_ty] = temp_tys else {
+                    unreachable!("incorrect as<>() template args");
+                };
+                let ir::Ty::Native(to_ty) = to_ty else {
+                    bail!(
+                        "as<T>() is only implemented for native types, not for {}",
+                        to_ty
+                    )
+                };
+
+                let [RValue::Value(from, from_ty)] = args else {
+                    unreachable!("incorrect as<>() args");
+                };
+
+                Ok(Some(RValue::Value(
+                    ctx.emit_op(ir::Op::Cast {
+                        src: from.clone(),
+                        from_ty: from_ty.clone(),
+                        to_ty: to_ty.clone(),
+                    })?,
+                    to_ty.clone(),
+                )))
+            }),
+        )
+        .unwrap();
+    }
+}
+
 pub fn populate(root: &mut IdentTree) {
     use ir::NativeType::*;
     let ints = [U8, I8, U16, I16, U32, I32, U64, I64];

@@ -8,6 +8,8 @@ edition = "2021"
 anyhow.workspace = true
 serde.workspace = true
 defer.workspace = true
+chumsky.workspace = true
+thiserror.workspace = true
 region = "3.0.2"
 bimap = "0.6.3"
 
