@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Result};
-use brane_core::ir;
+use brane_core::ir::{self, Uri};
 use branec_emitter::{self as emt, Diagnostic, DiagnosticEmitter};
 use branec_parser::ast::{self, Ty};
-use branec_source::{SourceManager, Span, Uri};
+use branec_source::{SourceManager, Span};
 use chumsky::span::Span as _;
 use chumsky::Parser;
 use std::collections::HashMap;

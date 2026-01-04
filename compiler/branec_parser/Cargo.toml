@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 branec_source = { path = "../branec_source/" }
+brane_core = { path = "../../runtime/brane_core/" }
 chumsky.workspace = true

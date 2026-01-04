@@ -3,9 +3,10 @@ use std::{collections::HashMap, ffi::OsString, io::Write as _, time::Instant};
 use anyhow::anyhow;
 //use brane_script_runtime::backend::llvm::LLVMJitBackend;
 use brane_backend_cranelift::CraneliftJitBackend;
+use brane_core::ir::{self, Uri};
 use brane_core::runtime::{LoadedModule, Runtime};
 use branec::CompileContext;
-use branec_source::{SourceManager, Uri};
+use branec_source::SourceManager;
 use clap::Subcommand;
 
 mod c_abi_tests;
@@ -174,13 +175,16 @@ fn main() -> anyhow::Result<()> {
                         module_name,
                         function_names,
                     } => {
+                        let mod_id = rt
+                            .find_module_by_name(&module_name)
+                            .ok_or(anyhow!("Module {} not found", module_name))?;
                         let module = rt
-                            .get_module_by_name(&module_name)
+                            .get_module(mod_id)
                             .ok_or(anyhow!("Module {} not found", module_name))?;
 
                         if function_names {
                             let mut were_fn = false;
-                            for f in module.get_function_names() {
+                            for f in module.get_fn_names() {
                                 println!("{}", f);
                                 were_fn = true;
                             }
@@ -194,30 +198,53 @@ fn main() -> anyhow::Result<()> {
                 CommandKind::Build { src: _ } => todo!("We don't do that here"),
                 CommandKind::Load { src, module_name } => {
                     let name = module_name.unwrap_or("default".into());
-                    let module = ctx.emit_module(name.clone(), &Uri::File(src.into()))?;
-                    let mod_id = rt.load_module(module)?;
+                    let uri = Uri::File(src.into());
+                    let module = ctx.emit_module(name.clone(), &uri)?;
+                    let mod_id = rt.load_module(uri, module)?;
                     println!("Loaded module with id {}", mod_id);
                 }
                 CommandKind::Call {
                     module_name,
                     function_name,
-                    args: _,
+                    args,
                 } => {
                     let module_name = module_name.unwrap_or("default".into());
-                    let module = rt
-                        .get_module_by_name(&module_name)
+                    let mod_id = rt
+                        .find_module_by_name(&module_name)
                         .ok_or(anyhow!("Module {} not found", module_name))?;
 
-                    let func = module.get_fn(&function_name).ok_or(anyhow!(
-                        "Function {} not found in {}",
+                    let module = rt.get_module(mod_id).unwrap();
+                    let module_src = rt.module_src(mod_id).unwrap();
+                    let func_id = module_src.find_function(&function_name).ok_or(anyhow!(
+                        "Function {} not found in source {}",
+                        function_name,
+                        module_name
+                    ))?;
+                    let func_src = module_src.get_function(func_id).unwrap();
+
+                    let func = module.get_fn_by_name(&function_name).ok_or(anyhow!(
+                        "Function {} not found in compiled {}",
                         function_name,
                         module_name
                     ))?;
 
-                    println!(
-                        "Found function {} in module {} with address {} but calling is not implemented yet",
-                        function_name, module_name, func as usize
+                    // TODO need an ir writer library that isn't string concatination
+                    let mut fn_args: Vec<String> = Vec::new();
+                    let mut arg_types: Vec<ir::Ty> = Vec::new();
+                    for (i, arg) in args.iter().enumerate() {
+                        //fn_args.push(format!("add(args, "))
+                    }
+
+                    let jit_src = format!(
+                        "using {};\
+                        fn user_call(args: *any, result: *any) {{\
+                        {}({})\
+                        }}",
+                        module_name,
+                        function_name,
+                        fn_args.join(",")
                     );
+
                     /*
 
                     let add_test = unsafe {

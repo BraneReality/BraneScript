@@ -1,4 +1,5 @@
-use branec_source::{Span, Uri};
+use brane_core::ir::Uri;
+use branec_source::Span;
 use std::{
     fmt::{self, Display},
     sync::Arc,

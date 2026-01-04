@@ -221,6 +221,7 @@ dependencies = [
 name = "branec_parser"
 version = "0.1.0"
 dependencies = [
+ "brane_core",
  "branec_source",
  "chumsky",
 ]
@@ -230,6 +231,7 @@ name = "branec_source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "brane_core",
  "chumsky",
 ]
 

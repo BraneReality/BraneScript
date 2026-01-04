@@ -1,12 +1,13 @@
-use brane_core::runtime::{JitBackend, ModuleId};
+use brane_core::runtime::{JitBackend, LoadedModule as _, ModuleId, Runtime};
 use cranelift_codegen::ir::immediates::V128Imm;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, RwLock};
 use target_lexicon::{Architecture, CallingConvention};
 
 use anyhow::{Result, anyhow, bail};
-use brane_core::ir;
+use brane_core::{ir, memory};
 use cranelift_codegen::ir::{
     ArgumentPurpose, BlockArg, ConstantData, Endianness, Signature, StackSlotData, StackSlotKind,
 };
@@ -53,15 +54,21 @@ impl Default for CraneliftJitBackend {
 }
 
 pub struct LoadedModule {
-    pub functions: HashMap<String, FuncId>,
+    pub functions: Vec<memory::FnId>,
+    /// Maps a function name to an index in functions
+    pub name_to_function: HashMap<String, usize>,
     pub jit_module: cranelift_jit::JITModule,
 }
 
 impl JitBackend for CraneliftJitBackend {
     type ModuleTy = LoadedModule;
 
-    fn load(&self, module: ir::Module) -> anyhow::Result<brane_core::runtime::ModuleId> {
-        let module = self.jit(module)?;
+    fn load(
+        &self,
+        module: ir::Module,
+        rt: &Runtime<Self>,
+    ) -> anyhow::Result<brane_core::runtime::ModuleId> {
+        let module = self.jit(module, rt)?;
         let id = self
             .next_module_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -78,23 +85,55 @@ impl JitBackend for CraneliftJitBackend {
 }
 
 impl brane_core::runtime::LoadedModule for LoadedModule {
-    fn get_fn(&self, name: &str) -> Option<*const u8> {
-        self.functions
-            .get(name)
-            .map(|f_id| self.jit_module.get_finalized_function(*f_id))
+    fn get_fn(&self, id: ir::FnId) -> Option<memory::FnId> {
+        self.functions.get(id as usize).cloned()
     }
 
-    fn get_function_names(&self) -> impl Iterator<Item = &str> {
-        self.functions.iter().map(|f| f.0.as_str())
+    fn get_fn_by_name(&self, name: impl AsRef<str>) -> Option<memory::FnId> {
+        let name = name.as_ref();
+        self.functions
+            .get(self.name_to_function.get(name).copied()?)
+            .copied()
+    }
+
+    fn get_fn_names(&self) -> impl Iterator<Item = &str> {
+        self.name_to_function.iter().map(|(name, _)| name.as_str())
     }
 }
 
 impl CraneliftJitBackend {
-    pub fn jit(&self, module: ir::Module) -> Result<LoadedModule> {
+    pub fn jit(&self, module: ir::Module, rt: &Runtime<Self>) -> Result<LoadedModule> {
         let jit_module = JITModule::new(JITBuilder::with_isa(
             self.isa.clone(),
             cranelift_module::default_libcall_names(),
         ));
+
+        let linked_modules = module
+            .imports
+            .iter()
+            .map(|uri| {
+                let id = rt
+                    .find_module_by_uri(uri)
+                    .ok_or_else(|| anyhow!("Could not link to module {}", uri))?;
+                rt.get_module(id)
+                    .ok_or_else(|| anyhow!("Could not link to module {}", uri))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let linked_func_indicies = module
+            .external_functions
+            .iter()
+            .map(|f| {
+                let ext_module = linked_modules
+                    .get(f.module as usize)
+                    .ok_or_else(|| anyhow!("Invalid import id in {}", f.module))?;
+                let id = ext_module
+                    .get_fn_by_name(&f.id)
+                    .ok_or_else(|| anyhow!("Invalid fn name in {}", f))?;
+                Ok((id, f.sig.clone()))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
         let mut codegen = jit_module.make_context();
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut ctx = ModuleCtx {
@@ -103,11 +142,13 @@ impl CraneliftJitBackend {
             module: jit_module,
             fn_map: Vec::new(),
             data_desc: DataDescription::new(),
+            linked_func_indicies,
+            rt,
         };
 
         let mut signatures = Vec::new();
         for func in module.functions.iter() {
-            let (signature, has_ret_ptr) = self.construct_fn_sig(func, &module)?;
+            let (signature, has_ret_ptr) = self.construct_fn_sig(&func.sig, &module)?;
             let fn_id = ctx
                 .module
                 .declare_function(&func.id, Linkage::Export, &signature)
@@ -169,9 +210,26 @@ impl CraneliftJitBackend {
 
         ctx.module.finalize_definitions()?;
 
+        let (functions, name_to_function) = ctx.fn_map.into_iter().fold(
+            (Vec::new(), HashMap::new()),
+            |(mut functions, mut name_to_function), (name, func)| {
+                let name_id = functions.len();
+                unsafe {
+                    let fn_ptr = NonNull::new_unchecked(std::mem::transmute(
+                        ctx.module.get_finalized_function(func),
+                    ));
+                    let fn_index = rt.store.expose_fn(fn_ptr);
+                    functions.push(fn_index);
+                }
+                name_to_function.insert(name, name_id);
+                (functions, name_to_function)
+            },
+        );
+
         Ok(LoadedModule {
-            functions: ctx.fn_map.into_iter().collect(),
+            functions,
             jit_module: ctx.module,
+            name_to_function,
         })
     }
 
@@ -339,7 +397,38 @@ impl CraneliftJitBackend {
                         None
                     }
                     ir::Op::Call { func, input } => {
-                        self.call_fn(Callable::FnId(*func as ir::FnId), &input, ir, &mut ctx)?
+                        if *func >= 0 {
+                            self.call_fn(Callable::FnId(*func), &input, ir, &mut ctx)?
+                        } else {
+                            // Call from known index in the pointer table
+                            let fn_index = func * -1 + 1;
+                            let (fn_index, fn_sig) = ctx
+                                .mod_ctx
+                                .linked_func_indicies
+                                .get(fn_index as usize)
+                                .ok_or_else(|| {
+                                    anyhow!("Invalid imported function index: {}", fn_index)
+                                })?
+                                .clone();
+
+                            let entry = ctx.entry_block_id;
+                            let exe_ctx = ctx.builder.block_params(entry)[0];
+                            let fn_table_ptr = ctx.builder.ins().load(
+                                ctx.ptr_ty,
+                                MemFlags::trusted(),
+                                exe_ctx,
+                                ctx.ptr_ty.bytes() as i32,
+                            );
+
+                            let fn_ptr = ctx.builder.ins().load(
+                                ctx.ptr_ty,
+                                MemFlags::trusted(),
+                                fn_table_ptr,
+                                fn_index as i32 * ctx.ptr_ty.bytes() as i32,
+                            );
+
+                            self.call_fn(Callable::Pointer(fn_ptr, &fn_sig), &input, ir, &mut ctx)?
+                        }
                     }
                     ir::Op::CallIndirect {
                         func_handle,
@@ -347,7 +436,25 @@ impl CraneliftJitBackend {
                         sig,
                     } => {
                         let (func, _, _) = self.jit_value(func_handle, &mut ctx)?;
-                        self.call_fn(Callable::Pointer(func, sig), &input, ir, &mut ctx)?
+
+                        let entry = ctx.entry_block_id;
+                        let exe_ctx = ctx.builder.block_params(entry)[0];
+                        let fn_table_ptr = ctx.builder.ins().load(
+                            ctx.ptr_ty,
+                            MemFlags::trusted(),
+                            exe_ctx,
+                            ctx.ptr_ty.bytes() as i32,
+                        );
+
+                        let fn_ptr_offset =
+                            ctx.builder.ins().imul_imm(func, ctx.ptr_ty.bytes() as i64);
+                        let fn_ptr = ctx.builder.ins().iadd(fn_table_ptr, fn_ptr_offset);
+
+                        let fn_ptr =
+                            ctx.builder
+                                .ins()
+                                .load(ctx.ptr_ty, MemFlags::trusted(), fn_ptr, 0);
+                        self.call_fn(Callable::Pointer(fn_ptr, sig), &input, ir, &mut ctx)?
                     }
                 };
                 ctx.block_values
@@ -415,7 +522,11 @@ impl CraneliftJitBackend {
         let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
         let entry = ctx.entry_block_id;
-        let bindings = ctx.builder.block_params(entry)[0];
+        let exe_ctx = ctx.builder.block_params(entry)[0];
+        let bindings = ctx
+            .builder
+            .ins()
+            .load(ctx.ptr_ty, MemFlags::trusted(), exe_ctx, 0);
 
         let mul_shift = match ctx.ptr_bytes {
             1 => 0,
@@ -444,7 +555,11 @@ impl CraneliftJitBackend {
         let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
         let entry = ctx.entry_block_id;
-        let bindings = ctx.builder.block_params(entry)[0];
+        let exe_ctx = ctx.builder.block_params(entry)[0];
+        let bindings = ctx
+            .builder
+            .ins()
+            .load(ctx.ptr_ty, MemFlags::trusted(), exe_ctx, 0);
 
         let mul_shift = match ctx.ptr_bytes {
             1 => 0,
@@ -593,7 +708,7 @@ impl CraneliftJitBackend {
 
     fn construct_fn_sig(
         &self,
-        func: &ir::Function,
+        sig_src: &ir::FnSig,
         ir: &ir::Module,
     ) -> anyhow::Result<(Signature, bool)> {
         let triple = self.isa.triple();
@@ -612,7 +727,7 @@ impl CraneliftJitBackend {
                 // Based off of: https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170
                 let mut sig = Signature::new(isa::CallConv::WindowsFastcall);
 
-                if let Some(ret_ty) = &func.sig.ret_ty {
+                if let Some(ret_ty) = &sig_src.ret_ty {
                     let mut ret_struct = |size: usize| {
                         //println!("sig for returning struct of size {}", size);
                         match size {
@@ -658,7 +773,7 @@ impl CraneliftJitBackend {
                 // ctx pointer
                 sig.params.push(AbiParam::new(self.isa.pointer_type()));
 
-                for param in &func.sig.param_tys {
+                for param in &sig_src.param_tys {
                     let mut pass_struct = |size: usize| {
                         //println!("passing struct of size {} as arg", size);
                         match size {
@@ -709,7 +824,7 @@ impl CraneliftJitBackend {
                     // are taken in the order from %xmm0 to %xmm7.
                     let mut rem_vector = 8i32;
 
-                    if let Some(ret_ty) = &func.sig.ret_ty {
+                    if let Some(ret_ty) = &sig_src.ret_ty {
                         match ret_ty {
                             ir::Ty::Native(native_type) => {
                                 sig.returns.push(AbiParam::new(Self::jit_ty(native_type)))
@@ -754,7 +869,7 @@ impl CraneliftJitBackend {
                     sig.params.push(AbiParam::new(self.isa.pointer_type()));
                     rem_general -= 1;
 
-                    for param in &func.sig.param_tys {
+                    for param in &sig_src.param_tys {
                         match param {
                             ir::Ty::Native(native_type) => {
                                 let ty = Self::jit_ty(native_type);
@@ -831,7 +946,7 @@ impl CraneliftJitBackend {
 
                     // Next General-purpose Register Number
 
-                    if let Some(ret_ty) = &func.sig.ret_ty {
+                    if let Some(ret_ty) = &sig_src.ret_ty {
                         match ret_ty {
                             ir::Ty::Native(native_type) => {
                                 sig.returns.push(AbiParam::new(Self::jit_ty(native_type)));
@@ -871,7 +986,7 @@ impl CraneliftJitBackend {
                     let mut ngrn = 1;
                     let mut nsrn = 0;
 
-                    for param in &func.sig.param_tys {
+                    for param in &sig_src.param_tys {
                         match param {
                             ir::Ty::Native(native_type) => {
                                 let ty = Self::jit_ty(native_type);
@@ -1358,6 +1473,11 @@ impl CraneliftJitBackend {
 
         let call_inst = match callable {
             Callable::FnId(id) => {
+                // Negative function ids refer to the (id * -1 - 1)th imported function
+                assert!(
+                    id >= 0,
+                    "Though we do have negative function ids, they should be resolved and then passed as Pointer calls"
+                );
                 let func_id = fn_ctx
                     .mod_ctx
                     .fn_map
@@ -1370,8 +1490,14 @@ impl CraneliftJitBackend {
                     .declare_func_in_func(func_id, fn_ctx.builder.func);
                 fn_ctx.builder.ins().call(func_ref, &arg_values)
             }
-            Callable::Pointer(_value, _fn_sig) => {
-                todo!("Indirect function calls not implemented yet")
+            Callable::Pointer(value, fn_sig) => {
+                let (sig, _ret_ptr) = self.construct_fn_sig(fn_sig, ir)?;
+                let sig_ref = fn_ctx.builder.import_signature(sig);
+
+                fn_ctx
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, value, &arg_values)
             }
         };
 
@@ -1915,16 +2041,18 @@ impl CraneliftJitBackend {
     }
 }
 
-struct ModuleCtx {
+struct ModuleCtx<'a> {
     module: JITModule,
     data_desc: DataDescription,
     fn_map: Vec<(String, FuncId)>,
     ptr_ty: Type,
     ptr_bytes: u8,
+    linked_func_indicies: Vec<(memory::FnId, ir::FnSig)>,
+    rt: &'a Runtime<CraneliftJitBackend>,
 }
 
-struct FunctionCtx<'a> {
-    mod_ctx: &'a mut ModuleCtx,
+struct FunctionCtx<'a, 'm, 's> {
+    mod_ctx: &'m mut ModuleCtx<'s>,
     builder: FunctionBuilder<'a>,
     fn_args: Vec<FValue>,
     ctx_ptr: Value,
@@ -1937,7 +2065,7 @@ struct FunctionCtx<'a> {
     ptr_bytes: u8,
 }
 
-impl<'a> FunctionCtx<'a> {
+impl<'a, 'm, 's> FunctionCtx<'a, 'm, 's> {
     pub fn get_block(&self, block: u32) -> Result<Block> {
         self.blocks
             .get(block as usize)
@@ -1948,6 +2076,7 @@ impl<'a> FunctionCtx<'a> {
 
 enum Callable<'a> {
     FnId(ir::FnId),
+    // (Actual pointer (not Brane u32 pointer), fn sig)
     Pointer(Value, &'a ir::FnSig),
 }
 

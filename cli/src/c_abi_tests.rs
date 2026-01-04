@@ -664,6 +664,7 @@ mod tests {
             let LoadedModule {
                 functions,
                 jit_module,
+                name_to_function,
             } = jit.jit(module)?;
             Self::from_jit_module(jit_module, functions)
         }

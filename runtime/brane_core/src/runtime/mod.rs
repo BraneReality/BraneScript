@@ -5,26 +5,29 @@ use std::{
 
 use crate::{
     ir,
-    memory::{FnTable, Page, PageTable, Store},
+    memory::{self, FnTable, Page, PageTable, Store},
 };
 
 pub trait LoadedModule {
-    fn get_fn(&self, name: &str) -> Option<*const u8>;
-    fn get_function_names(&self) -> impl Iterator<Item = &str>;
+    fn get_fn(&self, id: ir::FnId) -> Option<memory::FnId>;
+    fn get_fn_by_name(&self, name: impl AsRef<str>) -> Option<memory::FnId>;
+    fn get_fn_names(&self) -> impl Iterator<Item = &str>;
 }
 
 pub trait JitBackend: Default {
     type ModuleTy: LoadedModule;
 
-    fn load(&self, module: ir::Module) -> anyhow::Result<ModuleId>;
+    fn load(&self, module: ir::Module, store: &Runtime<Self>) -> anyhow::Result<ModuleId>;
 
     fn get_module(&self, module: ModuleId) -> Option<Arc<Self::ModuleTy>>;
 }
 
 pub struct Runtime<B: JitBackend> {
     backend: B,
-    store: Store,
+    pub store: Store,
     name_to_module: RwLock<HashMap<String, ModuleId>>,
+    uri_to_module: RwLock<HashMap<ir::Uri, ModuleId>>,
+    module_sources: RwLock<HashMap<ModuleId, Arc<ir::Module>>>,
 }
 
 pub type ModuleId = usize;
@@ -35,6 +38,8 @@ impl<B: JitBackend> Runtime<B> {
             backend: B::default(),
             store: Store::new(),
             name_to_module: Default::default(),
+            uri_to_module: Default::default(),
+            module_sources: Default::default(),
         }
     }
 
@@ -43,22 +48,37 @@ impl<B: JitBackend> Runtime<B> {
         todo!();
     }
 
-    pub fn load_module(&mut self, module: ir::Module) -> anyhow::Result<ModuleId> {
+    pub fn new_execution_ctx(&self) -> ExecutionCtx {
+        ExecutionCtx::new(self.store.fn_table_ptr())
+    }
+
+    pub fn load_module(&self, uri: ir::Uri, module: ir::Module) -> anyhow::Result<ModuleId> {
         let name = module.id.clone();
-        let id = self.backend.load(module)?;
+        let stored_src = Arc::new(module.clone());
+
+        let id = self.backend.load(module, self)?;
+
         self.name_to_module.write().unwrap().insert(name, id);
+        self.uri_to_module.write().unwrap().insert(uri, id);
+        self.module_sources.write().unwrap().insert(id, stored_src);
         Ok(id)
     }
 
-    pub fn get_module(&mut self, module: ModuleId) -> Option<Arc<B::ModuleTy>> {
+    pub fn get_module(&self, module: ModuleId) -> Option<Arc<B::ModuleTy>> {
         self.backend.get_module(module)
     }
 
-    pub fn get_module_by_name(&mut self, name: impl AsRef<str>) -> Option<Arc<B::ModuleTy>> {
-        let name = name.as_ref();
+    pub fn find_module_by_uri(&self, name: &ir::Uri) -> Option<ModuleId> {
+        self.uri_to_module.read().unwrap().get(name).cloned()
+    }
 
-        let mod_id = self.name_to_module.read().unwrap().get(name).cloned()?;
-        self.backend.get_module(mod_id)
+    pub fn find_module_by_name(&self, name: impl AsRef<str>) -> Option<ModuleId> {
+        let name = name.as_ref();
+        self.name_to_module.read().unwrap().get(name).cloned()
+    }
+
+    pub fn module_src(&self, module: ModuleId) -> Option<Arc<ir::Module>> {
+        self.module_sources.read().unwrap().get(&module).cloned()
     }
 }
 
@@ -70,8 +90,6 @@ pub enum BindingError {
 #[repr(C)]
 pub struct ExecutionCtx {
     bindings: Box<PageTable>,
-    /// This needs to be managed by a runtime manager that either appends only, or pulls from a
-    /// list of free'd indicies.
     fn_bindings: *const FnTable,
 
     owned_pages: Vec<Page>,

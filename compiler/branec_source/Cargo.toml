@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+brane_core = { path = "../../runtime/brane_core/" }
+
 chumsky.workspace = true
 anyhow.workspace = true

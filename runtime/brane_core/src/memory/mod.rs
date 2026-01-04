@@ -12,10 +12,10 @@ pub const BS_PAGE_SIZE: usize = u16::MAX as usize;
 
 // Both these types are api safe, in accordance with the "null pointer optimization"
 pub type PageTable = [Option<NonNull<u8>>; BS_PAGE_SIZE];
-pub type FnTable = [Option<NonNull<usize>>; BS_PAGE_SIZE];
+pub type FnTable = [Option<NonNull<u8>>; BS_PAGE_SIZE];
 /// Currently an alias for global binding index
 pub type PageId = u16;
-pub type FnId = u64;
+pub type FnId = u16;
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -55,13 +55,26 @@ pub struct PageVec {
 pub struct Store {
     unused_pages: Mutex<Vec<Page>>,
     next_page_binding: AtomicU32,
+    fn_table: Box<FnTable>,
+    next_fn_id: AtomicU16,
+    unused_fn_ids: Mutex<Vec<FnId>>,
 }
 
 impl Store {
     pub fn new() -> Self {
+        let fn_table = unsafe {
+            let mut array = Box::<FnTable>::new_uninit();
+            for i in array.assume_init_mut().iter_mut() {
+                *i = None;
+            }
+            array.assume_init()
+        };
         Self {
             unused_pages: Default::default(),
             next_page_binding: AtomicU32::new(1),
+            next_fn_id: AtomicU16::new(0),
+            fn_table,
+            unused_fn_ids: Default::default(),
         }
     }
 
@@ -87,6 +100,43 @@ impl Store {
     /// Adds a page to the unused pool
     pub fn free_page(&self, page: Page) {
         self.unused_pages.lock().unwrap().push(page);
+    }
+
+    pub fn fn_table_ptr(&self) -> *const FnTable {
+        Box::as_ref(&self.fn_table)
+    }
+
+    pub unsafe fn expose_fn(&self, ptr: NonNull<u8>) -> FnId {
+        if let Some(unused) = self.unused_fn_ids.lock().unwrap().pop() {
+            // Yes, this circumevents rust, but I don't want to deal with it rn
+            unsafe {
+                *std::mem::transmute::<_, *mut _>(self.fn_table.as_ptr().add(unused as usize)) =
+                    Some(ptr)
+            };
+            unused
+        } else {
+            let id = self
+                .next_fn_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            unsafe {
+                *std::mem::transmute::<_, *mut _>(self.fn_table.as_ptr().add(id as usize)) =
+                    Some(ptr)
+            };
+            id
+        }
+    }
+
+    pub unsafe fn remove_fn(&self, id: FnId) {
+        assert!(
+            self.fn_table[id as usize].is_some(),
+            "Tried to remove unexposed function"
+        );
+        unsafe {
+            *std::mem::transmute::<_, *mut Option<NonNull<u8>>>(
+                self.fn_table.as_ptr().add(id as usize),
+            ) = None;
+        }
+        self.unused_fn_ids.lock().unwrap().push(id);
     }
 }
 

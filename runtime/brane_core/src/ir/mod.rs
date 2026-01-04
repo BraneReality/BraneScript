@@ -3,6 +3,7 @@ use anyhow::{anyhow, bail};
 pub type StructId = u64;
 pub type EnumId = u64;
 pub type FnId = i64;
+pub type ImportId = u64;
 pub type NodeId = i64;
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
@@ -262,7 +263,7 @@ pub enum Op {
     },
     // Function calls
     Call {
-        func: i32,
+        func: FnId,
         input: Vec<ValueOrObj>,
     },
     CallIndirect {
@@ -313,7 +314,7 @@ pub enum CmpTy {
 }
 
 /// Block terminating operator
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum TermOp {
     Jump {
         block: u32,
@@ -341,13 +342,13 @@ pub enum ValueOrObj {
     Obj(Vec<Value>),
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct StructMember {
     pub id: Option<String>,
     pub ty: Ty,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Struct {
     pub id: Option<String>,
     pub members: Vec<StructMember>,
@@ -415,13 +416,13 @@ impl Struct {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct EnumVariant {
     pub id: String,
     pub ty: Option<Ty>,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Enum {
     pub id: Option<String>,
     pub variants: Vec<EnumVariant>,
@@ -500,18 +501,19 @@ impl Enum {
     }
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub struct PhiValue {
     pub block: u32,
     pub value: Value,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PhiNode {
     pub ty: NativeType,
     pub variants: Vec<PhiValue>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Block {
     /// Phi nodes all declared at the "beginning" of blocks for eazy analysis
     pub phi_nodes: Vec<PhiNode>,
@@ -525,20 +527,61 @@ pub struct FnSig {
     pub ret_ty: Option<Ty>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Function {
     pub id: String,
     pub sig: FnSig,
     pub blocks: Vec<Block>,
 }
 
+#[derive(Clone, Debug)]
 pub struct Node {
     pub id: String,
     pub update_fn: FnId,
 }
 
+#[derive(Clone, Eq, PartialEq, PartialOrd, Hash, Debug)]
+pub enum Uri {
+    Unknown,
+    StdLib,
+    File(PathBuf),
+    Custom(usize),
+}
+
+impl Default for Uri {
+    fn default() -> Self {
+        Uri::Unknown
+    }
+}
+
+impl Display for Uri {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Uri::Unknown => write!(f, "unknown"),
+            Uri::StdLib => write!(f, "stdlib"),
+            Uri::File(path_buf) => write!(f, "file://{}", path_buf.to_string_lossy()),
+            Uri::Custom(id) => write!(f, "custom://{:X}", id),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ImportedFn {
+    pub module: ImportId,
+    pub id: String,
+    pub sig: FnSig,
+}
+impl fmt::Display for ImportedFn {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(imported_fn \"{}\" {})", self.id, self.sig)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Module {
     pub id: String,
-    pub function_imports: Vec<String>,
+    pub imports: Vec<Uri>,
+    pub external_functions: Vec<ImportedFn>,
     pub structs: Vec<Struct>,
     pub enums: Vec<Enum>,
     pub functions: Vec<Function>,
@@ -549,7 +592,8 @@ impl Module {
     pub fn new(id: impl Into<String>) -> Self {
         Self {
             id: id.into(),
-            function_imports: Default::default(),
+            imports: Default::default(),
+            external_functions: Default::default(),
             structs: Default::default(),
             enums: Default::default(),
             functions: Default::default(),
@@ -573,6 +617,16 @@ impl Module {
                     .ok_or_else(|| anyhow!("couldn't find enum {}", ty))?
                     .layout(self)?;
                 (s.size, s.alignment)
+            }
+        })
+    }
+
+    pub fn find_function(&self, name: &str) -> Option<FnId> {
+        self.functions.iter().enumerate().find_map(|(i, func)| {
+            if func.id == name {
+                Some(i as i64)
+            } else {
+                None
             }
         })
     }
@@ -687,7 +741,10 @@ impl Module {
     }
 }
 
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    path::PathBuf,
+};
 impl fmt::Display for Ref {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -975,8 +1032,11 @@ impl fmt::Display for Enum {
 impl fmt::Display for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(module \"{}\"", self.id)?;
-        if self.function_imports.len() > 0 {
-            write!(f, "\n(import\n  {}\n)", self.function_imports.join(",\n  "))?;
+        for (i, uri) in self.imports.iter().enumerate() {
+            write!(f, "\n{}: (import {})", i, uri)?;
+        }
+        for (i, func) in self.external_functions.iter().enumerate() {
+            write!(f, "\n{}: {}", i, func)?;
         }
         for (i, s) in self.structs.iter().enumerate() {
             write!(f, "\n{}: {}", i, s)?;
