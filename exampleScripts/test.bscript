@@ -10,7 +10,11 @@ struct MyStruct {
     b: MyEnum
 }
 
-fn add_test(a: i64, b: i64) -> i64 {
+fn add_test(a: i32, b: i32) -> i32 {
+    return add(a, b);
+}
+
+fn random_test(a: i64, b: i64) -> i64 {
     let ret_val: i64 = 0;
     match a {
         1 => match b {
