@@ -45,16 +45,21 @@ impl Default for CraneliftJitBackend {
             .finish(settings::Flags::new(flag_builder))
             .expect("Unable to build ISA");
 
-        Self {
+        let s = Self {
             isa,
             next_module_id: AtomicUsize::new(0),
             loaded_modules: Default::default(),
-        }
+        };
+
+        // TODO actually have a defined stdlib and add it here
+        // s.load(stdlib)
+        s
     }
 }
 
 pub struct LoadedModule {
     pub functions: Vec<memory::FnId>,
+    pub function_asm: Vec<String>,
     /// Maps a function name to an index in functions
     pub name_to_function: HashMap<String, usize>,
     pub jit_module: cranelift_jit::JITModule,
@@ -98,6 +103,10 @@ impl brane_core::runtime::LoadedModule for LoadedModule {
 
     fn get_fn_names(&self) -> impl Iterator<Item = &str> {
         self.name_to_function.iter().map(|(name, _)| name.as_str())
+    }
+
+    fn get_fn_asm(&self, id: ir::FnId) -> Option<String> {
+        self.function_asm.get(id as usize).cloned()
     }
 }
 
@@ -158,6 +167,8 @@ impl CraneliftJitBackend {
             signatures.push((signature, has_ret_ptr));
         }
 
+        let mut fn_assemblies = Vec::new();
+
         for (index, (func, (sig, has_ret_ptr))) in
             module.functions.iter().zip(signatures).enumerate()
         {
@@ -205,6 +216,13 @@ impl CraneliftJitBackend {
                     .unwrap()
                     .disassemble(Some(&codegen.func.params), &cs)?
             );*/
+            fn_assemblies.push(
+                codegen
+                    .compiled_code()
+                    .unwrap()
+                    .disassemble(Some(&codegen.func.params), &cs)?,
+            );
+
             ctx.module.clear_context(&mut codegen);
         }
 
@@ -228,6 +246,7 @@ impl CraneliftJitBackend {
 
         Ok(LoadedModule {
             functions,
+            function_asm: fn_assemblies,
             jit_module: ctx.module,
             name_to_function,
         })
@@ -300,7 +319,6 @@ impl CraneliftJitBackend {
         let mut ctx = FunctionCtx {
             mod_ctx: module,
             builder,
-            entry_block_id: entry,
             block_values: Default::default(),
             blocks: blocks.clone(),
             ptr_ty,
@@ -401,7 +419,7 @@ impl CraneliftJitBackend {
                             self.call_fn(Callable::FnId(*func), &input, ir, &mut ctx)?
                         } else {
                             // Call from known index in the pointer table
-                            let fn_index = func * -1 + 1;
+                            let fn_index = (-func) - 1;
                             let (fn_index, fn_sig) = ctx
                                 .mod_ctx
                                 .linked_func_indicies
@@ -411,12 +429,10 @@ impl CraneliftJitBackend {
                                 })?
                                 .clone();
 
-                            let entry = ctx.entry_block_id;
-                            let exe_ctx = ctx.builder.block_params(entry)[0];
                             let fn_table_ptr = ctx.builder.ins().load(
                                 ctx.ptr_ty,
                                 MemFlags::trusted(),
-                                exe_ctx,
+                                ctx.ctx_ptr,
                                 ctx.ptr_ty.bytes() as i32,
                             );
 
@@ -437,12 +453,10 @@ impl CraneliftJitBackend {
                     } => {
                         let (func, _, _) = self.jit_value(func_handle, &mut ctx)?;
 
-                        let entry = ctx.entry_block_id;
-                        let exe_ctx = ctx.builder.block_params(entry)[0];
                         let fn_table_ptr = ctx.builder.ins().load(
                             ctx.ptr_ty,
                             MemFlags::trusted(),
-                            exe_ctx,
+                            ctx.ctx_ptr,
                             ctx.ptr_ty.bytes() as i32,
                         );
 
@@ -567,12 +581,10 @@ impl CraneliftJitBackend {
         let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
         let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
-        let entry = ctx.entry_block_id;
-        let exe_ctx = ctx.builder.block_params(entry)[0];
         let bindings = ctx
             .builder
             .ins()
-            .load(ctx.ptr_ty, MemFlags::trusted(), exe_ctx, 0);
+            .load(ctx.ptr_ty, MemFlags::trusted(), ctx.ctx_ptr, 0);
 
         let mul_shift = match ctx.ptr_bytes {
             1 => 0,
@@ -600,12 +612,10 @@ impl CraneliftJitBackend {
         let offset = ctx.builder.ins().band_imm(int_ptr, 0xFFFF);
         let offset = ctx.builder.ins().uextend(ctx.ptr_ty, offset);
 
-        let entry = ctx.entry_block_id;
-        let exe_ctx = ctx.builder.block_params(entry)[0];
         let bindings = ctx
             .builder
             .ins()
-            .load(ctx.ptr_ty, MemFlags::trusted(), exe_ctx, 0);
+            .load(ctx.ptr_ty, MemFlags::trusted(), ctx.ctx_ptr, 0);
 
         let mul_shift = match ctx.ptr_bytes {
             1 => 0,
@@ -2104,7 +2114,6 @@ struct FunctionCtx<'a, 'm, 's> {
     ctx_ptr: Value,
     ret_ptr: Option<Value>,
     blocks: Vec<Block>,
-    entry_block_id: Block,
     block_values: HashMap<Block, Vec<Option<FValue>>>,
     block_args: HashMap<Block, Vec<FValue>>,
     ptr_ty: Type,

@@ -11,6 +11,8 @@ use crate::{
 pub trait LoadedModule {
     fn get_fn(&self, id: ir::FnId) -> Option<memory::FnId>;
 
+    fn get_fn_asm(&self, id: ir::FnId) -> Option<String>;
+
     fn get_fn_by_name(&self, name: impl AsRef<str>) -> Option<memory::FnId>;
     fn get_fn_names(&self) -> impl Iterator<Item = &str>;
 }

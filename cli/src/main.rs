@@ -1,7 +1,7 @@
 use std::ptr::NonNull;
 use std::{collections::HashMap, ffi::OsString, io::Write as _, time::Instant};
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 //use brane_script_runtime::backend::llvm::LLVMJitBackend;
 use brane_backend_cranelift::CraneliftJitBackend;
 use brane_core::ir::{self, Uri};
@@ -63,6 +63,12 @@ enum PrintKind {
         module_name: String,
         #[arg(short, long)]
         function_names: bool,
+    },
+    Asm {
+        module_name: String,
+    },
+    IR {
+        module_name: String,
     },
     Memory {
         module_name: String,
@@ -256,12 +262,54 @@ fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
+                    PrintKind::Asm { module_name } => {
+                        let mod_id = rt
+                            .find_module_by_name(&module_name)
+                            .ok_or(anyhow!("Module {} not found", module_name))?;
+
+                        let module_src = rt
+                            .module_src(mod_id)
+                            .ok_or(anyhow!("Module source not found"))?;
+
+                        let loaded_module =
+                            rt.get_module(mod_id).ok_or(anyhow!("Module not loaded"))?;
+
+                        println!("Assembly for module '{}':\n", module_name);
+
+                        for function in &module_src.functions {
+                            let fn_id = module_src
+                                .find_function(&function.id)
+                                .ok_or(anyhow!("Function {} not found", function.id))?;
+
+                            println!("Function: {}", function.id);
+                            println!("Signature: {}", function.sig);
+
+                            if let Some(asm) = loaded_module.get_fn_asm(fn_id) {
+                                println!("{}\n", asm);
+                            } else {
+                                println!("  (no assembly available)\n");
+                            }
+                        }
+                    }
+                    PrintKind::IR { module_name } => {
+                        let mod_id = rt
+                            .find_module_by_name(&module_name)
+                            .ok_or(anyhow!("Module {} not found", module_name))?;
+
+                        let module_src = rt
+                            .module_src(mod_id)
+                            .ok_or(anyhow!("Module source not found"))?;
+
+                        println!("IR for module '{}':\n", module_name);
+                        println!("{}", module_src);
+                    }
                 },
                 CommandKind::Build { src: _ } => todo!("We don't do that here"),
                 CommandKind::Load { src, module_name } => {
                     let name = module_name.unwrap_or("default".into());
                     let uri = Uri::File(src.into());
                     let module = ctx.emit_module(name.clone(), &uri)?;
+                    println!("Compiled successfully");
                     let mod_id = rt.load_module(uri, module)?;
                     println!("Loaded module with id {}", mod_id);
                 }
@@ -314,11 +362,18 @@ fn main() -> anyhow::Result<()> {
                     let user_call_index = new_mod.get_fn_by_name("user_call").unwrap();
 
                     unsafe {
-                        let func = std::mem::transmute::<_, fn(*const ExecutionCtx, u32, u32) -> u32>(
+                        let func = std::mem::transmute::<_, fn(*const ExecutionCtx, u32, u32)>(
                             exe_ctx.fn_bindings_ptr().add(user_call_index as usize),
                         );
-                        let mut sb = || func(&exe_ctx, BSPtr::new(1, 0).0, BSPtr::new(2, 0).0);
+
+                        func(&exe_ctx, BSPtr::new(1, 0).0, BSPtr::new(2, 0).0);
+                        /*
+                        let mut sb = || {
+                            // The func
+                            func(&exe_ctx, BSPtr::new(1, 0).0, BSPtr::new(2, 0).0);
+                        };
                         sandbox::try_run(&mut sb)?;
+                        */
                     }
                 }
             }

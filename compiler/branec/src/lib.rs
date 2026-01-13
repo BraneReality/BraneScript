@@ -73,26 +73,30 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         };
 
         let mut root_namespace = IdentTree::new_namespace();
-        root_namespace.insert_import(Some(Uri::StdLib), None)?;
 
         let mut module_ctx = ModuleCtx {
             module: ir::Module::new(name),
             uses: Default::default(), //TODO
             current_namespace: Vec::new(),
             module_uri: module_uri.clone(),
+            fn_locations: HashMap::new(),
         };
 
         let mut registration_error = false;
         for def in &defs {
-            registration_error |= !self.add_def_to_namespace(def.clone(), &mut root_namespace)?;
+            registration_error |= !self.add_def_to_namespace(def.clone(), &mut root_namespace, &mut module_ctx)?;
         }
 
         if registration_error {
             bail!("Failed to register names");
         }
 
+        self.register_functions(&root_namespace, &mut module_ctx)?;
+
         self.loaded_modules
             .insert(module_uri.clone(), root_namespace.clone());
+
+        root_namespace.insert_import(Some(Uri::StdLib), None)?;
 
         for def in defs {
             self.emit_pass(def, &mut module_ctx, &root_namespace)?;
@@ -122,15 +126,136 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
         Ok(())
     }
 
+    fn register_functions(&self, namespace: &IdentTree, module_ctx: &mut ModuleCtx) -> Result<()> {
+        match namespace {
+            IdentTree::Namespace { imports, children } => {
+                for (uri, i_path) in imports {
+                    if let Some(uri) = uri {
+                        if uri == &Uri::StdLib {
+                            // For now, we don't have any runtime stdlib links, when we do, switch
+                            // imports to be lazy, completely eleminating the potential problem
+                            return Ok(());
+                        }
+                        let import_id = module_ctx.module.imports.len() as ir::ImportId;
+                        module_ctx.module.imports.push(uri.clone());
+
+                        let mod_ns = self
+                            .loaded_modules
+                            .get(uri)
+                            .ok_or_else(|| anyhow!("Module {} not loaded", uri))?;
+
+                        let mut mod_cursor = mod_ns.get_cursor();
+                        if let Some(path) = i_path {
+                            mod_cursor.set_scope_from_path(path)?;
+                        }
+
+                        self.register_external_functions(
+                            mod_cursor.value(),
+                            import_id,
+                            module_ctx,
+                        )?;
+                    }
+                }
+
+                for child in children.values() {
+                    self.register_functions(child, module_ctx)?;
+                }
+            }
+            IdentTree::Def(IdentTarget::Fn(overrides)) => {
+                for override_fn in overrides {
+                    match &override_fn.kind {
+                        FnOverrideKind::Template(function) => {
+                            let fn_id = module_ctx.module.functions.len() as ir::FnId;
+
+                            let param_tys = function
+                                .params
+                                .iter()
+                                .map(|(_, ty)| self.emit_ty(ty, namespace, module_ctx))
+                                .collect::<Result<Vec<_>>>()?;
+
+                            let ret_ty = match &function.ret_ty {
+                                Some(ty) => Some(self.emit_ty(ty, namespace, module_ctx)?),
+                                None => None,
+                            };
+
+                            let sig = ir::FnSig { param_tys, ret_ty };
+
+                            module_ctx
+                                .fn_locations
+                                .entry(function.ident.text.clone())
+                                .or_insert_with(Vec::new)
+                                .push(FnLocation::Internal { fn_id, sig });
+                        }
+                        FnOverrideKind::Intrinsic(_) => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn register_external_functions(
+        &self,
+        namespace: &IdentTree,
+        import_id: ir::ImportId,
+        module_ctx: &mut ModuleCtx,
+    ) -> Result<()> {
+        match namespace {
+            IdentTree::Namespace { children, .. } => {
+                for child in children.values() {
+                    self.register_external_functions(child, import_id, module_ctx)?;
+                }
+            }
+            IdentTree::Def(IdentTarget::Fn(overrides)) => {
+                for override_fn in overrides {
+                    match &override_fn.kind {
+                        FnOverrideKind::Template(function) => {
+                            let param_tys = function
+                                .params
+                                .iter()
+                                .map(|(_, ty)| self.emit_ty(ty, namespace, module_ctx))
+                                .collect::<Result<Vec<_>>>()?;
+
+                            let ret_ty = match &function.ret_ty {
+                                Some(ty) => Some(self.emit_ty(ty, namespace, module_ctx)?),
+                                None => None,
+                            };
+
+                            let sig = ir::FnSig { param_tys, ret_ty };
+                            let name = function.ident.text.clone();
+
+                            let ext_fn = FnLocation::External {
+                                import_id,
+                                name: name.clone(),
+                                sig,
+                            };
+
+                            println!("Importing ext fn {:?}", ext_fn);
+
+                            module_ctx
+                                .fn_locations
+                                .entry(name.clone())
+                                .or_insert_with(Vec::new)
+                                .push(ext_fn);
+                        }
+                        FnOverrideKind::Intrinsic(_) => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     // Returns false if it failed to add the object or any of it's children to the namespace
-    pub fn add_def_to_namespace(&self, def: ast::Def, namespace: &mut IdentTree) -> Result<bool> {
+    pub fn add_def_to_namespace(&self, def: ast::Def, namespace: &mut IdentTree, module_ctx: &mut ModuleCtx) -> Result<bool> {
         Ok(match &def.kind {
             ast::DefKind::Using(using_span, path, from) => {
                 let from = match from {
                     Some(text) => Some(Uri::parse(text)?),
                     None => None,
                 };
-                println!("inserting import from {:?} ns {:?}", from, path);
                 match namespace.insert_import(from, path.clone()) {
                     Ok(_) => true,
                     Err(_) => {
@@ -166,15 +291,33 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     }
                 }
             }
-            ast::DefKind::Function(_) => {
-                // Do we want to pre-define these?
-                true
+            ast::DefKind::Function(function) => {
+                let arg_tys = function.params.iter()
+                    .map(|(_, ty)| Ok(TyPattern::Exact(self.emit_ty(ty, namespace, module_ctx)?)))
+                    .collect::<Result<Vec<_>>>()?;
+
+                match namespace.insert_fn(
+                    function.ident.text.clone(),
+                    FnOverride {
+                        temp_args: vec![TyPattern::Any; function.template_params.len()],
+                        arg_tys,
+                        kind: FnOverrideKind::Template(function.clone()),
+                    },
+                ) {
+                    Ok(_) => true,
+                    Err(_) => {
+                        emt::error("identifier already defined as non-function", &self.sources)
+                            .err_at(function.ident.span.clone(), "conflicts with existing definition")
+                            .emit(&self.emitter)?;
+                        false
+                    }
+                }
             }
             ast::DefKind::Namespace(ident, defs) => {
                 let mut sub_ns = IdentTree::new_namespace();
                 let mut insert_success = true;
                 for def in defs {
-                    insert_success &= self.add_def_to_namespace(def.clone(), &mut sub_ns)?;
+                    insert_success &= self.add_def_to_namespace(def.clone(), &mut sub_ns, module_ctx)?;
                 }
                 insert_success &= namespace.insert_child(&ident.text, sub_ns).is_ok();
                 insert_success
@@ -214,7 +357,6 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     if let Some(path) = i_path {
                         mod_cursor.set_scope_from_path(path)?;
                     }
-                    println!("Searching module {}", uri);
                     if let Ok(res) = self.find_identified_in_namespace(path, mod_cursor.value()) {
                         return Ok(res);
                     }
@@ -335,7 +477,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     function.params[0].1.span.clone(),
                     "must be a mutable pointer",
                 )
-                .emit(&self.emitter);
+                .emit(&self.emitter)?;
                 return Err(anyhow!("Node def error"));
             }
 
@@ -357,7 +499,7 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     function.params[1].1.span.clone(),
                     "must be a mutable pointer",
                 )
-                .emit(&self.emitter);
+                .emit(&self.emitter)?;
                 return Err(anyhow!("Node def error"));
             }
         }
@@ -803,6 +945,58 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     Callable::IntrinsicFn(template_args, callback) => {
                         (*callback)(&template_args, &args, ctx)
                     }
+                    Callable::DirectCall(fn_id) => {
+                        let input = args
+                            .iter()
+                            .map(|rv| match rv {
+                                RValue::Value(v, _) => ir::ValueOrObj::Value(*v),
+                                RValue::Struct(_) | RValue::Enum(_) => {
+                                    ir::ValueOrObj::Obj(rv.flattened())
+                                }
+                            })
+                            .collect();
+
+                        let call_value = ctx.emit_op(ir::Op::Call { func: fn_id, input })?;
+
+                        let sig = if fn_id >= 0 {
+                            &ctx.mod_ctx.module.functions[fn_id as usize].sig
+                        } else {
+                            let ext_index = (fn_id * -1 - 1) as usize;
+                            &ctx.mod_ctx.module.external_functions[ext_index].sig
+                        };
+
+                        match &sig.ret_ty {
+                            None => Ok(None),
+                            Some(ir::Ty::Native(nt)) => {
+                                Ok(Some(RValue::Value(call_value, nt.clone())))
+                            }
+                            Some(ret_ty) => {
+                                let ir::Value::BlockOp { block, op } = call_value else {
+                                    bail!("Call did not return BlockOp value");
+                                };
+
+                                let ty_list = ctx.mod_ctx.module.flatten(ret_ty)?;
+                                let values = ty_list
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, _)| ir::Value::ObjBlockOp {
+                                        block,
+                                        op,
+                                        index: i as u32,
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                Ok(Some(RValue::from_flattened(
+                                    &values,
+                                    ret_ty,
+                                    &ctx.mod_ctx.module,
+                                )?))
+                            }
+                        }
+                    }
+                    Callable::IndirectCall(_, _) => {
+                        bail!("Indirect function calls not yet implemented")
+                    }
                 }
             }
             ast::ExprKind::ImplcitSelfCall(expr, path_segment, exprs) => {
@@ -865,12 +1059,6 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     ) -> Result<Callable> {
         match &expr.kind {
             ast::ExprKind::Path(path) => {
-                let mut c = root_ns.get_cursor();
-                c.set_scope(&ctx.mod_ctx.current_namespace);
-                let IdentTarget::Fn(fn_temp) = self.find_identified(&path.segments, c)? else {
-                    bail!("{} was not function", path);
-                };
-
                 let temp_args = path
                     .segments
                     .last()
@@ -880,34 +1068,137 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     .map(|ast::TemplateArg(ty)| self.emit_ty(ty, root_ns, &mut ctx.mod_ctx))
                     .collect::<Result<Vec<_>>>()?;
 
-                for o in fn_temp.iter() {
-                    if o.valid_for(&temp_args, args) {
-                        match &o.kind {
-                            FnOverrideKind::Ast(function) => {
-                                todo!("Can't call inter-module functions yet")
-                            }
-                            FnOverrideKind::Intrinsic(callback) => {
-                                return Ok(Callable::IntrinsicFn(temp_args, callback.clone()));
+                let mut candidates = Vec::new();
+
+                if path.segments.len() == 1 && temp_args.is_empty() {
+                    let name = &path.segments[0].ident.text;
+                    if let Some(locations) = ctx.mod_ctx.fn_locations.get(name) {
+                        for loc in locations {
+                            match loc {
+                                FnLocation::Internal { fn_id, sig } => {
+                                    if sig.param_tys == args {
+                                        candidates.push((*fn_id, sig.clone()));
+                                    }
+                                }
+                                FnLocation::External {
+                                    import_id,
+                                    name,
+                                    sig,
+                                } => {
+                                    if sig.param_tys == args {
+                                        let ext_fn_id =
+                                            ctx.mod_ctx.module.external_functions.len() as ir::FnId;
+                                        ctx.mod_ctx.module.external_functions.push(
+                                            ir::ImportedFn {
+                                                module: *import_id,
+                                                id: name.clone(),
+                                                sig: sig.clone(),
+                                            },
+                                        );
+                                        candidates.push((-(ext_fn_id + 1), sig.clone()));
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                let error_msg = format!(
-                    "No override for {}({})",
-                    path,
-                    args.iter()
-                        .map(|a| a.to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                emt::error(&error_msg, &self.sources)
-                    .err_at(path.span.clone(), "here")
-                    .emit(&self.emitter)?;
-                bail!(error_msg);
+                if candidates.is_empty() {
+                    let mut c = root_ns.get_cursor();
+                    c.set_scope(&ctx.mod_ctx.current_namespace);
+
+                    if let Ok(IdentTarget::Fn(fn_temp)) = self.find_identified(&path.segments, c) {
+                        for o in fn_temp.iter() {
+                            if o.valid_for(&temp_args, args) {
+                                match &o.kind {
+                                    FnOverrideKind::Template(function) => {
+                                        let name = &function.ident.text;
+                                        if let Some(locations) = ctx.mod_ctx.fn_locations.get(name)
+                                        {
+                                            for loc in locations {
+                                                match loc {
+                                                    FnLocation::Internal { fn_id, sig } => {
+                                                        candidates.push((*fn_id, sig.clone()));
+                                                    }
+                                                    FnLocation::External {
+                                                        import_id,
+                                                        name,
+                                                        sig,
+                                                    } => {
+                                                        let ext_fn_id = ctx
+                                                            .mod_ctx
+                                                            .module
+                                                            .external_functions
+                                                            .len()
+                                                            as ir::FnId;
+                                                        ctx.mod_ctx.module.external_functions.push(
+                                                            ir::ImportedFn {
+                                                                module: *import_id,
+                                                                id: name.clone(),
+                                                                sig: sig.clone(),
+                                                            },
+                                                        );
+                                                        candidates
+                                                            .push((-(ext_fn_id + 1), sig.clone()));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    FnOverrideKind::Intrinsic(callback) => {
+                                        return Ok(Callable::IntrinsicFn(
+                                            temp_args,
+                                            callback.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if candidates.is_empty() {
+                    let error_msg = format!(
+                        "No function found for {}({})",
+                        path,
+                        args.iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    emt::error(&error_msg, &self.sources)
+                        .err_at(path.span.clone(), "here")
+                        .emit(&self.emitter)?;
+                    bail!(error_msg);
+                } else if candidates.len() > 1 {
+                    let error_msg = format!(
+                        "Multiple functions match {}({}), cannot resolve which to call",
+                        path,
+                        args.iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                    emt::error(&error_msg, &self.sources)
+                        .err_at(path.span.clone(), "ambiguous call")
+                        .emit(&self.emitter)?;
+                    bail!(error_msg);
+                }
+
+                Ok(Callable::DirectCall(candidates[0].0))
             }
-            // TODO account for function pointers
-            _ => bail!("expression is not callable!"),
+            _ => {
+                let rvalue = self
+                    .emit_r_value(expr, root_ns, ctx)?
+                    .ok_or_else(|| anyhow!("Expression does not return a value"))?;
+
+                match rvalue {
+                    RValue::Value(ptr, ir::NativeType::Ptr(_, Some(inner_ty))) => {
+                        bail!("Function pointer calls not yet implemented");
+                    }
+                    _ => bail!("Expression is not callable"),
+                }
+            }
         }
     }
 
@@ -1365,6 +1656,20 @@ pub struct ModuleCtx {
     pub module_uri: Uri,
     pub uses: HashMap<String, String>,
     pub current_namespace: Vec<String>,
+    pub fn_locations: HashMap<String, Vec<FnLocation>>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FnLocation {
+    Internal {
+        fn_id: ir::FnId,
+        sig: ir::FnSig,
+    },
+    External {
+        import_id: ir::ImportId,
+        name: String,
+        sig: ir::FnSig,
+    },
 }
 
 #[derive(Clone)]
@@ -1558,7 +1863,7 @@ impl IdentTarget {
                 .expect("Expecting function overrides to contain at least one function")
                 .kind
             {
-                FnOverrideKind::Ast(function) => &function.ident,
+                FnOverrideKind::Template(function) => &function.ident,
                 FnOverrideKind::Intrinsic(_) => return None,
             },
             IdentTarget::Node(function) => &function.ident,
@@ -1663,7 +1968,7 @@ impl FnOverride {
 
 #[derive(Clone)]
 pub enum FnOverrideKind {
-    Ast(ast::Function),
+    Template(ast::Function),
     Intrinsic(IntrinsicFn),
 }
 
@@ -2391,4 +2696,6 @@ enum VariablePathSegment {
 #[derive(Clone)]
 enum Callable {
     IntrinsicFn(Vec<ir::Ty>, IntrinsicFn),
+    DirectCall(ir::FnId),
+    IndirectCall(ir::Value, ir::FnSig),
 }
