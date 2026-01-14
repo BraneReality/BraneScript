@@ -14,6 +14,24 @@ use clap::Subcommand;
 
 mod c_abi_tests;
 
+fn format_duration(duration: std::time::Duration) -> String {
+    let nanos = duration.as_nanos();
+
+    if nanos < 1_000 {
+        // Less than 1 microsecond - show nanoseconds
+        format!("{} ns", nanos)
+    } else if nanos < 1_000_000 {
+        // Less than 1 millisecond - show microseconds with 2 decimal places
+        format!("{:.2} µs", nanos as f64 / 1_000.0)
+    } else if nanos < 1_000_000_000 {
+        // Less than 1 second - show milliseconds with 3 decimal places
+        format!("{:.3} ms", nanos as f64 / 1_000_000.0)
+    } else {
+        // 1 second or more - show seconds with 3 decimal places
+        format!("{:.3} s", duration.as_secs_f64())
+    }
+}
+
 #[derive(clap::Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -71,8 +89,6 @@ enum PrintKind {
         module_name: String,
     },
     Memory {
-        module_name: String,
-        type_name: String,
         binding_index: u16,
 
         /// Offset to start printing from, rounds down to nearest 8 bytes
@@ -226,8 +242,6 @@ fn main() -> anyhow::Result<()> {
                         }
                     }
                     PrintKind::Memory {
-                        module_name,
-                        type_name,
                         binding_index,
                         offset,
                         eightbytes,
@@ -248,16 +262,16 @@ fn main() -> anyhow::Result<()> {
                             }
                             unsafe {
                                 println!(
-                                    "({:>5}) {:X} {:X} {:X} {:X}  {:X} {:X} {:X} {:X}",
+                                    "({:>5}) {:04X} {:04X} {:04X} {:04X}  {:04X} {:04X} {:04X} {:04X}",
                                     index,
-                                    binding.add(index).as_ref(),
-                                    binding.add(index + 1).as_ref(),
-                                    binding.add(index + 2).as_ref(),
-                                    binding.add(index + 3).as_ref(),
-                                    binding.add(index + 4).as_ref(),
-                                    binding.add(index + 5).as_ref(),
-                                    binding.add(index + 6).as_ref(),
                                     binding.add(index + 7).as_ref(),
+                                    binding.add(index + 6).as_ref(),
+                                    binding.add(index + 5).as_ref(),
+                                    binding.add(index + 4).as_ref(),
+                                    binding.add(index + 3).as_ref(),
+                                    binding.add(index + 2).as_ref(),
+                                    binding.add(index + 1).as_ref(),
+                                    binding.add(index).as_ref(),
                                 )
                             }
                         }
@@ -339,6 +353,7 @@ fn main() -> anyhow::Result<()> {
                         module_name
                     ))?;
 
+                    let compile_start = Instant::now();
                     // TODO need an ir writer library that isn't string concatination
                     let jit_src = format!(
                         "using * from \"{}\";\
@@ -353,20 +368,29 @@ fn main() -> anyhow::Result<()> {
                             "".into()
                         }
                     );
-                    println!("jitting command fn\n{}", jit_src);
                     ctx.sources.update_custom(&user_code, jit_src)?;
 
                     let new_mod_src = ctx.emit_module("user_module".into(), &user_code)?;
                     let new_mod_id = rt.load_module(user_code.clone(), new_mod_src)?;
+                    let compile_time = compile_start.elapsed();
+                    println!("Compiled call in {}", format_duration(compile_time));
                     let new_mod = rt.get_module(new_mod_id).unwrap();
                     let user_call_index = new_mod.get_fn_by_name("user_call").unwrap();
 
                     unsafe {
                         let func = std::mem::transmute::<_, fn(*const ExecutionCtx, u32, u32)>(
-                            exe_ctx.fn_bindings_ptr().add(user_call_index as usize),
+                            *exe_ctx.fn_bindings_ptr().add(user_call_index as usize),
                         );
 
-                        func(&exe_ctx, BSPtr::new(1, 0).0, BSPtr::new(2, 0).0);
+                        let ctx_ptr = BSPtr::new(1, 0).0;
+                        let ret_ptr = BSPtr::new(2, 0).0;
+
+                        let start = Instant::now();
+                        func(&exe_ctx, ctx_ptr, ret_ptr);
+                        let execution_time = start.elapsed();
+
+                        println!("Executed in {}", format_duration(execution_time));
+
                         /*
                         let mut sb = || {
                             // The func
