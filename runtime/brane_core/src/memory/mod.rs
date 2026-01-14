@@ -23,11 +23,11 @@ pub struct BSPtr(pub u32);
 
 impl BSPtr {
     pub fn new(binding: u16, offset: u16) -> Self {
-        Self(((binding as u32) << 8) & offset as u32)
+        Self(((binding as u32) << 16) | offset as u32)
     }
 
     pub fn binding(self) -> u16 {
-        (self.0 >> 8) as u16
+        (self.0 >> 16) as u16
     }
 
     pub fn offset(self) -> u16 {
@@ -35,11 +35,11 @@ impl BSPtr {
     }
 
     pub fn set_binding(&mut self, binding: u16) {
-        self.0 = ((binding as u32) << 8) & self.offset() as u32;
+        self.0 = ((binding as u32) << 16) & self.offset() as u32;
     }
 
     pub fn set_offset(&mut self, offset: u16) {
-        self.0 = (((self.binding() as u32) << 8) & offset as u32) as u32;
+        self.0 = (((self.binding() as u32) << 16) & offset as u32) as u32;
     }
 }
 

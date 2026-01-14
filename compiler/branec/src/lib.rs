@@ -84,7 +84,8 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
 
         let mut registration_error = false;
         for def in &defs {
-            registration_error |= !self.add_def_to_namespace(def.clone(), &mut root_namespace, &mut module_ctx)?;
+            registration_error |=
+                !self.add_def_to_namespace(def.clone(), &mut root_namespace, &mut module_ctx)?;
         }
 
         if registration_error {
@@ -231,8 +232,6 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                                 sig,
                             };
 
-                            println!("Importing ext fn {:?}", ext_fn);
-
                             module_ctx
                                 .fn_locations
                                 .entry(name.clone())
@@ -249,7 +248,12 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
     }
 
     // Returns false if it failed to add the object or any of it's children to the namespace
-    pub fn add_def_to_namespace(&self, def: ast::Def, namespace: &mut IdentTree, module_ctx: &mut ModuleCtx) -> Result<bool> {
+    pub fn add_def_to_namespace(
+        &self,
+        def: ast::Def,
+        namespace: &mut IdentTree,
+        module_ctx: &mut ModuleCtx,
+    ) -> Result<bool> {
         Ok(match &def.kind {
             ast::DefKind::Using(using_span, path, from) => {
                 let from = match from {
@@ -292,7 +296,9 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 }
             }
             ast::DefKind::Function(function) => {
-                let arg_tys = function.params.iter()
+                let arg_tys = function
+                    .params
+                    .iter()
                     .map(|(_, ty)| Ok(TyPattern::Exact(self.emit_ty(ty, namespace, module_ctx)?)))
                     .collect::<Result<Vec<_>>>()?;
 
@@ -307,7 +313,10 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                     Ok(_) => true,
                     Err(_) => {
                         emt::error("identifier already defined as non-function", &self.sources)
-                            .err_at(function.ident.span.clone(), "conflicts with existing definition")
+                            .err_at(
+                                function.ident.span.clone(),
+                                "conflicts with existing definition",
+                            )
                             .emit(&self.emitter)?;
                         false
                     }
@@ -317,7 +326,8 @@ impl<E: DiagnosticEmitter> CompileContext<E> {
                 let mut sub_ns = IdentTree::new_namespace();
                 let mut insert_success = true;
                 for def in defs {
-                    insert_success &= self.add_def_to_namespace(def.clone(), &mut sub_ns, module_ctx)?;
+                    insert_success &=
+                        self.add_def_to_namespace(def.clone(), &mut sub_ns, module_ctx)?;
                 }
                 insert_success &= namespace.insert_child(&ident.text, sub_ns).is_ok();
                 insert_success
